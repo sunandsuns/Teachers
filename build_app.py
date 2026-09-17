@@ -55,6 +55,10 @@ CORPUS_DIRS = ("理解笔记", "books", "MaoZeDongAnthology", "WangYangMing")
 #: 部署态的语料根目录名（server/paths.py 会在 exe 同级找它）
 CORPUS_NAME = "corpus"
 
+#: 桌面入口写下的启动日志文件名，与 ``desktop.LOG_FILENAME`` 必须一致。
+#: 刻意不 import desktop：那会连带拉起 uvicorn 与 webview，打包脚本只需要这个名字。
+LOG_FILENAME = "启动日志.txt"
+
 #: 自检用的固定端口。挑一个不常见的，避免和用户已开的服务撞上。
 SELFTEST_PORT = 8791
 #: 冷启动要建全量索引，给足余量
@@ -388,28 +392,31 @@ class SelfTestResult(NamedTuple):
     failures: tuple[str, ...]
 
 
-def _retire_selftest_data() -> None:
-    """把自检期间产生的数据目录挪出产物。
+def _retire_selftest_artifacts() -> None:
+    """把自检期间产生的文件挪出产物。
 
-    自检会让 exe 真的跑起来，于是它就在程序目录旁边把历史记录数据库建了出来
-    （这正是"下载即可用"要验的行为），还写进了一条自检用的求教记录。
-    这些东西**不能跟着分发包走**：用户打开「回响」看到一条别人的测试记录，
-    比看到空列表更莫名其妙。
+    自检会让 exe 真的跑起来，于是程序目录里多出两样东西：
 
-    同理不用删除：改名挪进 ``build/``——本机对批量删除有护栏，而且留着便于排查。
+    - ``data/``：历史记录数据库，还带着一条自检用的求教记录。
+      用户打开「回响」看到一条别人的测试记录，比看到空列表更莫名其妙；
+    - ``启动日志.txt``：这次自检的启动日志，里面是本机的路径与时间。
+
+    两者都不该跟着分发包走。同理不用删除：改名挪进 ``build/``——本机对批量删除
+    有护栏，而且留着便于排查。
     """
-    data = APP_DIR / "data"
-    if not data.is_dir():
-        return
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    target = WORK_DIR / ("prev-selftest-data-" + stamp)
-    suffix = 0
-    while target.exists():
-        suffix += 1
-        target = WORK_DIR / ("prev-selftest-data-%s-%d" % (stamp, suffix))
     WORK_DIR.mkdir(parents=True, exist_ok=True)
-    data.rename(target)
-    ok("自检产生数据目录已挪到 %s" % target.relative_to(ROOT))
+    for name in ("data", LOG_FILENAME):
+        source = APP_DIR / name
+        if not source.exists():
+            continue
+        target = WORK_DIR / ("prev-selftest-%s-%s" % (name, stamp))
+        suffix = 0
+        while target.exists():
+            suffix += 1
+            target = WORK_DIR / ("prev-selftest-%s-%s-%d" % (name, stamp, suffix))
+        source.rename(target)
+        ok("自检产生的 %s 已挪到 %s" % (name, target.relative_to(ROOT)))
 
 
 def _selftest(run_ask: bool = True) -> SelfTestResult:
@@ -424,8 +431,8 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
     - jieba 词典没进包 → 检索悄悄变差
     - sqlite3 没打进包 / 程序目录不可写 → 历史记录一直空的
 
-    自检结束后会把 exe 建出来的 ``data/``（历史记录库）挪出产物，
-    免得那条"自检用的求教记录"跟着分发包走到用户手里。
+    自检结束后会把 exe 建出来的 ``data/`` 与 ``启动日志.txt`` 一起挪出产物，
+    免得"自检用的求教记录"和本机路径跟着分发包到用户手里。
     """
     exe = APP_DIR / f"{APP_NAME}.exe"
     base = "http://127.0.0.1:%d" % SELFTEST_PORT
@@ -522,7 +529,7 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
             process.wait(timeout=15)
         except subprocess.TimeoutExpired:
             process.kill()
-        _retire_selftest_data()
+        _retire_selftest_artifacts()
 
     failures = tuple(c[0] for c in checks if not c[1])
     external = tuple(c[0] for c in checks if not c[1] and c[3])
