@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── 基础层 ──────────────────────────────────────────────────────────── */
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* 界面默认无衬线（导航 / 按钮 / 标签这类小字），
+     内容区再按需指定衬线或楷体——见 .markdown-body 与各页面的 font-serif。 */
+  body {
+    @apply bg-paper-100 font-sans text-ink-900 antialiased;
+  }
+
+  ::selection {
+    background-color: #f6cbc4;
+    color: #1e1c19;
+  }
+
+  /* 全局可见焦点环：替换浏览器默认轮廓，保证键盘操作时位置始终清晰。
+     原来 Advisor 的输入框是 outline-none 却没有替代方案，键盘用户会丢失焦点位置。 */
+  :focus-visible {
+    @apply outline-none ring-2 ring-cinnabar-400/70;
+  }
+
+  /* 细滚动条：默认滚动条在中式配色里过于突兀 */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: #ddd4bd;
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #c9bc9d;
+  }
+}
+
+/* ── 组件层 ──────────────────────────────────────────────────────────── */
+@layer components {
+  /* 表面：卡片 / 面板 / 结果条目共用的底层样式。
+     页面底色是 paper-100，表面抬到 paper-50 并加一层极轻的阴影，
+     形成"纸叠纸"的层次；原来是反的（卡片比页面更深），所以卡片看起来是陷进去的。 */
+  .card {
+    @apply rounded-xl border border-paper-200 bg-paper-50 shadow-card transition-all duration-200;
+  }
+
+  /* 输入框：默认边框、悬停加深、聚焦转为朱砂描边。
+     焦点环由 base 层的 :focus-visible 统一提供。 */
+  .field {
+    @apply w-full rounded-lg border border-paper-300 bg-paper-50 px-4 py-2.5 text-ink-900 transition-colors placeholder:text-ink-400 hover:border-paper-400 focus:border-cinnabar-400;
+  }
+
+  /* 正文排版。
+     中文长文的舒适行高在 1.8~2.0，故正文用 16px / 32px；
+     字号不再用全局 serif 去撑，改由这里统一控制。 */
+  .markdown-body {
+    @apply text-base leading-8 text-ink-700;
+  }
+
+  .markdown-body > :first-child {
+    @apply mt-0;
+  }
+
+  .markdown-body h1 {
+    @apply mb-4 mt-10 font-serif text-2xl font-bold leading-snug text-ink-900;
+  }
+
+  .markdown-body h2 {
+    @apply mb-4 mt-10 border-b border-paper-300 pb-2 font-serif text-xl font-bold leading-snug text-ink-900;
+  }
+
+  .markdown-body h3 {
+    @apply mb-3 mt-8 font-serif text-lg font-semibold leading-snug text-ink-800;
+  }
+
+  .markdown-body h4 {
+    @apply mb-2 mt-6 font-serif text-base font-semibold text-ink-800;
+  }
+
+  .markdown-body p {
+    @apply my-4;
+  }
+
+  .markdown-body strong {
+    @apply font-semibold text-ink-900;
+  }
+
+  .markdown-body a {
+    @apply text-cinnabar-600 underline decoration-cinnabar-300 underline-offset-2 transition-colors hover:text-cinnabar-700 hover:decoration-cinnabar-500;
+  }
+
+  /* 引文块：笔记里的引用多为古文原文，用楷体更贴合，也和大字号引文保持一致 */
+  .markdown-body blockquote {
+    @apply my-5 border-l-2 border-cinnabar-400 bg-paper-100 px-5 py-3 font-kai text-ink-800;
+  }
+
+  .markdown-body blockquote p {
+    @apply my-2;
+  }
+
+  .markdown-body ul {
+    @apply my-4 list-disc space-y-1 pl-6 marker:text-cinnabar-400;
+  }
+
+  .markdown-body ol {
+    @apply my-4 list-decimal space-y-1 pl-6 marker:text-ink-400;
+  }
+
+  .markdown-body li > ul,
+  .markdown-body li > ol {
+    @apply my-1;
+  }
+
+  .markdown-body code {
+    @apply rounded bg-paper-200 px-1.5 py-0.5 font-mono text-sm text-cinnabar-700;
+  }
+
+  .markdown-body pre {
+    @apply my-5 overflow-x-auto rounded-lg bg-ink-900 p-4 text-sm leading-relaxed;
+  }
+
+  .markdown-body pre code {
+    @apply bg-transparent p-0 text-paper-100;
+  }
+
+  .markdown-body table {
+    @apply my-5 w-full border-collapse overflow-hidden text-sm;
+  }
+
+  .markdown-body th {
+    @apply border border-paper-300 bg-paper-100 px-3 py-2 text-left font-semibold text-ink-800;
+  }
+
+  .markdown-body td {
+    @apply border border-paper-300 px-3 py-2 align-top;
+  }
+
+  .markdown-body hr {
+    @apply my-8 border-paper-300;
+  }
+}

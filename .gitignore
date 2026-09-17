@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+
+# 前端
+web/node_modules/
+web/dist/
+web/.vite/
+npm-debug.log*
+yarn-error.log*
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 运行时产物
+*.log
+/tmp/
+
+# 打包产物（build_app.py 生成）
+/build/
+/dist/
+
+# 本地工具目录：临时脚本、界面截图、命令行代理缓存
+# （.workbuddy/memory 是本地工作笔记，含绝对路径，不入库）
+.workbuddy/
+.v2c/
+.video_agent/
+.zcode/
