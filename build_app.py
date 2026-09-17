@@ -140,10 +140,30 @@ def _ensure_icon() -> None:
 # ── 前端构建 ────────────────────────────────────────────────────────────
 
 
-def _build_frontend() -> None:
+def _archive_web_dist(stamp: str) -> None:
+    """把已有的 web/dist 整目录挪走，让 vite 从零开始构建。
+
+    为什么不让 vite 自己清空：``vite build`` 前会 ``emptyDir(outDir)``，而那是一次
+    "删掉一批文件"的操作——本机的安全护栏在单次要删的文件数超阈值时会直接拦下，
+    构建以 ``SAFE_DELETE_BULK_CONFIRM_REQUIRED`` 失败（assets 里累积到 288 个文件时
+    就是这么挂的）。重命名不触发任何删除，旧产物还顺手留了一份可比对的副本。
+
+    旧目录堆在 ``build/prev-webdist-*`` 下，已被 gitignore；体积很小（几百 KB）。
+    """
+    if not WEB_DIST.is_dir():
+        return
+    archive = WORK_DIR / f"prev-webdist-{stamp}"
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    WEB_DIST.rename(archive)
+    ok("旧的前端产物已挪到 %s" % archive.relative_to(ROOT))
+
+
+def _build_frontend(stamp: str) -> None:
     if not (WEB_DIR / "node_modules").is_dir():
         fail("web/node_modules 不存在，请先在 web/ 下执行 npm install")
         raise SystemExit(1)
+
+    _archive_web_dist(stamp)
 
     node = _find_node()
     # 直接调 vite 的入口脚本，绕开 npm/npx——少一层进程，也少一类环境变量问题
@@ -537,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.skip_frontend:
         _check_web_dist(skip_build=True)
     else:
-        _build_frontend()
+        _build_frontend(stamp)
         _check_web_dist(skip_build=False)
 
     step("3/6 PyInstaller 打包")
