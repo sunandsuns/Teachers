@@ -118,7 +118,7 @@ export default function ModelSettingsPanel({
             label="模型名（可留空）"
             value={settings.model}
             placeholder="留空则自动挑选"
-            hint="不确定填什么就留空，程序会从该地址可用的模型里挑一个能出字的。"
+            hint="留空时程序会从该地址可用的模型里挑一个能出字的，坏了会自动换下一个；填了就只用这一个——它不可用时会退回本地检索，不会悄悄换成别的模型。"
             onChange={value => change({ model: value })}
           />
 

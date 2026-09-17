@@ -128,6 +128,10 @@ class LLMConfig:
     model: str = ""
     candidates: tuple[str, ...] = ()
     auto_select: bool = True
+    #: 只许用 ``model`` 指定的那一个模型，失败就直接降级，不轮换到别的模型。
+    #: 用于「用户自己填了模型名」的场景：他点名要 A，结果却在 B 上花了钱拿到
+    #: 一份看不出区别的答案，是比"这次没答上来"更糟的意外。
+    pin_model: bool = False
     timeout: float = 60.0
     probe_timeout: float = 12.0
     #: 一次「探活 + 生成」的总时间预算（秒）。
@@ -156,6 +160,10 @@ class LLMConfig:
 
         ``candidates`` 会被清空：那是默认端点上的模型名，换到别的端点毫无意义，
         留着只会让探活去试一批不存在的模型，白白吃掉时间预算。
+
+        填了 ``model`` 就自动锁定它（:attr:`pin_model`）——这里只用于用户自填的
+        端点，而"填了模型名"就是这个人的选择，不该由调用方额外声明一次
+        （声明就会被忘记）。
         """
         return replace(
             self,
@@ -163,6 +171,7 @@ class LLMConfig:
             api_key=api_key.strip(),
             model=model.strip(),
             candidates=(),
+            pin_model=bool(model.strip()),
         )
 
     def chat_url(self) -> str:
@@ -180,7 +189,14 @@ class LLMConfig:
 
         顺序：显式 ``model`` → 显式 ``candidates`` → 端点暴露的 ``available``
         （按 ``MODEL_PREFERENCE`` 排序，未命中的排在后面）。
+
+        ``pin_model`` 为真时只有 ``model`` 一项——连 ``MODEL_DENYLIST`` 也不拦：
+        名单上的是"在本项目默认端点上不好使"的模型，用户自己填的端点未必如此，
+        他既然点名了就按他说的试。
         """
+        if self.pin_model and self.model:
+            return (self.model,)
+
         result: dict[str, None] = {}
         if self.model:
             result.setdefault(self.model, None)

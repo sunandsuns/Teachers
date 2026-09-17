@@ -135,6 +135,28 @@ class TestWithEndpoint:
         base = LLMConfig(base_url="https://default/v1")
         assert base.with_endpoint("  ", "sk-mine").base_url == "https://default/v1"
 
+    def test_named_model_pins_the_endpoint_to_it(self):
+        """用户填了模型名 → 只许用这一个，失败就降级，不换到别的模型。
+
+        这里刻意不给 `with_endpoint` 任何额外的"请锁定"参数：填了名字就是选择，
+        由派生逻辑自己判定，省得调用方漏传。
+        """
+        derived = LLMConfig(model="m0").with_endpoint(
+            "https://mine/v1", "sk-mine", "mx"
+        )
+        assert derived.pin_model is True
+        assert derived.ordered_candidates(("a", "b")) == ("mx",)
+
+    def test_blank_model_keeps_auto_rotation(self):
+        """留空 = 自动挑，这时"坏了换下一个"是想要的特性，不是意外。"""
+        derived = LLMConfig().with_endpoint("https://mine/v1", "sk-mine")
+        assert derived.pin_model is False
+
+    def test_whitespace_model_does_not_pin(self):
+        derived = LLMConfig().with_endpoint("https://mine/v1", "sk-mine", "   ")
+        assert derived.pin_model is False
+        assert derived.model == ""
+
 
 # ── 会话选择 ────────────────────────────────────────────────────────────
 

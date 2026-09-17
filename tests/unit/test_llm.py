@@ -137,6 +137,28 @@ class TestOrderedCandidates:
         config = LLMConfig(model="a", candidates=("b", "a"))
         assert config.ordered_candidates(("a", "b")) == ("a", "b")
 
+    def test_pinned_model_ignores_every_other_candidate(self):
+        """用户点名了模型就只试它。
+
+        否则会发生一件比"这次没答上来"更糟的事：他指定了 A，程序在 A 失败后
+        换到 B 上花钱，给出的答案从界面上看不出换了模型。
+        """
+        config = LLMConfig(model="mine", candidates=("other",), pin_model=True)
+        assert config.ordered_candidates(("a", "b", "c")) == ("mine",)
+
+    def test_pinned_model_survives_the_denylist(self):
+        """denylist 记的是"在本项目默认端点上不好使"的模型。
+
+        用户自己填的端点未必如此，他既然点名了就按他说的试，不要再替他筛一遍。
+        """
+        config = LLMConfig(model="kilo-auto", pin_model=True)
+        assert config.ordered_candidates(()) == ("kilo-auto",)
+
+    def test_pin_without_a_model_changes_nothing(self):
+        """没点名就没得锁——此时仍按自动挑选的顺序走。"""
+        config = LLMConfig(model="", pin_model=True)
+        assert config.ordered_candidates(("a",)) == ("a",)
+
 
 # ── 提示词层 ────────────────────────────────────────────────────────────
 

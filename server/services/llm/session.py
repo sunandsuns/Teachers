@@ -119,6 +119,8 @@ class EndpointRegistry:
 
         # 运行参数（超时、预算、token 上限）沿用默认配置：它们描述的是
         # "这个应用愿意等多久"，与用户填的地址无关。
+        # 用户点名了模型就锁定它（见 LLMConfig.pin_model）：不能让他指定的 A 失败后，
+        # 悄悄在 B 上花钱给出一个看不出区别的答案。
         config = get_router().config.with_endpoint(
             override.base_url, override.api_key, override.model
         )

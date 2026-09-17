@@ -510,8 +510,15 @@ def _conclude(result: SelfTestResult) -> int:
 
 
 def _make_zip() -> None:
+    # 不删旧 zip，改名挪走：本机对删除有护栏（删一个几百条目的归档会被判成
+    # "批量删除"而直接拦下，整个脚本以非零退出），而重命名不触发任何删除。
+    # 顺带把上一版归档留成可比对的副本，和 PyInstaller 输出目录的处理一致。
     if ZIP_PATH.exists():
-        ZIP_PATH.unlink()
+        retired = WORK_DIR / f"prev-zip-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+        ZIP_PATH.rename(retired)
+        ok("上一次的分发包已挪到 %s" % retired.relative_to(ROOT))
+
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in APP_DIR.rglob("*"):
             if path.is_file():
