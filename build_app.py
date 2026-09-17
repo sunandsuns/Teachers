@@ -277,7 +277,16 @@ def _copy_corpus() -> int:
             continue
         # dirs_exist_ok：直接覆盖而不是先删再拷。删一个上千文件的目录既慢，
         # 又会在中途失败时留下半个语料——覆盖写没有这个问题。
-        shutil.copytree(source, target / name, dirs_exist_ok=True)
+        #
+        # ignore：语料里有几个目录本身是 clone 来的 git 仓库（MaoZeDongAnthology、
+        # WangYangMing），直接拷会连 .git 一起带走——几 MB 的对象库对检索毫无用处，
+        # 还等于把别人的仓库历史塞进了分发包装。
+        shutil.copytree(
+            source,
+            target / name,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".git"),
+        )
         copied += sum(1 for _ in (target / name).rglob("*") if _.is_file())
 
     ok("语料已复制：%d 个文件 → %s" % (copied, target))
