@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .history import get_history_store
 from .llm import EndpointOverride, generate_answer_with_model, llm_status, probe_endpoint
 from .llm import resolve_session
 from .retriever import ensure_retriever
@@ -35,6 +36,8 @@ class Answer:
     answer: str
     retrieved: int
     model: Optional[str]
+    #: 落库后的记录 id；没记上（库不可用等）为 None
+    history_id: Optional[int] = None
 
     @property
     def llm_used(self) -> bool:
@@ -51,6 +54,10 @@ def ask(question: str, *, top_k: int = 5, override: Optional[EndpointOverride] =
 
     ``override`` 非空时改用请求方填的端点；该端点的可用性不影响默认配置，
     反之亦然（各自的路由器与冷却表相互独立）。
+
+    回答会顺手存进历史记录。**存不进去不影响返回**：由 ``HistoryStore`` 内部
+    吞掉失败，这里只如实带上 ``history_id``（没存上就是 None）。
+    一次已经成功的求教，不该因为"附带的记账动作"失败而变成失败。
     """
     results = ensure_retriever().search(question, top_k=top_k)
     session = resolve_session(override)
@@ -61,11 +68,18 @@ def ask(question: str, *, top_k: int = 5, override: Optional[EndpointOverride] =
         router=session.router,
         key_hint=CUSTOM_KEY_HINT if session.custom else "LLM_API_KEY",
     )
+    record_id = get_history_store().save(
+        question,
+        answer,
+        model=model,
+        retrieved_count=len(results),
+    )
     return Answer(
         question=question,
         answer=answer,
         retrieved=len(results),
         model=model,
+        history_id=record_id,
     )
 
 

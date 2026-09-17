@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, type AskResponse } from '../api/client'
 import Markdown from '../components/Markdown'
 import ModelSettingsPanel from '../components/ModelSettingsPanel'
@@ -21,7 +22,10 @@ const SUGGESTIONS = [
 ]
 
 export default function Advisor() {
-  const [question, setQuestion] = useState('')
+  // 支持 ?q= 预填：「回响」页的「再问一次」就是这么跳过来的，
+  // 让人能接着旧问题追问，而不是重新打一遍字。
+  const [params] = useSearchParams()
+  const [question, setQuestion] = useState(() => params.get('q') ?? '')
   const [history, setHistory] = useState<Exchange[]>([])
   const [asking, setAsking] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -102,6 +106,13 @@ export default function Advisor() {
                     ? `AI 深度解读 · ${ex.answer.model}`
                     : '本地检索模式'}
                 </span>
+                {/* 记录已自动存下，这里给一个去处——不然用户根本不知道有「回响」 */}
+                <Link
+                  to="/history"
+                  className="ml-auto rounded transition-colors hover:text-cinnabar-600"
+                >
+                  已存入回响
+                </Link>
               </div>
             </div>
           </div>

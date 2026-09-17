@@ -19,9 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from .paths import resolve_web_dist, should_serve_frontend
 from .routers.ask import router as ask_router
 from .routers.books import router as books_router
+from .routers.history import router as history_router
 from .routers.insight import router as insight_router
 from .routers.search import router as search_router
 from .services.content_loader import get_loader
+from .services.history import get_history_store
 from .services.retriever import ensure_retriever, get_retriever
 from .web_ui import mount_frontend
 
@@ -33,9 +35,17 @@ async def lifespan(app: FastAPI):
     幂等：索引已存在（例如测试会话中已预建）则不重复构建。
     这里预建只是把冷启动的一次性开销提前，即便跳过了，首个请求也会惰性补上
     （见 ``retriever.ensure_retriever``）。
+
+    顺带碰一下历史记录存储：**把建库动作提到启动时**。它本来是惰性的，但那样
+    用户问第一句话时会多等一次建表；更重要的是，万一程序目录不可写而落到了
+    用户目录兜底，启动日志里就会写清楚库最终落在哪，排查时不用猜。
     """
     loader = get_loader()
     ensure_retriever(loader)
+    store = get_history_store()
+    print("[人生导师] 历史记录库：%s（可用：%s）" % (store.db_path, store.available))
+    if not store.available:
+        print("[人生导师] 历史记录暂不可用：%s" % store.error)
     yield
 
 
@@ -59,6 +69,7 @@ app.include_router(books_router)
 app.include_router(search_router)
 app.include_router(ask_router)
 app.include_router(insight_router)
+app.include_router(history_router)
 
 
 @app.get("/api/health")
@@ -101,6 +112,7 @@ else:
                 "search": "/api/search?q=关键词",
                 "ask": "POST /api/ask",
                 "insight": "/api/insight/daily",
+                "history": "/api/history",
                 "docs": "/docs",
             },
         }

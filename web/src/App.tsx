@@ -2,6 +2,7 @@ import { Route, Routes, NavLink } from 'react-router-dom'
 import Library from './pages/Library'
 import Reader from './pages/Reader'
 import Advisor from './pages/Advisor'
+import History from './pages/History'
 import Insights from './pages/Insights'
 import Search from './pages/Search'
 
@@ -9,6 +10,8 @@ const NAV_ITEMS = [
   { to: '/', label: '书架', end: true },
   { to: '/search', label: '寻章' },
   { to: '/ask', label: '求教' },
+  // 「回响」紧跟「求教」：它存的就是求教留下的记录，两块内容是一体的
+  { to: '/history', label: '回响' },
   { to: '/insights', label: '感悟' },
 ]
 
@@ -51,6 +54,7 @@ export default function App() {
           <Route path="/books/:bookId" element={<Reader />} />
           <Route path="/search" element={<Search />} />
           <Route path="/ask" element={<Advisor />} />
+          <Route path="/history" element={<History />} />
           <Route path="/insights" element={<Insights />} />
         </Routes>
       </main>

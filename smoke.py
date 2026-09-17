@@ -2,8 +2,8 @@
 """冒烟验证：run.py 默认端口(后端 8000 / 前端 5173) 的前后端联调链路。
 
 覆盖：健康检查与语料规模 → 前端页面可编译 → vite 代理转发 →
-寻章检索命中古籍 → 原典分块读取 → 求教（含 LLM 状态）→ 感悟稳定性 →
-阅读页章节链路与感悟页筛选 → 错误路径。
+寻章检索命中古籍 → 原典分块读取 → 求教（含 LLM 状态）→ 回响（历史记录）→
+感悟稳定性 → 阅读页章节链路与感悟页筛选 → 错误路径。
 
 所有请求都走 vite 代理（``localhost:5173``），即浏览器实际使用的那条链路；
 后端 API 直连只用于 A 段，以便区分"后端故障"与"代理故障"。
@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 FRONT = "http://localhost:5173"
 BACK = "http://127.0.0.1:8000"
@@ -195,7 +196,52 @@ def main():
     check("主题数 == 8", len(t["themes"]) == 8, t["themes"])
 
     print()
-    print("=== F. 阅读页章节链路 ===")
+    print("=== F. 回响（历史记录）===")
+    # 这一段验的是"求教 → 自动落库 → 可查可删"这条链，以及数据库确实是
+    # 应用自己建出来的（用户下载后不需要做任何初始化）。
+    # 注意：本段只删自己造的那一条，不碰用户已有的历史记录。
+    hist = json.loads(get(FRONT + "/api/history/status"))
+    check("历史库可用（自动创建，无需初始化）", hist["available"] is True,
+          hist.get("error") or hist["db_path"])
+    check("保留期半个月", hist["retention_days"] == 15, "%s 天" % hist["retention_days"])
+    check("库文件确实落在磁盘上", Path(hist["db_path"]).is_file(), hist["db_path"])
+    check("下次自动清理时间可查", bool(hist["next_purge_at"]), hist["next_purge_at"])
+
+    listing = json.loads(get(FRONT + "/api/history?limit=5"))
+    check("刚才的求教已自动存入", listing["total"] >= 1, "共 %d 条" % listing["total"])
+    check("列表项字段齐备",
+          all({"id", "question", "answer", "model", "llm_used", "retrieved_count",
+               "created_at", "created_ts"} <= set(x) for x in listing["items"]))
+    check("记下的就是刚才问的那个问题",
+          any(x["question"] == "工作中遇到小人怎么办？" for x in listing["items"]),
+          [x["question"] for x in listing["items"]][:3])
+    stamps = [x["created_ts"] for x in listing["items"]]
+    check("列表按时间倒序", stamps == sorted(stamps, reverse=True), stamps[:3])
+
+    # 自己造一条再删掉：既验了删除链路，又不会动到用户原有的记录
+    probe = post("/api/ask", {"question": "冒烟自检：这条用完就删", "top_k": 1})
+    check("求教回传历史编号", isinstance(probe.get("history_id"), int), probe.get("history_id"))
+
+    def delete(path):
+        request = urllib.request.Request(FRONT + path, method="DELETE")
+        try:
+            with opener.open(request, timeout=20) as response:
+                return response.status, json.loads(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, None
+
+    code, body = delete("/api/history/%d" % probe["history_id"])
+    check("单条可以删除", code == 200 and body == {"deleted": 1}, body)
+
+    code, _ = delete("/api/history/%d" % probe["history_id"])
+    check("重复删除返回 404", code == 404, code)
+
+    after = json.loads(get(FRONT + "/api/history?limit=5"))
+    check("删除后总数回退", after["total"] == listing["total"],
+          "%d → %d" % (listing["total"], after["total"]))
+
+    print()
+    print("=== G. 阅读页章节链路 ===")
     # 阅读页是三段式：书目详情 → 左栏目录 → 右侧正文。前两段原先没有覆盖。
     detail = json.loads(get(FRONT + "/api/books/01"))
     check("书目详情含章节数与原典标记",
@@ -225,7 +271,7 @@ def main():
           "%s｜%d 字" % (body["title"], len(body["content"])))
 
     print()
-    print("=== G. 感悟页筛选 ===")
+    print("=== H. 感悟页筛选 ===")
     theme = t["themes"][0]
     by_theme = json.loads(
         get(FRONT + "/api/insight/by-theme/" + urllib.parse.quote(theme))
@@ -246,7 +292,7 @@ def main():
     check("随机感悟返回", bool(rand["text"]), rand["text"][:20])
 
     print()
-    print("=== H. 错误路径 ===")
+    print("=== I. 错误路径 ===")
     # 未知 id 必须是干净 404；返回 500 或（更糟）回退成前端 HTML 都算故障：
     # 前端 fetch 会拿到一段 HTML 再报 JSON 解析错误，排查起来非常痛苦。
     for path in ("/api/books/nope", "/api/books/01/chapters/nope", "/api/insight/999999"):

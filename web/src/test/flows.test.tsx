@@ -16,6 +16,10 @@ vi.mock('../api/client', () => ({
     ask: vi.fn(),
     probeModel: vi.fn(),
     askStatus: vi.fn(),
+    listHistory: vi.fn(),
+    historyStatus: vi.fn(),
+    deleteHistory: vi.fn(),
+    clearHistory: vi.fn(),
     dailyInsight: vi.fn(),
     randomInsight: vi.fn(),
     insightThemes: vi.fn(),
@@ -71,6 +75,7 @@ describe('问答流程', () => {
       retrieved_count: 5,
       llm_used: false,
       model: null,
+      history_id: 1,
     })
     window.history.replaceState({}, '', '/ask')
   })
@@ -92,14 +97,40 @@ describe('问答流程', () => {
     )
     expect(screen.getByText('引用 5 段经典')).toBeTruthy()
     expect(screen.getByText('本地检索模式')).toBeTruthy()
+    // 回答会自动存进「回响」，界面上得留一个去处的入口
+    expect(screen.getByRole('link', { name: '已存入回响' })).toBeTruthy()
+  })
+
+  it('带 q 参数进来时预填问题（「回响」的再问一次）', async () => {
+    render(
+      <MemoryRouter initialEntries={['/ask?q=迷茫时该怎么办']}>
+        <App />
+      </MemoryRouter>,
+    )
+
+    const input = (await screen.findByPlaceholderText(
+      '输入你的问题或困境…',
+    )) as HTMLInputElement
+    expect(input.value).toBe('迷茫时该怎么办')
   })
 })
 
-/** 集成测试：导航栏三个入口可切换。 */
+/** 集成测试：导航栏五个入口可切换。 */
 describe('导航', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockedApi.listBooks.mockResolvedValue([])
+    mockedApi.listHistory.mockResolvedValue({ available: true, error: '', total: 0, items: [] })
+    mockedApi.historyStatus.mockResolvedValue({
+      available: true,
+      error: '',
+      db_path: 'C:/data/history.db',
+      total: 0,
+      retention_days: 15,
+      last_purge_at: null,
+      next_purge_at: null,
+      size_bytes: 0,
+    })
     mockedApi.dailyInsight.mockResolvedValue({
       id: 0, text: 't', interpretation: 'i', source: 's', book_id: '01', themes: ['修心'],
     })
@@ -110,7 +141,7 @@ describe('导航', () => {
     window.history.replaceState({}, '', '/')
   })
 
-  it('寻章、求教与感悟入口渲染对应页面', async () => {
+  it('寻章、求教、回响与感悟入口渲染对应页面', async () => {
     render(<MemoryRouter><App /></MemoryRouter>)
     const user = userEvent.setup()
 
@@ -119,6 +150,9 @@ describe('导航', () => {
 
     await user.click(screen.getByText('求教'))
     await waitFor(() => expect(screen.getByPlaceholderText('输入你的问题或困境…')).toBeTruthy())
+
+    await user.click(screen.getByText('回响'))
+    await waitFor(() => expect(screen.getByText(/还没有求教记录/)).toBeTruthy())
 
     await user.click(screen.getByText('感悟'))
     await waitFor(() => expect(screen.getByText('按主题浏览')).toBeTruthy())

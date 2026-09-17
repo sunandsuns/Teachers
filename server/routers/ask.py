@@ -47,6 +47,9 @@ class AskResponse(BaseModel):
     retrieved_count: int
     llm_used: bool
     model: Optional[str] = Field(None, description="实际使用的模型；未走 LLM 时为 null")
+    history_id: Optional[int] = Field(
+        None, description="这条问答在历史记录里的 id；未记上（库不可用等）为 null"
+    )
 
 
 class AskStatusResponse(BaseModel):
@@ -79,6 +82,9 @@ def ask(request: AskRequest):
     请求里带 ``llm`` 时改用用户自填的端点（Key 只在本进程内存中存活，
     不落盘、不回显）；不带则走 ``.env`` 里的默认模型。
 
+    这次问答会存进历史记录（界面的「回响」页），``history_id`` 是它的编号。
+    历史记录只保留最近半个月，自动清理。
+
     刻意写成同步函数：内部要调用阻塞的模型 HTTP 请求（最长受
     ``LLM_TOTAL_BUDGET`` 约束），若声明为 ``async def`` 会把事件循环独占几十秒，
     期间健康检查、书架、感悟等所有并发请求一并卡死。同步函数由 FastAPI
@@ -95,6 +101,7 @@ def ask(request: AskRequest):
         retrieved_count=result.retrieved,
         llm_used=result.llm_used,
         model=result.model,
+        history_id=result.history_id,
     )
 
 

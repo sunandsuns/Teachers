@@ -388,6 +388,30 @@ class SelfTestResult(NamedTuple):
     failures: tuple[str, ...]
 
 
+def _retire_selftest_data() -> None:
+    """把自检期间产生的数据目录挪出产物。
+
+    自检会让 exe 真的跑起来，于是它就在程序目录旁边把历史记录数据库建了出来
+    （这正是"下载即可用"要验的行为），还写进了一条自检用的求教记录。
+    这些东西**不能跟着分发包走**：用户打开「回响」看到一条别人的测试记录，
+    比看到空列表更莫名其妙。
+
+    同理不用删除：改名挪进 ``build/``——本机对批量删除有护栏，而且留着便于排查。
+    """
+    data = APP_DIR / "data"
+    if not data.is_dir():
+        return
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = WORK_DIR / ("prev-selftest-data-" + stamp)
+    suffix = 0
+    while target.exists():
+        suffix += 1
+        target = WORK_DIR / ("prev-selftest-data-%s-%d" % (stamp, suffix))
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    data.rename(target)
+    ok("自检产生数据目录已挪到 %s" % target.relative_to(ROOT))
+
+
 def _selftest(run_ask: bool = True) -> SelfTestResult:
     """启动打包好的 exe，逐项验证它真的能用。
 
@@ -398,6 +422,10 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
     - ``.env`` 读不到 → AI 问答悄悄降级
     - 前端产物没进包 → 窗口一片空白
     - jieba 词典没进包 → 检索悄悄变差
+    - sqlite3 没打进包 / 程序目录不可写 → 历史记录一直空的
+
+    自检结束后会把 exe 建出来的 ``data/``（历史记录库）挪出产物，
+    免得那条"自检用的求教记录"跟着分发包走到用户手里。
     """
     exe = APP_DIR / f"{APP_NAME}.exe"
     base = "http://127.0.0.1:%d" % SELFTEST_PORT
@@ -458,6 +486,16 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
         check(".env 被读取（AI 问答已启用）", ask_status["enabled"] is True,
               "base_url=%s" % ask_status["base_url"])
 
+        # 历史记录：下载下来直接就能用——库要自己建、自己落位，不需要任何初始化
+        history = json.loads(_http(base + "/api/history/status")[2])
+        check("历史记录库自动创建", history["available"] is True,
+              history.get("error") or history["db_path"])
+        check("历史库落在程序目录下（拷贝即迁移）",
+              Path(history["db_path"]).resolve().parent == (APP_DIR / "data").resolve(),
+              history["db_path"])
+        check("保留期半个月", history["retention_days"] == 15,
+              "%s 天" % history["retention_days"])
+
         if run_ask and ask_status["enabled"]:
             started = time.time()
             try:
@@ -472,6 +510,10 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
                 # 这一项依赖第三方端点——它挂了不代表产物有问题，单独归类
                 check("内置 Key 真的调通了模型", answer["llm_used"] is True,
                       "model=%s" % (answer["model"] or "(本地检索降级)"), external=True)
+                # 求教要顺手记账（无论走没走模型）
+                after = json.loads(_http(base + "/api/history?limit=5")[2])
+                check("求教已自动记入历史", after["total"] >= 1 and bool(after["items"]),
+                      "共 %s 条" % after["total"])
             except Exception as error:  # noqa: BLE001 — 自检不该因单项异常中断
                 check("求教接口可用", False, "%s: %s" % (type(error).__name__, error))
     finally:
@@ -480,6 +522,7 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
             process.wait(timeout=15)
         except subprocess.TimeoutExpired:
             process.kill()
+        _retire_selftest_data()
 
     failures = tuple(c[0] for c in checks if not c[1])
     external = tuple(c[0] for c in checks if not c[1] and c[3])

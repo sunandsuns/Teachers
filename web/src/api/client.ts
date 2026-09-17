@@ -9,6 +9,9 @@ import type {
   BookSummary,
   ChapterDetail,
   ChapterSummary,
+  DeleteResult,
+  HistoryListResponse,
+  HistoryStatus,
   InsightItem,
   InsightListResponse,
   LLMEndpoint,
@@ -72,6 +75,18 @@ export const api = {
     }),
 
   askStatus: () => request<AskStatus>('/ask/status'),
+
+  // 「回响」——求教历史的读写。记录由后端在每次求教时自动存入。
+  listHistory: (limit = 20, offset = 0) =>
+    request<HistoryListResponse>(`/history?limit=${limit}&offset=${offset}`),
+
+  /** 存储概况。打开页面时调它，后端顺带做一次机会式清理。 */
+  historyStatus: () => request<HistoryStatus>('/history/status'),
+
+  deleteHistory: (id: number) =>
+    request<DeleteResult>(`/history/${id}`, { method: 'DELETE' }),
+
+  clearHistory: () => request<DeleteResult>('/history', { method: 'DELETE' }),
 
   dailyInsight: (day?: string) =>
     request<InsightItem>(`/insight/daily${day ? `?day=${day}` : ''}`),

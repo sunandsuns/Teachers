@@ -115,6 +115,55 @@ class TestServeFrontendToggle:
         assert paths.should_serve_frontend() is True
 
 
+class TestResolveDataDir:
+    """运行期数据目录（历史记录数据库的落点）。
+
+    这也是"静默故障"的候选：目录选错或不建出来，症状是"历史记录一直空的"，
+    界面上看不出任何异常。
+    """
+
+    def test_explicit_env_var_wins(self, tmp_path, monkeypatch):
+        custom = tmp_path / "custom"
+        monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, str(custom))
+
+        assert paths.resolve_data_dir() == custom.resolve()
+        # 顺带建出来，存储层不必再管"目录在不在"
+        assert custom.is_dir()
+
+    def test_source_mode_uses_repo_root(self, monkeypatch):
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+        monkeypatch.setattr(paths, "is_frozen", lambda: False)
+
+        assert paths.resolve_data_dir() == (paths.resolve_root() / paths.DATA_DIRNAME).resolve()
+
+    def test_frozen_mode_sits_next_to_exe(self, frozen_layout, monkeypatch):
+        """放在程序自己那一份里，好处是"拷贝即迁移"：搬走文件夹，记录跟着走。"""
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+        app_dir, _corpus = frozen_layout
+
+        assert paths.resolve_data_dir() == (app_dir / paths.DATA_DIRNAME).resolve()
+
+    def test_falls_back_to_user_dir_when_program_dir_is_read_only(
+        self, frozen_layout, monkeypatch, tmp_path
+    ):
+        """程序目录不可写（放进 Program Files、只读介质）时改用用户目录，
+        而不是让历史记录功能直接消失。"""
+        app_dir, _corpus = frozen_layout
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+        monkeypatch.setattr(paths, "_ensure_writable", lambda path: path != app_dir / paths.DATA_DIRNAME)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
+        assert paths.resolve_data_dir() == (tmp_path / "local" / paths.USER_DATA_DIRNAME).resolve()
+
+    def test_returns_first_candidate_when_nothing_is_writable(self, tmp_path, monkeypatch):
+        """全都写不了也**不抛异常**：返回首选让存储层去报"不可用"，
+        免得历史记录把书架和求教一起拖下水。"""
+        monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, str(tmp_path / "hopeless"))
+        monkeypatch.setattr(paths, "_ensure_writable", lambda path: False)
+
+        assert paths.resolve_data_dir() == (tmp_path / "hopeless").resolve()
+
+
 class TestResolveWebDist:
     def test_explicit_override_wins(self, tmp_path, monkeypatch):
         dist = tmp_path / "dist"

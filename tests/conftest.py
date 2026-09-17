@@ -12,6 +12,8 @@
 
 夹具分层
 --------------------------------------------------------------------------
+    isolate_llm      (autouse) 关掉一切真实模型调用
+    isolate_history  (autouse) 把历史记录数据库指向临时目录
     loader  (session)  全量内容，只读
     index   (session)  全量索引，依赖 loader
     client  (function) 复用了 session 级索引的 HTTP 客户端
@@ -34,10 +36,30 @@ os.environ["RSDS_SERVE_FRONTEND"] = "0"
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server.main as main  # noqa: E402
+from server import paths  # noqa: E402
 from server.services import content_loader  # noqa: E402
+from server.services import history as history_module  # noqa: E402
 from server.services import retriever as retriever_module  # noqa: E402
 from server.services.llm import router as llm_router_module  # noqa: E402
 from server.services.llm import session as llm_session_module  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolate_history(tmp_path, monkeypatch):
+    """隔离历史记录：每个用例一个全新的数据目录。
+
+    历史记录是**会落盘**的（这也是这个功能的重点），若都写进仓库根目录下的
+    ``data/``，用例之间会互相看到对方写进去的记录，而且跑到哪儿都会在源码树里
+    留一个数据库文件。指向 ``tmp_path`` 之后，每个用例都是干净的库，用完随
+    pytest 的临时目录一起回收。
+
+    单例必须一并重置：它在构造时就把当时的路径记下来了，不重置的话第一个
+    用例的库会一直用到底。
+    """
+    monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, str(tmp_path / "data"))
+    history_module.reset_history_store()
+    yield
+    history_module.reset_history_store()
 
 
 @pytest.fixture(autouse=True)

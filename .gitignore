@@ -31,6 +31,10 @@ Thumbs.db
 *.log
 /tmp/
 
+# 源码态运行产生的数据目录（历史记录数据库）。打包态的 data/ 在 dist/ 里，
+# 已由下面的 /dist/ 覆盖
+/data/
+
 # 打包产物（build_app.py 生成）
 /build/
 /dist/

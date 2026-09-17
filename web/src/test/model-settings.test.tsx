@@ -22,6 +22,10 @@ vi.mock('../api/client', () => ({
     ask: vi.fn(),
     probeModel: vi.fn(),
     askStatus: vi.fn(),
+    listHistory: vi.fn(),
+    historyStatus: vi.fn(),
+    deleteHistory: vi.fn(),
+    clearHistory: vi.fn(),
     dailyInsight: vi.fn(),
     randomInsight: vi.fn(),
     insightThemes: vi.fn(),
@@ -38,6 +42,7 @@ const ANSWER = {
   retrieved_count: 3,
   llm_used: true,
   model: 'some-model',
+  history_id: 1,
 }
 
 function renderAskPage() {

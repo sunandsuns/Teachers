@@ -15,6 +15,7 @@
         .env                模型配置，放在 exe 旁边便于用户替换
         corpus/             语料，用户可自行增补
             理解笔记/ books/ MaoZeDongAnthology/ WangYangMing/
+        data/               历史记录数据库（**首次运行时自动创建**，不在包里）
         启动说明.txt
 
 为什么语料不进包
@@ -60,8 +61,13 @@ hiddenimports = [
     # 纯 API 调试时可能关掉前端托管，这条路径也要能用
     "server.routers.ask",
     "server.routers.books",
+    "server.routers.history",
     "server.routers.insight",
     "server.routers.search",
+    # 历史记录用标准库自带的 sqlite3（正是"下载即可用、无需另装数据库"的原因）。
+    # 静态分析本来就能看到它，这里显式列出来是防"以后改成条件导入"：
+    # 漏掉的表现是「回响」永远空的，而界面不会报错。
+    "sqlite3",
 ]
 # 窗口层：Windows 上 pywebview 走 WebView2，宿主是 .NET WinForms（pythonnet）
 hiddenimports += collect_submodules("webview")

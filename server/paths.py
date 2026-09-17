@@ -7,7 +7,8 @@
 是**静默故障**：``.env`` 读不到表现为"AI 问答悄悄降级"，语料找不到表现为
 "书架空空如也"，都不报错。
 
-因此这里把「根目录在哪」「前端产物在哪」收拢为唯一入口，其余模块只消费结果。
+因此这里把「根目录在哪」「前端产物在哪」「可写的数据目录在哪」收拢为唯一入口，
+其余模块只消费结果。
 """
 
 from __future__ import annotations
@@ -21,12 +22,19 @@ from typing import Optional
 NOTES_DIRNAME = "理解笔记"
 BOOKS_DIRNAME = "books"
 
+#: 运行期数据目录名（历史记录数据库所在）
+DATA_DIRNAME = "data"
+#: 用户级数据目录名：程序目录不可写时的兜底落点
+USER_DATA_DIRNAME = "人生导师"
+
 #: 显式指定语料根目录，优先级最高
 ROOT_ENV_VAR = "RSDS_ROOT"
 #: 显式指定前端构建产物目录
 DIST_ENV_VAR = "RSDS_WEB_DIST"
 #: 显式指定配置文件位置
 ENV_FILE_VAR = "RSDS_ENV_FILE"
+#: 显式指定运行期数据目录（数据库、缓存等）；测试靠它把数据写到临时目录
+DATA_DIR_ENV_VAR = "RSDS_DATA_DIR"
 #: 设为 0/false/no/off 时，即使 web/dist 存在也不由后端托管（纯 API 调试用）
 SERVE_ENV_VAR = "RSDS_SERVE_FRONTEND"
 
@@ -97,6 +105,62 @@ def resolve_web_dist() -> Optional[Path]:
         if (candidate / "index.html").is_file():
             return candidate.resolve()
     return None
+
+
+def _user_data_dir() -> Path:
+    """用户级数据目录：程序目录不可写（如放进 Program Files）时的落点。"""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if base:
+        return Path(base) / USER_DATA_DIRNAME
+    return Path.home() / "." + "renshengdaoshi"
+
+
+def _ensure_writable(path: Path) -> bool:
+    """确保目录存在且可写。只做"建目录 + 权限探测"，不写探针文件——
+    探针文件用完得删，而本项目所在环境对删除动作敏感（见 build_app.py 的说明）。"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return os.access(path, os.W_OK)
+
+
+def resolve_data_dir() -> Path:
+    """定位可写的运行期数据目录（历史记录数据库就落在这里）。
+
+    解析顺序（先命中先返回）：
+
+    1. 环境变量 ``RSDS_DATA_DIR``——测试用它把数据写进临时目录；
+    2. 打包态：可执行文件同级的 ``data/``；
+    3. 源码态：``PROJECT_ROOT / "data"``；
+    4. 兜底：``%LOCALAPPDATA%/人生导师``。
+
+    前三个都指向"程序自己那一份"，好处是**拷贝即迁移**：把整个文件夹搬走，
+    历史记录跟着走。但程序目录未必可写（放在 Program Files、或从只读介质
+    运行），那种情况下写库会失败——第 4 条兜底保证功能不至于直接没有。
+
+    **会顺带把目录建出来**：这是刻意的，调用方（存储层）不需要再管"目录在不在"，
+    而目录建不出来本身就是"该换下一个候选"的判据。
+    """
+    candidates: list[Path] = []
+
+    override = os.environ.get(DATA_DIR_ENV_VAR)
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    if is_frozen():
+        candidates.append(Path(sys.executable).resolve().parent / DATA_DIRNAME)
+    else:
+        candidates.append(PROJECT_ROOT / DATA_DIRNAME)
+
+    candidates.append(_user_data_dir())
+
+    for candidate in candidates:
+        if _ensure_writable(candidate):
+            return candidate.resolve()
+    # 全军覆没：返回首选，让存储层去报"不可用"，而不是在这里抛异常
+    # ——历史记录写不进去不该连带把书架、求教一起弄挂（见 services/db.py）。
+    return candidates[0]
 
 
 def should_serve_frontend() -> bool:

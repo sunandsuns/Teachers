@@ -75,6 +75,8 @@ export interface AskResponse {
   retrieved_count: number
   llm_used: boolean
   model: string | null
+  /** 这次问答在「回响」里的编号；没能记上（数据库不可用）时为 null */
+  history_id: number | null
 }
 
 export interface AskStatus {
@@ -112,4 +114,48 @@ export interface ThemeListResponse {
 export interface InsightListResponse {
   total: number
   items: InsightItem[]
+}
+
+/** 一条求教记录（「回响」）。 */
+export interface HistoryItem {
+  id: number
+  question: string
+  answer: string
+  /** 产出回答的模型；null 表示这次是本地检索降级 */
+  model: string | null
+  llm_used: boolean
+  retrieved_count: number
+  /** 本地时区的 ISO 8601 */
+  created_at: string
+  created_ts: number
+}
+
+/**
+ * 记录列表。`available` 为 false 时列表必为空、`error` 里是原因——
+ * 数据库建不出来（程序目录只读、磁盘满）不算请求失败。
+ */
+export interface HistoryListResponse {
+  available: boolean
+  error: string
+  total: number
+  items: HistoryItem[]
+}
+
+/** 历史记录存储的概况。 */
+export interface HistoryStatus {
+  available: boolean
+  error: string
+  db_path: string
+  total: number
+  /** 保留天数。默认半个月 */
+  retention_days: number
+  last_purge_at: string | null
+  /** 下一次自动清理的时间 */
+  next_purge_at: string | null
+  size_bytes: number
+}
+
+/** 删除结果。 */
+export interface DeleteResult {
+  deleted: number
 }

@@ -35,7 +35,7 @@ from typing import Optional
 
 import uvicorn
 
-from server.paths import PROJECT_ROOT, bundle_dir, is_frozen
+from server.paths import PROJECT_ROOT, bundle_dir, is_frozen, resolve_data_dir
 
 #: 注意：``server.main`` 刻意**不在这里导入**。
 #: 它会连带导入 jieba，而 jieba 在 import 期就建立带 ``sys.stderr`` 的日志
@@ -332,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_window:
         print(f"[人生导师] 服务地址：{url}")
         print(f"[人生导师] 语料目录：{PROJECT_ROOT}")
+        # 历史记录库的位置：用户想备份或彻底删掉记录时，得知道它在哪
+        print(f"[人生导师] 数据目录：{resolve_data_dir()}")
         if log_path is not None:
             # 冻结态没有控制台，得告诉用户去哪里看地址
             print(f"[人生导师] 以上信息已写入：{log_path}")
