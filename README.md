@@ -8,7 +8,21 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 223 项）+ Vitest（前端 24 项）
+- **测试**：pytest（后端 259 项）+ Vitest（前端 24 项）
+
+---
+
+## 下载桌面版
+
+不想配环境，直接要一个能双击运行的 Windows 应用：
+
+**→ [Releases 页面](https://github.com/sunandsuns/Teachers/releases/latest) 下载 `renshengdaoshi-*.zip`**
+
+解压后双击 `人生导师.exe` 即可。**不需要装 Python、Node 或任何运行时**
+（窗口用系统自带的 WebView2 内核）。整个文件夹要一起保留——exe 离不开同级的
+`corpus/` 与 `_internal/`。详见包内的 `启动说明.txt`。
+
+想改代码、跑源码态，看下面的「快速开始」；想自己打一个包，看「打包与分发」。
 
 ---
 
