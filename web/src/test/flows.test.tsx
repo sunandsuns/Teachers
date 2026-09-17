@@ -14,6 +14,8 @@ vi.mock('../api/client', () => ({
     getSource: vi.fn(),
     search: vi.fn(),
     ask: vi.fn(),
+    probeModel: vi.fn(),
+    askStatus: vi.fn(),
     dailyInsight: vi.fn(),
     randomInsight: vi.fn(),
     insightThemes: vi.fn(),

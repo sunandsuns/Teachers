@@ -5,15 +5,16 @@
 - **开发态**：只提供 ``/api``，页面由 Vite 开发服务器（:5173）现编并代理过来；
 - **分发态**：``web/dist`` 存在时由本进程一并托管，页面与接口同源同端口，
   于是整件事可以装进一个原生窗口（见 ``desktop.py``）。
+
+本文件只做**装配**：建应用、挂中间件、注册路由、决定要不要托管前端。
+具体逻辑都在 ``services/``（业务）与 ``routers/``（HTTP 边界）里，
+前端托管的细节在 ``web_ui.py``。
 """
 
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from .paths import resolve_web_dist, should_serve_frontend
 from .routers.ask import router as ask_router
@@ -21,18 +22,20 @@ from .routers.books import router as books_router
 from .routers.insight import router as insight_router
 from .routers.search import router as search_router
 from .services.content_loader import get_loader
-from .services.retriever import build_retriever_from_loader, get_retriever
+from .services.retriever import ensure_retriever, get_retriever
+from .web_ui import mount_frontend
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时预加载内容并构建检索索引。
 
-    幂等：若索引已存在（例如测试会话中已预建），则不重复构建。
+    幂等：索引已存在（例如测试会话中已预建）则不重复构建。
+    这里预建只是把冷启动的一次性开销提前，即便跳过了，首个请求也会惰性补上
+    （见 ``retriever.ensure_retriever``）。
     """
     loader = get_loader()
-    if not get_retriever().documents:
-        build_retriever_from_loader(loader)
+    ensure_retriever(loader)
     yield
 
 
@@ -77,45 +80,14 @@ async def health():
     }
 
 
-def _mount_frontend(application: FastAPI, dist: Path) -> None:
-    """把前端构建产物挂到同一端口，实现单进程同源部署。
-
-    必须在**所有 API 路由注册完毕之后**调用：SPA 回退会吞掉一切未匹配的 GET，
-    排在前面会把 ``/api/*`` 与 FastAPI 自带的 ``/docs`` 一并截胡。
-    注意本函数要放在 ``/api/health`` 之后——Starlette 按注册顺序匹配，
-    先注册的回退路由会盖住后注册的接口。
-    """
-    assets = dist / "assets"
-    if assets.is_dir():
-        application.mount("/assets", StaticFiles(directory=assets), name="assets")
-
-    @application.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str) -> FileResponse:
-        # 未命中的 /api/* 说明是拼错的接口，应当照常 404。
-        # 若回退成 index.html，前端 fetch 会拿到一段 HTML，只报一句
-        # 难以定位的 JSON 解析错误，排查成本远高于一个干净的 404。
-        if full_path == "api" or full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="接口不存在")
-
-        # 真实文件优先（favicon、静态图等），其余一律交给前端路由。
-        # 前端用 BrowserRouter，直接刷新 /books/01 这类深链必须回退到 index.html，
-        # 否则用户一按 F5 就 404。
-        if full_path:
-            candidate = (dist / full_path).resolve()
-            if candidate.is_file() and candidate.is_relative_to(dist):
-                return FileResponse(candidate)
-        index = dist / "index.html"
-        if not index.is_file():
-            raise HTTPException(status_code=404, detail="前端产物缺失")
-        return FileResponse(index)
-
-
 #: 前端构建产物。分发态随包分发；开发态通常不存在（页面走 Vite 的 :5173）。
 #: 设 RSDS_SERVE_FRONTEND=0 可强制关闭托管（纯 API 调试）。
 FRONTEND_DIST = resolve_web_dist() if should_serve_frontend() else None
 
 if FRONTEND_DIST is not None:
-    _mount_frontend(app, FRONTEND_DIST)
+    # 注意：这一步必须在上面所有路由注册完之后。SPA 回退会吞掉一切未匹配的
+    # GET，提前挂上会把 /api/* 与 /docs 一并截胡（详见 web_ui.mount_frontend）。
+    mount_frontend(app, FRONTEND_DIST)
 else:
 
     @app.get("/")

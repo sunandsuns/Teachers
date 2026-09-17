@@ -162,6 +162,30 @@ def main():
     if not a["llm_used"]:
         print("        （上游当前不可用，已按预期降级到本地检索）")
 
+    # 自定义模型通道。这里刻意只走"不会真的连上"的两条路径：
+    # smoke 用的是真实 .env，拿真 Key 去探活会花钱，也依赖上游此刻的状态。
+    def post(path, payload, timeout=40):
+        req = urllib.request.Request(
+            FRONT + path,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        return json.loads(opener.open(req, timeout=timeout).read().decode())
+
+    p1 = post("/api/ask/probe", {"base_url": "https://example.com/v1", "api_key": "", "model": ""})
+    check("自定义模型：缺 Key 时明确拒绝", p1["ok"] is False and "API Key" in p1["error"],
+          p1["error"])
+
+    # 端口 1 上不会有服务，用来验证"连不上"是一次结构化的报告而非 500
+    p2 = post("/api/ask/probe", {"base_url": "https://127.0.0.1:1/v1", "api_key": "sk-x", "model": ""})
+    check("自定义模型：连不上时返回原因而非报错", p2["ok"] is False and bool(p2["error"]),
+          p2["error"][:60])
+
+    # 只填一半时，求教应当照常按默认模型走，而不是带着半截配置去试探
+    a2 = post("/api/ask", {"question": "如何面对挫折？", "top_k": 2,
+                           "llm": {"base_url": "https://127.0.0.1:1/v1", "api_key": "", "model": ""}})
+    check("求教：自定义端点填不全时仍能正常作答", bool(a2["answer"]), "%d 字" % len(a2["answer"]))
+
     d = json.loads(get(FRONT + "/api/insight/daily"))
     check("今日感悟返回", bool(d["text"]), d["text"][:30])
     d2 = json.loads(get(FRONT + "/api/insight/daily"))

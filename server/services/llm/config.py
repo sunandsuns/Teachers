@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, MutableMapping, Optional
 
@@ -146,6 +146,24 @@ class LLMConfig:
     def enabled(self) -> bool:
         """是否具备调用外部 LLM 的条件（有 Key 即视为可用）。"""
         return bool(self.api_key)
+
+    def with_endpoint(self, base_url: str, api_key: str, model: str = "") -> "LLMConfig":
+        """派生一份指向其它端点的配置。
+
+        只换连接信息，**运行参数（超时、总预算、token 上限、缓存与冷却时长）全部
+        沿用**——它们描述的是"这个应用愿意等多久"，与具体端点无关，不该跟着
+        用户填的 URL 一起变。
+
+        ``candidates`` 会被清空：那是默认端点上的模型名，换到别的端点毫无意义，
+        留着只会让探活去试一批不存在的模型，白白吃掉时间预算。
+        """
+        return replace(
+            self,
+            base_url=base_url.strip() or self.base_url,
+            api_key=api_key.strip(),
+            model=model.strip(),
+            candidates=(),
+        )
 
     def chat_url(self) -> str:
         return self.base_url.rstrip("/") + "/chat/completions"

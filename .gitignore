@@ -16,6 +16,8 @@ env/
 web/node_modules/
 web/dist/
 web/.vite/
+# vite 加载 vite.config.ts 时留下的临时副本，每次启动都换一个名字
+web/vite.config.ts.timestamp-*
 npm-debug.log*
 yarn-error.log*
 

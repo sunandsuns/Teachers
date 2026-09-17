@@ -1,96 +1,28 @@
-/** 后端 API 客户端：唯一的网络访问层，页面组件不得直接 fetch。 */
+/** 后端 API 客户端：唯一的网络访问层，页面组件不得直接 fetch。
+ *
+ * 数据形状在 `types.ts`，这里只管怎么发请求。
+ */
+
+import type {
+  AskResponse,
+  AskStatus,
+  BookSummary,
+  ChapterDetail,
+  ChapterSummary,
+  InsightItem,
+  InsightListResponse,
+  LLMEndpoint,
+  ProbeResult,
+  SearchKind,
+  SearchResponse,
+  SourceChunk,
+  ThemeListResponse,
+} from './types'
+
+// 类型从这里一并转出，调用方只认 '../api/client' 这一个入口
+export * from './types'
 
 const BASE = '/api'
-
-export interface BookSummary {
-  book_id: string
-  title: string
-  author: string
-  category: string
-  chapter_count: number
-  has_source: boolean
-}
-
-export interface ChapterSummary {
-  chapter_id: string
-  title: string
-  book_id: string
-}
-
-export interface ChapterDetail {
-  chapter_id: string
-  title: string
-  book_id: string
-  content: string
-}
-
-export type SearchKind = 'all' | 'notes' | 'source'
-
-export interface SearchResultItem {
-  book_id: string
-  book_title: string
-  chapter_id: string
-  chapter_title: string
-  content: string
-  score: number
-  source: string
-  /** 来源类型：notes 深读笔记 / source 原典全文 */
-  kind: 'notes' | 'source'
-  /** kind 为 source 时，该段在原典全文中的字符位置 */
-  offset: number
-}
-
-export interface SearchResponse {
-  query: string
-  total: number
-  results: SearchResultItem[]
-}
-
-export interface SourceChunk {
-  book_id: string
-  title: string
-  content: string
-  offset: number
-  limit: number
-  total: number
-  has_more: boolean
-}
-
-export interface AskResponse {
-  question: string
-  answer: string
-  retrieved_count: number
-  llm_used: boolean
-  model: string | null
-}
-
-export interface AskStatus {
-  enabled: boolean
-  base_url: string
-  model: string
-  available_models: number
-  cooling_down: string[]
-  last_error: string
-}
-
-export interface InsightItem {
-  id: number
-  text: string
-  interpretation: string
-  source: string
-  book_id: string
-  themes: string[]
-}
-
-export interface ThemeListResponse {
-  themes: string[]
-  counts: Record<string, number>
-}
-
-export interface InsightListResponse {
-  total: number
-  items: InsightItem[]
-}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(`${BASE}${path}`, {
@@ -125,10 +57,18 @@ export const api = {
       `/search?q=${encodeURIComponent(q)}&top_k=${topK}&kind=${kind}`,
     ),
 
-  ask: (question: string, topK = 5) =>
+  /** 求教。`llm` 省略时用后端内置的默认模型，见 `useModelSettings`。 */
+  ask: (question: string, topK = 5, llm?: LLMEndpoint | null) =>
     request<AskResponse>('/ask', {
       method: 'POST',
-      body: JSON.stringify({ question, top_k: topK }),
+      body: JSON.stringify({ question, top_k: topK, ...(llm ? { llm } : {}) }),
+    }),
+
+  /** 测一个自定义端点通不通。Key 只在这一次请求里传递，后端不留存。 */
+  probeModel: (llm: LLMEndpoint) =>
+    request<ProbeResult>('/ask/probe', {
+      method: 'POST',
+      body: JSON.stringify(llm),
     }),
 
   askStatus: () => request<AskStatus>('/ask/status'),

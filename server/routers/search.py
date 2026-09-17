@@ -5,8 +5,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from ..services.content_loader import get_loader
-from ..services.retriever import build_retriever_from_loader, get_retriever
+from ..services.retriever import ensure_retriever
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -44,11 +43,7 @@ async def search(
 
     ``kind`` 可用于只看解读或只看经文原句。
     """
-    retriever = get_retriever()
-    if not retriever.documents:
-        loader = get_loader()
-        retriever = build_retriever_from_loader(loader)
-
+    retriever = ensure_retriever()
     results = retriever.search(q, top_k=top_k, kind=None if kind == "all" else kind)
     return SearchResponse(
         query=q,

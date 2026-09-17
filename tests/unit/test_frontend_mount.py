@@ -18,7 +18,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from server.main import _mount_frontend  # noqa: E402
+from server.web_ui import mount_frontend  # noqa: E402
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def mounted(dist: Path) -> TestClient:
     async def books():
         return []
 
-    _mount_frontend(app, dist)
+    mount_frontend(app, dist)
     return TestClient(app)
 
 

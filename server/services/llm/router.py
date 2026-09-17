@@ -87,6 +87,15 @@ class ModelRouter:
     def config(self) -> LLMConfig:
         return self._config
 
+    def now(self) -> float:
+        """内部时钟的当前读数。
+
+        对外暴露是为了让调用方能构造 ``pick(deadline=...)`` ——超时预算用的是
+        本路由器自己的时钟轴（测试里可能被换成假时钟），用 ``time.monotonic()``
+        去拼 deadline 会在测试中直接失效。
+        """
+        return self._clock()
+
     def reload(self, config: Optional[LLMConfig] = None) -> None:
         """重新读取配置并清空所有缓存状态（``.env`` 改动后调用）。"""
         with self._lock:
@@ -147,6 +156,10 @@ class ModelRouter:
         ``force=True`` 时忽略缓存，重新探活。
         ``deadline`` 是 ``self._clock()`` 时间轴上的绝对时刻，超过即停止探活，
         避免上游整体故障时把用户的时间耗在无谓的重试上。
+
+        流程分四步，各自成方法：**复用缓存 → 圈定候选并能算出余量 →
+        并发探活 → 据结果落状态**。原先这些揉在一个六十行的方法里，
+        四处重复的"清空当前模型"要逐个比对才能确认没有分叉。
         """
         with self._lock:
             if not self._config.enabled:
@@ -155,10 +168,9 @@ class ModelRouter:
             if deadline is None:
                 deadline = self._clock() + self._config.total_budget
 
-            now = self._clock()
-            if not force and self._current and now < self._current_expires:
-                if self._cooldown.get(self._current, 0.0) <= now:
-                    return self._current
+            cached = self._cached_current(force=force)
+            if cached:
+                return cached
 
             # 先取候选（可能触发一次 ``/models`` 请求），再算剩余预算——
             # 否则那几秒不计入预算，deadline 就成了纸面上的约束。
@@ -166,12 +178,8 @@ class ModelRouter:
             remaining = deadline - self._clock()
 
             if not batch or remaining <= 0:
-                self._current = ""
-                self._current_expires = 0.0
-                if remaining <= 0:
-                    self._last_error = "探活超出时间预算，提前降级到本地检索"
-                elif not self._last_error:
-                    self._last_error = "所有候选模型均不可用"
+                self._discard_current()
+                self._note_no_candidate(remaining)
                 return ""
 
             timeout = min(
@@ -179,31 +187,69 @@ class ModelRouter:
                 max(1.0, remaining * PROBE_BUDGET_SHARE),
             )
             winner, outcomes = self._probe_batch(batch, timeout)
-
-            for name, failure in outcomes.items():
-                if failure is None:
-                    continue
-                # 带上 status 判断硬软冷却：403/404 这类换模型也修不好，
-                # 只给软冷却的话每两分钟就会再撞一次同一堵墙。
-                self._mark_failed_locked(name, hard=not failure.retryable)
-                self._last_error = f"{name} 探活失败：{failure}"
+            self._record_outcomes(outcomes)
 
             if winner is not None:
-                self._current = winner
-                self._current_expires = self._clock() + self._config.cache_ttl
-                self._last_error = ""
+                self._accept(winner)
                 return winner
 
-            self._current = ""
-            self._current_expires = 0.0
-            failed = [name for name, failure in outcomes.items() if failure is not None]
-            if failed:
-                # 把"这一批探了哪些"写进状态里：出问题时能一眼看出是候选太少
-                # 还是候选全挂，省得靠猜。
-                self._last_error = "所有候选模型均不可用（已探活：%s）" % ", ".join(sorted(failed))
-            elif not self._last_error:
-                self._last_error = "所有候选模型均不可用"
+            self._discard_current()
+            self._summarize_all_failed(outcomes)
             return ""
+
+    # ── pick 的四个步骤 ─────────────────────────────────────────────
+
+    def _cached_current(self, *, force: bool) -> str:
+        """上次选中的模型若还在缓存期且没被拉黑，直接沿用。"""
+        if force or not self._current:
+            return ""
+        now = self._clock()
+        if now < self._current_expires and self._cooldown.get(self._current, 0.0) <= now:
+            return self._current
+        return ""
+
+    def _discard_current(self) -> None:
+        """撤销"当前模型"：探活失败、或调用方已明确放弃它。"""
+        self._current = ""
+        self._current_expires = 0.0
+
+    def _note_no_candidate(self, remaining: float) -> None:
+        """连候选都没有时，把原因写清楚——是超预算，还是压根挑不出模型。"""
+        if remaining <= 0:
+            self._last_error = "探活超出时间预算，提前降级到本地检索"
+        elif not self._last_error:
+            self._last_error = "所有候选模型均不可用"
+
+    def _record_outcomes(
+        self, outcomes: Mapping[str, Optional[transport.LLMTransportError]]
+    ) -> None:
+        """把这一批的探活结果落进冷却表与错误状态。"""
+        for name, failure in outcomes.items():
+            if failure is None:
+                continue
+            # 带上 status 判断硬软冷却：403/404 这类换模型也修不好，
+            # 只给软冷却的话每两分钟就会再撞一次同一堵墙。
+            self._mark_failed_locked(name, hard=not failure.retryable)
+            self._last_error = f"{name} 探活失败：{failure}"
+
+    def _accept(self, model: str) -> None:
+        """选中一个模型并开始计时。"""
+        self._current = model
+        self._current_expires = self._clock() + self._config.cache_ttl
+        self._last_error = ""
+
+    def _summarize_all_failed(
+        self, outcomes: Mapping[str, Optional[transport.LLMTransportError]]
+    ) -> None:
+        """一个都没探出来时，把"探了哪些"写进状态。
+
+        出问题时能一眼看出是候选太少还是候选全挂，省得靠猜。
+        """
+        failed = [name for name, failure in outcomes.items() if failure is not None]
+        if failed:
+            self._last_error = "所有候选模型均不可用（已探活：%s）" % ", ".join(sorted(failed))
+        elif not self._last_error:
+            self._last_error = "所有候选模型均不可用"
 
     def mark_failed(self, model: str, *, hard: bool = False) -> None:
         """外部调用失败后主动上报，使其进入冷却。
@@ -258,7 +304,6 @@ class ModelRouter:
                 winner = name
                 break
         return winner, outcomes
-
 
     # ── 带轮换的对话 ────────────────────────────────────────────────
 

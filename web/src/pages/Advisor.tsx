@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react'
 import { api, type AskResponse } from '../api/client'
 import Markdown from '../components/Markdown'
+import ModelSettingsPanel from '../components/ModelSettingsPanel'
 import { ErrorBox } from '../components/Status'
 import Button from '../components/ui/Button'
 import Chip from '../components/ui/Chip'
 import PageHeader from '../components/ui/PageHeader'
+import { useModelSettings } from '../hooks/useModelSettings'
 
 interface Exchange {
   question: string
@@ -23,7 +25,14 @@ export default function Advisor() {
   const [history, setHistory] = useState<Exchange[]>([])
   const [asking, setAsking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const { settings, update, payload } = useModelSettings()
+
+  // 只有"选了自定义且填全了"才会真的换模型。按钮上如实区分三种情况：
+  // 选了自定义却还没填时若直接显示"默认"，用户会以为自己白点了那一下。
+  const modelLabel =
+    settings.mode === 'default' ? '默认' : payload !== null ? '自定义' : '未填写'
 
   async function submit(q: string) {
     const trimmed = q.trim()
@@ -31,7 +40,7 @@ export default function Advisor() {
     setAsking(true)
     setError(null)
     try {
-      const answer = await api.ask(trimmed)
+      const answer = await api.ask(trimmed, 5, payload)
       setHistory(prev => [...prev, { question: trimmed, answer }])
       setQuestion('')
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }))
@@ -48,7 +57,18 @@ export default function Advisor() {
       <PageHeader
         title="求教"
         description="向人生导师讲述你的问题或困境，它会从经典智慧中寻找答案"
-      />
+      >
+        <Button
+          variant="secondary"
+          size="sm"
+          aria-expanded={showSettings}
+          onClick={() => setShowSettings(open => !open)}
+        >
+          模型：{modelLabel}
+        </Button>
+      </PageHeader>
+
+      {showSettings && <ModelSettingsPanel settings={settings} onChange={update} />}
 
       {/* 还没提问时把示例卡片垂直居中，否则窄栏顶部一小块、下面一大片空白 */}
       <div className={`flex flex-1 flex-col gap-6 ${history.length === 0 ? 'justify-center' : ''}`}>

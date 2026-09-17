@@ -37,6 +37,7 @@ import server.main as main  # noqa: E402
 from server.services import content_loader  # noqa: E402
 from server.services import retriever as retriever_module  # noqa: E402
 from server.services.llm import router as llm_router_module  # noqa: E402
+from server.services.llm import session as llm_session_module  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +50,11 @@ def isolate_llm(monkeypatch):
     for var in ("LLM_API_KEY", "ZHIPUAI_API_KEY", "GLM_API_KEY"):
         monkeypatch.setenv(var, "")
     llm_router_module.reset_router()
+    # 自定义端点的路由器按 Key 缓存，不清会让上一个用例填的端点串进下一个用例
+    llm_session_module.reset_endpoints()
     yield
     llm_router_module.reset_router()
+    llm_session_module.reset_endpoints()
 
 
 @pytest.fixture(scope="session")

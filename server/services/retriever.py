@@ -2,6 +2,7 @@
 
 import math
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
@@ -334,3 +335,36 @@ def reset_retriever() -> None:
     """丢弃全局单例（测试与热重载用）。"""
     global _retriever
     _retriever = None
+
+
+#: 惰性构建的互斥锁。首次构建要几秒，并发到来的请求不该各建一份。
+_build_lock = threading.Lock()
+
+
+def ensure_retriever(loader=None) -> TFIDFRetriever:
+    """返回可用的检索器，尚未构建时惰性构建。
+
+    应用启动（lifespan）、``/api/search``、``/api/ask`` 原先各写了一份
+    「没有就构建」，三处必须保持一致才有意义——**收拢到这里**，顺带补上并发保护：
+    启动流程与首个请求、或两个同时到达的请求，都可能在同一瞬间发现索引是空的。
+
+    ``loader`` 省略时才去取全局单例，调用方（如应用启动流程）可以注入自己的
+    加载器，便于测试替换。
+
+    幂等：已构建则原样返回，不会重建。
+    """
+    retriever = get_retriever()
+    if retriever.documents:
+        return retriever
+
+    with _build_lock:
+        # 双重检查：等锁期间可能已被别的线程建好，此时再建一次纯属浪费几秒
+        retriever = get_retriever()
+        if retriever.documents:
+            return retriever
+
+        if loader is None:
+            from .content_loader import get_loader  # 局部导入，避免模块级循环依赖
+
+            loader = get_loader()
+        return build_retriever_from_loader(loader)
