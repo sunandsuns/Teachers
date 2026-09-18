@@ -77,6 +77,8 @@ export default {
         card: '0 1px 2px rgba(30, 28, 25, 0.04), 0 1px 3px rgba(30, 28, 25, 0.06)',
         lift: '0 10px 28px -10px rgba(30, 28, 25, 0.18), 0 2px 6px rgba(30, 28, 25, 0.06)',
         composer: '0 -4px 20px -6px rgba(30, 28, 25, 0.12)',
+        // 画心贴在纸上的那点厚度。比 card 深一档，但仍是"纸"而不是"卡片"。
+        leaf: '0 1px 2px rgba(30, 28, 25, 0.10), 0 5px 14px -6px rgba(30, 28, 25, 0.22)',
       },
       // 顶栏高约 3.25rem + 上下留白，两者共用一个基准值，
       // 免得以后再写 max-h-[70vh] / style={{minHeight:'calc(100vh-13rem)'}} 这类散落的魔法数
@@ -86,9 +88,12 @@ export default {
       minHeight: {
         panel: 'calc(100vh - 13rem)',
       },
-      // 「画像」的人形是 SVG，尺寸靠比例锁住，别写成内联 style
+      // 「画像」的形象是两页册页（陈洪绶《仿古图册》），外面套一个 9:10 的画框。
+      // 画心本身按各自的比例裁好（`web/src/assets/figure-*.webp`），比例差额
+      // 靠 `object-contain` + `paper-200` 底色补——所以改这里的值只是改"镜框"，
+      // 不会把画压扁，但会改变留白多少。
       aspectRatio: {
-        portrait: '200 / 260',
+        portrait: '9 / 10',
       },
       keyframes: {
         'fade-up': {

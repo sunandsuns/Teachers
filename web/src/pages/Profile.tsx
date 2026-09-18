@@ -8,12 +8,17 @@
  * 2. **没有特征不等于出错**。还没有提问、模型不可用、模型这次没读出东西，
  *    都是正常状态，各自说明原因即可，不要弹红色报错——用户会以为功能坏了。
  *
- * 关于人形与牵引线
+ * 关于形象与牵引线
  * --------------------------------------------------------------------------
- * 形象画在水墨里（男女两式），两侧是分类卡片，每条牵引线从身上牵到对应的
- * 分类上。线的坐标要在**渲染之后**量出来（getBoundingClientRect），所以走
- * useLayoutEffect + ResizeObserver。窄屏下三栏会折成一栏，那时画出来的线
- * 是横穿文字的噪线，因此只在够宽时画。
+ * 形象用的是**真实的古画**：明·陈洪绶《仿古图册》里的两页——陶渊明像配男式，
+ * 仕女图配女式。同一个册子、同一种绢底、同一路笔法，两式放在一起才像一对。
+ * 出处是克利夫兰艺术博物馆的开放数据（CC0）。图片存 `src/assets/`，**只裁到画心**
+ * （四边的装裱一律不进图，否则会留一条浅色亮带）；两幅画心比例不同，差额交给
+ * 容器的 `object-contain` + `paper-200` 底色去补，看着就是装裱。
+ *
+ * 两侧是分类卡片，每条牵引线从画心牵到对应的分类上。线的坐标要在**渲染之后**
+ * 量出来（getBoundingClientRect），所以走 useLayoutEffect + ResizeObserver。
+ * 窄屏下三栏会折成一栏，那时画出来的线是横穿文字的噪线，因此只在够宽时画。
  */
 
 import {
@@ -23,6 +28,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type Ref,
 } from 'react'
 import {
   api,
@@ -36,14 +42,16 @@ import Button from '../components/ui/Button'
 import PageHeader from '../components/ui/PageHeader'
 import Segmented from '../components/ui/Segmented'
 import { useI18n, traitCategory, type MessageKey } from '../i18n'
+import figureFemale from '../assets/figure-female.webp'
+import figureMale from '../assets/figure-male.webp'
 
 /** 够宽才画牵引线：再窄一点三栏就折成一栏了。 */
 const LINES_MIN_WIDTH = 760
-/** 牵引线出发的高度范围（占形象高度的比例）。上不过肩、下不过衣摆。 */
+/** 牵引线出发的高度范围（占画心高度的比例）。上不过肩、下不过衣摆。 */
 const ANCHOR_TOP = 0.22
 const ANCHOR_BOTTOM = 0.88
-/** 出发点在形象框内缩进一点，落在圆形的边上而不是方框的角上。 */
-const FIGURE_INSET = 0.05
+/** 出发点从画心边缘再往里收一点，免得圆点压在画框的边上。 */
+const FIGURE_INSET = 0.02
 
 /** 归纳失败时后端给的代号 → 人话。不在表里的（上游错误原文）直接显示。 */
 const EXTRACT_CODE_KEYS: Record<string, MessageKey> = {
@@ -80,123 +88,51 @@ function describeExtract(result: ExtractResult, t: Translate): string {
   return result.error || t('profile.nothingNew')
 }
 
-/** 剪影用的画布尺寸。宽高比锁在 `tailwind.config.js` 的 `aspect-portrait` 里。 */
-const FIGURE_W = 200
-const FIGURE_H = 260
-
 /**
- * 衣袍的轮廓。
+ * 两式形象的画心。
  *
- * 写成参数而不是两段写死的路径：男女的差别只有**肩宽**与**衣摆**两处，
- * 分开写就会有两份几乎一样的长路径，改一处忘一处。
+ * 两幅画心比例本就不同（陶渊明像略横、仕女图偏竖），所以容器用 `object-contain`：
+ * 差额由 `paper-200` 的底色补上，正好当装裱，不必把画硬裁成一个比例。
  *
- * ``shoulderX`` 是左肩最外沿的横坐标（右肩是它的镜像），``hemX`` 是左衣摆。
- * 肩要比头宽出一倍多、并且**斜着落下去**——肩线一平，剪影就成了一块方墨，
- * 完全不像人。收到腰、再展开到摆，是为了让它站得住。
+ * `credit` 是题签式的出处说明。古画不是"素材"，署名与藏地要跟着走——
+ * 一是尊重，二是它本身也好看。
  */
-function robePath(shoulderX: number, hemX: number): string {
-  const mirror = (x: number) => FIGURE_W - x
-  return [
-    // 左肩：从脖子斜下到肩头
-    `M100 92 C ${shoulderX + 22} 92 ${shoulderX + 6} 104 ${shoulderX} 128`,
-    // 收一下腰，再展开到衣摆
-    `C ${shoulderX + 2} 152 ${hemX + 10} 186 ${hemX} 216`,
-    // 下摆的圆角
-    `C ${hemX - 1} 221 ${hemX + 2} 224 ${hemX + 7} 224`,
-    `L ${mirror(hemX + 7)} 224`,
-    `C ${mirror(hemX + 2)} 224 ${mirror(hemX - 1)} 221 ${mirror(hemX)} 216`,
-    `C ${mirror(hemX + 10)} 186 ${mirror(shoulderX + 2)} 152 ${mirror(shoulderX)} 128`,
-    `C ${mirror(shoulderX + 6)} 104 ${mirror(shoulderX + 22)} 92 100 92`,
-    'Z',
-  ].join(' ')
+const FIGURES: Record<Avatar, { src: string; w: number; h: number; credit: MessageKey }> = {
+  male: { src: figureMale, w: 624, h: 607, credit: 'profile.figureCredit.male' },
+  female: { src: figureFemale, w: 624, h: 679, credit: 'profile.figureCredit.female' },
 }
 
-/** 男女两式的几个数：肩宽、衣摆、垂发。 */
-const FIGURE_GEOMETRY = {
-  male: { shoulderX: 52, hemX: 40, longHair: false },
-  female: { shoulderX: 56, hemX: 36, longHair: true },
-} as const
-
 /**
- * 形象：一尊水墨剪影，男女两式。
+ * 形象：一页册页，男女各一幅。
  *
- * 两式的差别只落在剪影本身——肩宽、发长、衣摆——不靠颜色或符号去区分，
- * 那样会把"这是谁"变成"这是个什么标签"。
+ * 两式的差别落在**画本身**——陶渊明是执杖的士人，仕女是低眉回身的女子——
+ * 不靠颜色或符号去区分，那样会把"这是谁"变成"这是个什么标签"。
+ *
+ * ``boxRef`` 只挂在**画心那一层**上（不含题签）：牵引线是量它的边框来定位的。
  */
-function Figure({ avatar }: { avatar: Avatar }) {
+function Figure({ avatar, boxRef }: { avatar: Avatar; boxRef: Ref<HTMLDivElement> }) {
   const { t } = useI18n()
-  const geometry = FIGURE_GEOMETRY[avatar]
-  const { shoulderX, hemX, longHair } = geometry
-  const mirror = (x: number) => FIGURE_W - x
+  const { src, w, h, credit } = FIGURES[avatar]
 
   return (
-    <svg
-      viewBox={`0 0 ${FIGURE_W} ${FIGURE_H}`}
-      role="img"
-      aria-label={t('profile.figureAlt')}
-      className="h-full w-full"
-    >
-      {/* 月洞门：把剪影衬在一个圆里，纸上落墨的感觉 */}
-      <circle cx="100" cy="130" r="95" className="fill-paper-200" />
-      <circle
-        cx="100"
-        cy="130"
-        r="95"
-        fill="none"
-        strokeWidth="1"
-        className="stroke-paper-300"
-      />
-      {/* 地面的一点影子，让人站得住 */}
-      <ellipse cx="100" cy="230" rx="46" ry="5" className="fill-paper-400/50" />
-
-      {longHair && (
-        <g className="fill-ink-800">
-          {/* 垂到肩下的长发。只到肩膀就停——再长就把脖子到肩连成一团墨 */}
-          <path d="M79 48 C72 70 70 86 72 102 C76 108 85 108 88 102 C83 84 83 66 86 52 Z" />
-          <path d="M121 48 C128 70 130 86 128 102 C124 108 115 108 112 102 C117 84 117 66 114 52 Z" />
-        </g>
-      )}
-
-      {/* 脖子：短一段就够，留出的空隙让头从肩上"分"出来 */}
-      <path d="M92 68 h16 v26 h-16 z" className="fill-ink-800" />
-      {/* 头与头发比衣袍深一档：剪影里"头"和"身体"要能一眼分得开 */}
-      <circle cx="100" cy="54" r="22" className="fill-ink-800" />
-      <path
-        d="M78 54 A22 22 0 0 1 122 54 C122 38 112 31 100 31 C88 31 78 38 78 54 Z"
-        className="fill-ink-800"
-      />
-
-      <path d={robePath(shoulderX, hemX)} className="fill-ink-600" />
-
-      {/* 衣领的交叉与腰带：浅色细线，剪影才不是一块死墨。
-          衣领落在**胸口**而不是颈根——画高了会和头连成一张脸。 */}
-      <g
-        fill="none"
-        strokeWidth="2"
-        strokeLinecap="round"
-        className="stroke-paper-100"
-        strokeOpacity="0.85"
+    <figure className="w-full">
+      <div
+        ref={boxRef}
+        className="aspect-portrait w-full overflow-hidden rounded-sm bg-paper-200 shadow-leaf ring-1 ring-paper-300"
       >
-        <path d="M100 106 L86 130" />
-        <path d="M100 106 L114 130" />
-        <path d={`M${shoulderX + 12} 164 H ${mirror(shoulderX + 12)}`} />
-      </g>
-      {/* 手臂的暗示：两条浅线，肩宽一变就跟着挪 */}
-      <g
-        fill="none"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        className="stroke-paper-100"
-        strokeOpacity="0.45"
-      >
-        <path
-          d={`M${shoulderX + 18} 142 C ${shoulderX + 15} 170 ${shoulderX + 13} 194 ${shoulderX + 12} 212`}
+        <img
+          src={src}
+          alt={t('profile.figureAlt')}
+          width={w}
+          height={h}
+          className="h-full w-full object-contain"
         />
-        <path
-          d={`M${mirror(shoulderX + 18)} 142 C ${mirror(shoulderX + 15)} 170 ${mirror(shoulderX + 13)} 194 ${mirror(shoulderX + 12)} 212`}
-        />
-      </g>
-    </svg>
+      </div>
+      <figcaption className="mt-2 text-center text-[0.6875rem] leading-relaxed text-ink-400">
+        <span className="block">{t(credit)}</span>
+        <span className="block text-ink-300">{t('profile.figureSource')}</span>
+      </figcaption>
+    </figure>
   )
 }
 
@@ -546,11 +482,8 @@ export default function Profile() {
 
               {/* 窄屏折成一栏时形象排在最前：它是这一页的主角，
                   排在两列卡片下面就很难注意到 */}
-              <div
-                ref={figureRef}
-                className="order-first mx-auto aspect-portrait w-36 self-start sm:w-44 md:order-none lg:w-52"
-              >
-                <Figure avatar={avatar} />
+              <div className="order-first mx-auto w-40 self-start sm:w-48 md:order-none lg:w-60">
+                <Figure avatar={avatar} boxRef={figureRef} />
               </div>
 
               <div

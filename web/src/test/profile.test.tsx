@@ -10,6 +10,8 @@
  * 3. **没有特征不等于出错**——没有提问、模型不可用、模型没读出东西，各自说明
  *    原因，不要弹红色报错。
  * 4. **形象可选男女，切换存后端**——它属于画像这份数据，不是浏览器本地偏好。
+ *    两式是**两幅不同的古画**（陈洪绶《仿古图册》），各自带署名；这条契约掉了，
+ *    多半是有人把它们合并成"一张图换个色"了。
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -148,6 +150,24 @@ describe('画像的内容', () => {
         'true',
       ),
     )
+  })
+
+  it('两式换的是画本身，署名也跟着换', async () => {
+    const user = userEvent.setup()
+    renderProfile()
+
+    // 男女两式是两幅不同的古画，不是同一张图换个色——这条掉了就说明被人合并了
+    const srcOf = () => screen.getByRole('img', { name: '你的形象' }).getAttribute('src')
+    const maleSrc = (await screen.findByRole('img', { name: '你的形象' })).getAttribute('src')
+    expect(maleSrc).toBeTruthy()
+    expect(screen.getByText(/陈洪绶《仿古图册·陶渊明像》/)).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: '女' }))
+
+    await waitFor(() => expect(srcOf()).not.toBe(maleSrc))
+    // 古画不是"素材"，署名与藏地要跟着走
+    expect(screen.getByText(/陈洪绶《仿古图册·仕女》/)).toBeTruthy()
+    expect(screen.getByText('克利夫兰艺术博物馆藏')).toBeTruthy()
   })
 })
 
@@ -361,6 +381,9 @@ describe('英文界面', () => {
     expect(screen.getByText('80% sure')).toBeTruthy()
     expect(screen.getByText(/4 traits in all/)).toBeTruthy()
     expect(screen.queryByText(/共 4 条特征/)).toBeNull()
+    // 画的署名也要译，否则英文界面里会冒出一行中文
+    expect(screen.getByText(/Chen Hongshou/)).toBeTruthy()
+    expect(screen.queryByText(/陈洪绶/)).toBeNull()
   })
 
   it('英文界面里归纳，请求带上 en——特征正文才会是英文', async () => {
