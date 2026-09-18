@@ -207,6 +207,41 @@ export interface TraitItem {
 /** 形象性别。 */
 export type Avatar = 'male' | 'female'
 
+/** 「最像你的一位历史人物」。
+ *
+ *  整块都可能是空的（还没评过、名录里没人、库不可用）：那时 `id` 是空串，
+ *  界面退回默认的两页册页。名字、时代、署名每次都从后端的名录现取，所以
+ *  改了名录立刻生效——**不要**把它缓存成"选中那一刻的样子"。 */
+export interface FigureInfo {
+  id: string
+  name: string
+  era: string
+  /** 一句话说他是谁 */
+  blurb: string
+  /** 模型写的：像在哪里。名单里挑的是这个人的哪些点 */
+  reason: string
+  /** 题签式的署名：这一幅画出在哪本书、哪本册子，或谁拍的 */
+  credit: string
+  /** 画像的相对 URL，可直接放进 <img src> */
+  portrait: string
+  /** 评出时的 ISO 周，如 2026-W38 */
+  week: string
+  /** 评出的日期，YYYY-MM-DD */
+  chosen_at: string
+  /** 该性别名录里共有多少位候选 */
+  pool_size: number
+  /** 现在该不该重新评定一次。为真时页面在后台补一次，不打扰用户 */
+  needs_refresh: boolean
+}
+
+/** 一次历史人物评定的结果。`error` 是机器可读的代号，或上游给的错误文本。 */
+export interface FigureResult {
+  ok: boolean
+  id: string
+  llm_used: boolean
+  error: string
+}
+
 /** 画像全貌。`available` 为 false 时 `traits` 必为空、`error` 里是原因。 */
 export interface ProfileResponse {
   available: boolean
@@ -218,6 +253,8 @@ export interface ProfileResponse {
   categories: string[]
   /** 上次归纳之后又问了多少条。大于 0 就值得再归纳一次 */
   pending: number
+  /** 最像你的一位历史人物 */
+  figure: FigureInfo
 }
 
 /** 一次归纳的结果。`error` 是机器可读的代号，或上游给的错误文本。 */

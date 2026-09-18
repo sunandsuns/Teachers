@@ -1,20 +1,26 @@
 /** 「画像」页面：从你自己问过的话里，慢慢拼出的"你是谁"。
  *
- * 两条不变的契约（别的都是排版）：
+ * 三条不变的契约（别的都是排版）：
  *
  * 1. **归纳是异步的，不能挡住首屏**。一次归纳要走一趟模型，几十秒起步。所以
  *    进页面先渲染已有画像，发现"还有没归纳过的新提问"再在后台补一次——
  *    让用户对着空白页面等半分钟，比给他一份旧画像还难受。
  * 2. **没有特征不等于出错**。还没有提问、模型不可用、模型这次没读出东西，
  *    都是正常状态，各自说明原因即可，不要弹红色报错——用户会以为功能坏了。
+ * 3. **两次模型调用必须串起来**：归纳在前、评定人物在后。同时发出去既让上游
+ *    吃两份负载，也是在拿**旧画像**去评人——新归纳出来的特征还没进库。
  *
  * 关于形象与牵引线
  * --------------------------------------------------------------------------
- * 形象用的是**真实的古画**：明·陈洪绶《仿古图册》里的两页——陶渊明像配男式，
+ * 默认的形象是**真实的古画**：明·陈洪绶《仿古图册》里的两页——陶渊明像配男式，
  * 仕女图配女式。同一个册子、同一种绢底、同一路笔法，两式放在一起才像一对。
  * 出处是克利夫兰艺术博物馆的开放数据（CC0）。图片存 `src/assets/`，**只裁到画心**
- * （四边的装裱一律不进图，否则会留一条浅色亮带）；两幅画心比例不同，差额交给
+ * （四边的装裱一律不进图，否则会留一条浅色亮边）；两幅画心比例不同，差额交给
  * 容器的 `object-contain` + `paper-200` 底色去补，看着就是装裱。
+ *
+ * 画框里也可以换成**一位历史人物**——后端从名录里评出"最像你的那一位"，
+ * 理由写在画框下面的题跋里。那两页册页仍留着，是评出人来之前的默认形象：
+ * 空着比放一个陌生人好。**男女开关同时是筛选池**，男册只在男性名录里挑人。
  *
  * 两侧是分类卡片，每条牵引线从画心牵到对应的分类上。线的坐标要在**渲染之后**
  * 量出来（getBoundingClientRect），所以走 useLayoutEffect + ResizeObserver。
@@ -34,6 +40,8 @@ import {
   api,
   type Avatar,
   type ExtractResult,
+  type FigureInfo,
+  type FigureResult,
   type ProfileResponse,
   type TraitItem,
 } from '../api/client'
@@ -58,6 +66,30 @@ const EXTRACT_CODE_KEYS: Record<string, MessageKey> = {
   no_records: 'profile.err.noRecords',
   llm_disabled: 'profile.err.noLlm',
   nothing_usable: 'profile.err.nothingNew',
+}
+
+/** 评定历史人物失败时后端给的代号 → 人话。同样，表外的原文直接显示。 */
+const FIGURE_CODE_KEYS: Record<string, MessageKey> = {
+  no_traits: 'profile.err.noTraits',
+  no_pool: 'profile.err.noPool',
+  not_in_pool: 'profile.err.notInPool',
+  llm_disabled: 'profile.err.noLlmFigure',
+  history_unavailable: 'profile.err.noStore',
+}
+
+/** 「最像你的一位历史人物」的空档：还没评过、名录为空、库不可用都长这样。 */
+const NO_FIGURE: FigureInfo = {
+  id: '',
+  name: '',
+  era: '',
+  blurb: '',
+  reason: '',
+  credit: '',
+  portrait: '',
+  week: '',
+  chosen_at: '',
+  pool_size: 0,
+  needs_refresh: false,
 }
 
 type Translate = (key: MessageKey, params?: Record<string, string | number>) => string
@@ -88,8 +120,17 @@ function describeExtract(result: ExtractResult, t: Translate): string {
   return result.error || t('profile.nothingNew')
 }
 
+/** 一次评定的结果 → 一句给人看的话。选出来了不必报名字，
+ *  画框里的题签已经写着是谁。 */
+function describeFigure(result: FigureResult, t: Translate): string {
+  if (result.ok) return t('profile.figure.done')
+  const key = FIGURE_CODE_KEYS[result.error]
+  if (key) return t(key)
+  return result.error || t('profile.figureFailed')
+}
+
 /**
- * 两式形象的画心。
+ * 默认形象：两页册页的画心。
  *
  * 两幅画心比例本就不同（陶渊明像略横、仕女图偏竖），所以容器用 `object-contain`：
  * 差额由 `paper-200` 的底色补上，正好当装裱，不必把画硬裁成一个比例。
@@ -103,16 +144,28 @@ const FIGURES: Record<Avatar, { src: string; w: number; h: number; credit: Messa
 }
 
 /**
- * 形象：一页册页，男女各一幅。
+ * 形象：一页册页，或一位历史人物。
  *
- * 两式的差别落在**画本身**——陶渊明是执杖的士人，仕女是低眉回身的女子——
+ * 两页册页的差别落在**画本身**——陶渊明是执杖的士人，仕女是低眉回身的女子——
  * 不靠颜色或符号去区分，那样会把"这是谁"变成"这是个什么标签"。
  *
- * ``boxRef`` 只挂在**画心那一层**上（不含题签）：牵引线是量它的边框来定位的。
+ * ``boxRef`` 只挂在**画框那一层**上（不含题签）：牵引线是量它的边框来定位的，
+ * 所以换谁进来都不能改画框的尺寸与位置。
  */
-function Figure({ avatar, boxRef }: { avatar: Avatar; boxRef: Ref<HTMLDivElement> }) {
+function Figure({
+  avatar,
+  chosen,
+  boxRef,
+}: {
+  avatar: Avatar
+  /** 评出来的那一位；还没评出来时是 null，退回册页 */
+  chosen: FigureInfo | null
+  boxRef: Ref<HTMLDivElement>
+}) {
   const { t } = useI18n()
-  const { src, w, h, credit } = FIGURES[avatar]
+  const leaf = FIGURES[avatar]
+  // 时代与一句话凑成题签的第二行；两样都可能缺，缺了就不留一个孤零零的分隔点
+  const subtitle = chosen ? [chosen.era, chosen.blurb].filter(Boolean).join(' · ') : ''
 
   return (
     <figure className="w-full">
@@ -120,17 +173,34 @@ function Figure({ avatar, boxRef }: { avatar: Avatar; boxRef: Ref<HTMLDivElement
         ref={boxRef}
         className="aspect-portrait w-full overflow-hidden rounded-sm bg-paper-200 shadow-leaf ring-1 ring-paper-300"
       >
+        {/* 册页两幅画心的尺寸是写死的，用来提示固有比例；名录里的人尺寸各异，
+            交给 `object-contain` 按画框去算 */}
         <img
-          src={src}
-          alt={t('profile.figureAlt')}
-          width={w}
-          height={h}
+          src={chosen ? chosen.portrait : leaf.src}
+          alt={chosen ? chosen.name : t('profile.figureAlt')}
+          width={chosen ? undefined : leaf.w}
+          height={chosen ? undefined : leaf.h}
           className="h-full w-full object-contain"
         />
       </div>
       <figcaption className="mt-2 text-center text-[0.6875rem] leading-relaxed text-ink-400">
-        <span className="block">{t(credit)}</span>
-        <span className="block text-ink-300">{t('profile.figureSource')}</span>
+        {chosen ? (
+          <>
+            <span className="block text-[0.625rem] tracking-[0.22em] text-cinnabar-500">
+              {t('profile.figure.picked')}
+            </span>
+            <span className="mt-1 block font-serif text-lg font-bold tracking-wide text-ink-800">
+              {chosen.name}
+            </span>
+            {subtitle && <span className="mt-0.5 block text-xs text-ink-500">{subtitle}</span>}
+            {chosen.credit && <span className="mt-1 block">{chosen.credit}</span>}
+          </>
+        ) : (
+          <>
+            <span className="block">{t(leaf.credit)}</span>
+            <span className="block text-ink-300">{t('profile.figureSource')}</span>
+          </>
+        )}
       </figcaption>
     </figure>
   )
@@ -187,10 +257,11 @@ export default function Profile() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  /** 工具栏下面那行状态话：正在归纳 / 这次新增了几条 */
+  /** 工具栏下面那行状态话：正在归纳 / 这次新增了几条 / 正在评定 */
   const [note, setNote] = useState<string | null>(null)
-  /** 自动归纳每进页面只做一次，否则归纳完重新读取会再触发一轮 */
-  const autoRan = useRef(false)
+  /** 后台自动动作每进页面只做一次，否则做完重新读取会再触发一轮。两条各记一个。 */
+  const autoExtractRan = useRef(false)
+  const autoFigureRan = useRef(false)
 
   const stageRef = useRef<HTMLDivElement>(null)
   const figureRef = useRef<HTMLDivElement>(null)
@@ -225,6 +296,9 @@ export default function Profile() {
       try {
         const result = await api.extractProfile(lang)
         setNote(describeExtract(result, t))
+        // 画像变了，选出那个人所依据的东西也就变了——松手让下面的 effect
+        // 用新画像重评一次（当周画像没变时它本来就不会动，不必在这儿判断）
+        autoFigureRan.current = false
         // 重新读一次：特征、待归纳数都变了，以服务端为准
         setData(await api.getProfile())
       } catch (err) {
@@ -237,14 +311,44 @@ export default function Profile() {
     [lang, t],
   )
 
-  // 进页面时若发现"问过话但还没归纳过"，顺手在后台补一次。
-  // 不等它：页面照常渲染已有的画像。
+  /** 让模型重评一次"最像你的一位历史人物"。
+   *
+   *  与归纳共用 `busy` 与那行状态话：两者都是"在等模型"，排在一起反而更清楚，
+   *  而且它们本来就被串行调度（见下面的 effect），不会同时出现两个转圈。 */
+  const runFigure = useCallback(async () => {
+    setBusy(true)
+    setNote(t('profile.figure.evaluating'))
+    try {
+      const result = await api.evaluateFigure(lang)
+      setNote(describeFigure(result, t))
+      // 只有评出来了才值得重读：别的情况下库里什么都没变
+      if (result.ok) setData(await api.getProfile())
+    } catch (err) {
+      setNote(null)
+      setError(err instanceof Error ? err.message : t('profile.figureFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }, [lang, t])
+
+  // 进页面时若发现"问过话但还没归纳过"，顺手在后台补一次；补完了再看要不要
+  // 评定历史人物。**两件事排在同一个 effect 里，一件没做完就不开始下一件**：
+  // 并行发出去不只是让上游吃两份负载，更糟的是会拿**旧画像**去评人——这次刚
+  // 归纳出来的特征还没进库。
+  //
+  // 不等它们：页面照常渲染已有的画像与人物。
   useEffect(() => {
-    if (loading || !data || autoRan.current) return
-    if (!data.available || data.pending === 0) return
-    autoRan.current = true
-    void runExtract(data.pending)
-  }, [loading, data, runExtract])
+    if (loading || !data || !data.available) return
+    if (data.pending > 0 && !autoExtractRan.current) {
+      autoExtractRan.current = true
+      void runExtract(data.pending)
+      return
+    }
+    if (data.figure.needs_refresh && !autoFigureRan.current) {
+      autoFigureRan.current = true
+      void runFigure()
+    }
+  }, [loading, data, runExtract, runFigure])
 
   /** 按分类聚好，并**按后端给的分类顺序**排列——每次打开看到的次序都一样。 */
   const grouped = useMemo<CategoryGroup[]>(() => {
@@ -347,6 +451,10 @@ export default function Profile() {
     setData({ ...data, avatar: next })
     try {
       await api.setAvatar(next)
+      // 换册页就是换名录：对面那一册评过谁、有几位候选，只有服务端知道。
+      // 只把开关拨过去的话，中间挂着的还是上一册的人。
+      autoFigureRan.current = false
+      setData(await api.getProfile())
     } catch (err) {
       setData(current => (current ? { ...current, avatar: previous } : current))
       setError(err instanceof Error ? err.message : t('profile.loadFailed'))
@@ -383,6 +491,9 @@ export default function Profile() {
 
   const unavailable = data !== null && !data.available
   const avatar = data?.avatar ?? 'male'
+  const figure = data?.figure ?? NO_FIGURE
+  /** 评出来了才换人；名录里查不到（用户改了名录）也退回册页，不留一个空画框。 */
+  const chosen = figure.id ? figure : null
 
   return (
     <section className="mx-auto w-full max-w-5xl">
@@ -483,7 +594,7 @@ export default function Profile() {
               {/* 窄屏折成一栏时形象排在最前：它是这一页的主角，
                   排在两列卡片下面就很难注意到 */}
               <div className="order-first mx-auto w-40 self-start sm:w-48 md:order-none lg:w-60">
-                <Figure avatar={avatar} boxRef={figureRef} />
+                <Figure avatar={avatar} chosen={chosen} boxRef={figureRef} />
               </div>
 
               <div
@@ -511,6 +622,44 @@ export default function Profile() {
               <Empty>{t('profile.empty')}</Empty>
               <p className="text-center text-sm text-ink-400">{t('profile.emptyHint')}</p>
             </div>
+          )}
+
+          {/* 题跋：像在哪里。放在整个舞台下面而不是挤进中间那一栏——
+              理由要两三句话才说得清，画框边上那点宽度写不下。 */}
+          {chosen && (
+            <section className="mx-auto mt-10 max-w-2xl text-center">
+              {chosen.reason && (
+                <>
+                  <h3 className="font-serif text-sm font-bold tracking-[0.22em] text-cinnabar-600">
+                    {t('profile.figure.reason')}
+                  </h3>
+                  <p className="mt-3 font-serif text-[0.9375rem] leading-loose text-ink-800">
+                    {chosen.reason}
+                  </p>
+                </>
+              )}
+              <p className="mt-3 text-xs text-ink-400">
+                {t('profile.figure.meta', {
+                  date: chosen.chosen_at,
+                  count: chosen.pool_size,
+                })}
+              </p>
+              <div className="mt-4">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void runFigure()}
+                  disabled={busy}
+                >
+                  {busy ? t('profile.figure.evaluating') : t('profile.figure.evaluate')}
+                </Button>
+              </div>
+            </section>
+          )}
+
+          {/* 名录空着时说一句，而不是让页面永远停在册页上让人以为没做完 */}
+          {!chosen && figure.pool_size === 0 && (
+            <p className="mt-6 text-center text-xs text-ink-400">{t('profile.figure.none')}</p>
           )}
 
           {grouped.length > 0 && (

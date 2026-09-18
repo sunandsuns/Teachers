@@ -25,7 +25,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from .db import Database
 from .llm import LLMTransportError, get_router, normalize_lang
@@ -44,6 +44,9 @@ EVIDENCE_LIMIT = 240
 META_AVATAR = "avatar_gender"
 #: meta 表里存"上次归纳到哪一刻"的键
 META_LAST_EXTRACT = "last_extract_ts"
+#: meta 表里存"最像你的一位历史人物"的键前缀。**男女各存一份**（图鉴不同池子，
+#: 来回切开关不该把对面的人弄丢），所以键长这样：``figure:male`` / ``figure:female``。
+META_FIGURE_PREFIX = "figure"
 #: 形象可选性别
 AVATARS = ("male", "female")
 DEFAULT_AVATAR = "male"
@@ -118,6 +121,12 @@ def _row_to_trait(row: Any) -> Trait:
         created_ts=float(row["created_ts"]),
         updated_ts=float(row["updated_ts"]),
     )
+
+
+def _figure_key(gender: str) -> Optional[str]:
+    """人物记录的 meta 键。性别认不出时返回 None（调用方据此跳过读写）。"""
+    code = (gender or "").strip().lower() if isinstance(gender, str) else ""
+    return f"{META_FIGURE_PREFIX}:{code}" if code in AVATARS else None
 
 
 def _clamp_confidence(value: Any) -> float:
@@ -304,6 +313,54 @@ class ProfileStore:
         最多是把同一批提问再送模型看一次。
         """
         self._write_meta(META_LAST_EXTRACT, repr(time.time() if now is None else now))
+
+    def set_figure(self, gender: str, payload: Mapping[str, Any]) -> None:
+        """存下"这个性别最像你的一位历史人物"。
+
+        存成一段 JSON：里面是人物的 id、模型写的理由、评定时的周、以及当时
+        画像的指纹。**分开存是刻意的**——指纹留着，下次跨周时才能判断"画像
+        到底变没变"，而不是每次都要重算一遍再赌模型给出同一个答案。
+
+        认不出的性别直接不写：与其塞进一个谁也读不到的键，不如什么都不做。
+        """
+        key = _figure_key(gender)
+        if key is None:
+            return
+        try:
+            blob = json.dumps(dict(payload), ensure_ascii=False)
+        except (TypeError, ValueError):
+            return
+        self._write_meta(key, blob)
+
+    def get_figure(self, gender: str) -> dict[str, Any]:
+        """读回该性别的人物记录；没有、或记录坏了都返回空字典。"""
+        key = _figure_key(gender)
+        if key is None:
+            return {}
+        raw = self._read_meta(key)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def clear_figures(self) -> None:
+        """抹掉两个性别各自选中的人物。
+
+        与 :meth:`clear` 配套：画像都清空了，"最像你的是谁"就失去了依据。
+        留着它只会显示一个不再有来由的判断——用户删掉全部特征，就是想说
+        "这些都不对"，此时还坚持指认一个人是与他作对。
+        """
+        keys = [k for k in (_figure_key(g) for g in AVATARS) if k]
+        try:
+            with self._db.session() as connection:
+                connection.executemany(
+                    "DELETE FROM meta WHERE key = ?", [(key,) for key in keys]
+                )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _write_meta(self, key: str, value: str) -> None:
         """meta 表的 upsert。库不可用时静默跳过（这类数据丢了不影响主流程）。"""

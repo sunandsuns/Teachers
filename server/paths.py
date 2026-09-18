@@ -21,6 +21,9 @@ from typing import Optional
 #: 语料目录名（同时是判定"某目录是不是语料根"的依据）
 NOTES_DIRNAME = "理解笔记"
 BOOKS_DIRNAME = "books"
+#: 历史人物候选池目录（figures.json + portraits/）。放语料根，
+#: 用户加一个人只需丢一张图、加一条 JSON，不必重打包。
+FIGURES_DIRNAME = "figures"
 
 #: 运行期数据目录名（历史记录数据库所在）
 DATA_DIRNAME = "data"

@@ -1,24 +1,33 @@
 /** 「画像」页面。
  *
- * 这一页的契约有四条，别的都是排版：
+ * 这一页的契约有五条，别的都是排版：
  *
  * 1. **特征按分类挂在人形两侧**——分类是后端给的封闭集合，每条特征都带着
  *    "依据"。画像最怕"它凭什么这么说"，那句话就是答案，不能省。
- * 2. **归纳是异步的，不能挡住首屏**——进页面先渲染已有画像；只有发现"问过话
- *    但还没归纳过"时才在后台补一次，且**只补一次**（否则归纳完重新读取会
- *    再触发一轮，变成死循环）。
- * 3. **没有特征不等于出错**——没有提问、模型不可用、模型没读出东西，各自说明
+ * 2. **归纳、评定人物都是异步的，不能挡住首屏**——进页面先渲染已有的画像；
+ *    发现"问过话但还没归纳过"才在后台补一次，且**只补一次**（否则归纳完重新
+ *    读取会再触发一轮，变成死循环）。
+ * 3. **两次模型调用要串起来**：归纳在前、评人在后。并行发出去不只是让上游吃
+ *    两份负载，更糟的是会拿**旧画像**去评人——刚归纳出来的特征还没进库。
+ * 4. **没有特征不等于出错**——没有提问、模型不可用、模型没读出东西，各自说明
  *    原因，不要弹红色报错。
- * 4. **形象可选男女，切换存后端**——它属于画像这份数据，不是浏览器本地偏好。
+ * 5. **形象可选男女，切换存后端**——它属于画像这份数据，不是浏览器本地偏好。
  *    两式是**两幅不同的古画**（陈洪绶《仿古图册》），各自带署名；这条契约掉了，
- *    多半是有人把它们合并成"一张图换个色"了。
+ *    多半是有人把它们合并成"一张图换个色"了。男女开关**同时是评选的池子**，
+ *    所以切过去要重读一次画像，不能只在本地把开关拨过去。
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import Profile from '../pages/Profile'
-import type { ExtractResult, ProfileResponse, TraitItem } from '../api/client'
+import type {
+  ExtractResult,
+  FigureInfo,
+  FigureResult,
+  ProfileResponse,
+  TraitItem,
+} from '../api/client'
 import { api } from '../api/client'
 import { I18nProvider } from '../i18n'
 
@@ -26,6 +35,7 @@ vi.mock('../api/client', () => ({
   api: {
     getProfile: vi.fn(),
     extractProfile: vi.fn(),
+    evaluateFigure: vi.fn(),
     setAvatar: vi.fn(),
     deleteTrait: vi.fn(),
     clearProfile: vi.fn(),
@@ -55,6 +65,47 @@ const TRAITS: TraitItem[] = [
 
 const CATEGORIES = ['性格', '年龄', '爱好', '生活条件', '成熟度', '专业', '规划']
 
+/** 「最像你的一位历史人物」。默认是空的——还没评过，画框里还是那页册页。 */
+function figure(overrides: Partial<FigureInfo> = {}): FigureInfo {
+  return {
+    id: '',
+    name: '',
+    era: '',
+    blurb: '',
+    reason: '',
+    credit: '',
+    portrait: '',
+    week: '',
+    chosen_at: '',
+    pool_size: 24,
+    needs_refresh: false,
+    ...overrides,
+  }
+}
+
+/** 评出来的一位：陶渊明。 */
+const TAO = figure({
+  id: 'taoyuanming',
+  name: '陶渊明',
+  era: '东晋',
+  blurb: '不为五斗米折腰，归去来兮。',
+  reason: '你也不爱应酬，喜欢一个人待着；想问题也偏往前看。',
+  credit: '佚名《陶渊明像》',
+  portrait: '/api/profile/figure/portrait/taoyuanming',
+  week: '2026-W38',
+  chosen_at: '2026-09-17',
+})
+
+/** 英文界面下的那一位（名字与理由都由后端按语言给）。 */
+const TAO_EN = figure({
+  ...TAO,
+  name: 'Tao Yuanming',
+  era: 'Eastern Jin',
+  blurb: 'He would not bow for five pecks of rice.',
+  reason: 'You shun company too, and you would rather keep to yourself.',
+  credit: 'Anonymous, Portrait of Tao Yuanming',
+})
+
 function profile(overrides: Partial<ProfileResponse> = {}): ProfileResponse {
   return {
     available: true,
@@ -64,6 +115,7 @@ function profile(overrides: Partial<ProfileResponse> = {}): ProfileResponse {
     traits: TRAITS,
     categories: CATEGORIES,
     pending: 0,
+    figure: figure(),
     ...overrides,
   }
 }
@@ -76,7 +128,9 @@ const NOTHING_NEW: ExtractResult = {
   error: 'nothing_usable',
 }
 
-/** 手动控制的 Promise：用来在"归纳还没回来"的那一刻做断言。 */
+const PICKED: FigureResult = { ok: true, id: 'taoyuanming', llm_used: true, error: '' }
+
+/** 手动控制的 Promise：用来在"还没回来"的那一刻做断言。 */
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => {
@@ -95,6 +149,7 @@ beforeEach(() => {
     llm_used: true,
     error: '',
   })
+  mockedApi.evaluateFigure.mockResolvedValue(PICKED)
   mockedApi.setAvatar.mockResolvedValue({ avatar: 'female' })
   mockedApi.deleteTrait.mockResolvedValue({ deleted: 1 })
   mockedApi.clearProfile.mockResolvedValue({ deleted: TRAITS.length })
@@ -141,6 +196,8 @@ describe('画像的内容', () => {
     const male = screen.getByRole('button', { name: '男' })
     expect(male.getAttribute('aria-pressed')).toBe('true')
 
+    // 换册页就是换名录：切过去之后要重读一次画像（后端会把那一册的人带回来）
+    mockedApi.getProfile.mockResolvedValueOnce(profile({ avatar: 'female' }))
     await user.click(screen.getByRole('button', { name: '女' }))
 
     // 切换要存到后端：它属于画像这份数据，不是浏览器本地偏好
@@ -150,6 +207,7 @@ describe('画像的内容', () => {
         'true',
       ),
     )
+    expect(mockedApi.getProfile).toHaveBeenCalledTimes(2)
   })
 
   it('两式换的是画本身，署名也跟着换', async () => {
@@ -162,6 +220,7 @@ describe('画像的内容', () => {
     expect(maleSrc).toBeTruthy()
     expect(screen.getByText(/陈洪绶《仿古图册·陶渊明像》/)).toBeTruthy()
 
+    mockedApi.getProfile.mockResolvedValueOnce(profile({ avatar: 'female' }))
     await user.click(screen.getByRole('button', { name: '女' }))
 
     await waitFor(() => expect(srcOf()).not.toBe(maleSrc))
@@ -326,6 +385,165 @@ describe('画像的删除', () => {
   })
 })
 
+describe('最像你的一位历史人物', () => {
+  it('还没评出人来时，画框里还是那页册页', async () => {
+    renderProfile()
+
+    await waitFor(() => expect(screen.getByRole('img', { name: '你的形象' })).toBeTruthy())
+    // 空着比放一个陌生人好；题跋也不该提前出现
+    expect(screen.queryByText('像在哪里')).toBeNull()
+    expect(mockedApi.evaluateFigure).not.toHaveBeenCalled()
+  })
+
+  it('评出来之后，画框里换成那个人，题签写着是谁', async () => {
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: TAO }))
+    renderProfile()
+
+    const portrait = await screen.findByRole('img', { name: '陶渊明' })
+    expect(portrait.getAttribute('src')).toBe('/api/profile/figure/portrait/taoyuanming')
+
+    // 题签：先说是谁、哪个时代、一句话，再落署名
+    expect(screen.getByText('最像你的一位')).toBeTruthy()
+    expect(screen.getByText('陶渊明')).toBeTruthy()
+    expect(screen.getByText('东晋 · 不为五斗米折腰，归去来兮。')).toBeTruthy()
+    expect(screen.getByText('佚名《陶渊明像》')).toBeTruthy()
+
+    // 题跋：像在哪里
+    expect(screen.getByRole('heading', { name: '像在哪里' })).toBeTruthy()
+    expect(screen.getByText(/你也不爱应酬，喜欢一个人待着/)).toBeTruthy()
+    expect(screen.getByText('2026-09-17 从 24 位候选人中选出')).toBeTruthy()
+  })
+
+  it('该评的时候后台自己去评一次，评完把新的人读回来', async () => {
+    mockedApi.getProfile
+      .mockResolvedValueOnce(profile({ figure: figure({ needs_refresh: true }) }))
+      .mockResolvedValueOnce(profile({ figure: TAO }))
+
+    renderProfile()
+
+    await waitFor(() => expect(mockedApi.evaluateFigure).toHaveBeenCalledTimes(1))
+    // 中文界面就按中文评
+    expect(mockedApi.evaluateFigure).toHaveBeenCalledWith('zh')
+    await waitFor(() => expect(screen.getByRole('img', { name: '陶渊明' })).toBeTruthy())
+  })
+
+  it('刚评过、画像也没变时不去打扰模型', async () => {
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: TAO }))
+    renderProfile()
+
+    await waitFor(() => expect(screen.getByRole('img', { name: '陶渊明' })).toBeTruthy())
+    // 一周之内答案不变——这正是"每周更新"的含义
+    expect(mockedApi.evaluateFigure).not.toHaveBeenCalled()
+  })
+
+  it('自动评定只做一次，不会自己转圈', async () => {
+    mockedApi.getProfile
+      .mockResolvedValueOnce(profile({ figure: figure({ needs_refresh: true }) }))
+      .mockResolvedValue(profile({ figure: TAO }))
+
+    renderProfile()
+
+    await waitFor(() => expect(mockedApi.evaluateFigure).toHaveBeenCalledTimes(1))
+    // 评完会重新读取画像；若这时又触发一轮，就成了死循环
+    await waitFor(() => expect(mockedApi.getProfile).toHaveBeenCalledTimes(2))
+    expect(mockedApi.evaluateFigure).toHaveBeenCalledTimes(1)
+  })
+
+  it('归纳与评定串着来：归纳没回来就不去评人', async () => {
+    const extracting = deferred<ExtractResult>()
+    // 归纳完 pending 归零，但画像里的人还没评出来（autoFigureRan 还等着）
+    mockedApi.getProfile
+      .mockResolvedValueOnce(profile({ pending: 3, figure: figure({ needs_refresh: true }) }))
+      .mockResolvedValueOnce(profile({ pending: 0, figure: figure({ needs_refresh: true }) }))
+      .mockResolvedValue(profile({ figure: TAO }))
+    mockedApi.extractProfile.mockReturnValue(extracting.promise)
+
+    renderProfile()
+
+    await waitFor(() => expect(screen.getByText(/已经问过 3 条/)).toBeTruthy())
+    // 并行发出去不只是让上游吃两份负载，更糟的是会拿**旧画像**去评人
+    expect(mockedApi.evaluateFigure).not.toHaveBeenCalled()
+
+    extracting.resolve({ ok: true, extracted: 1, total: 5, llm_used: true, error: '' })
+    await waitFor(() => expect(mockedApi.evaluateFigure).toHaveBeenCalledTimes(1))
+  })
+
+  it('手动点「重新评定」也会评一次', async () => {
+    const user = userEvent.setup()
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: TAO }))
+    renderProfile()
+    await waitFor(() => expect(screen.getByRole('img', { name: '陶渊明' })).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: '重新评定' }))
+
+    await waitFor(() => expect(mockedApi.evaluateFigure).toHaveBeenCalledTimes(1))
+  })
+
+  it('评不出来时说清楚原因，而不是弹一个红框了事', async () => {
+    const user = userEvent.setup()
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: TAO }))
+    mockedApi.evaluateFigure.mockResolvedValue({
+      ok: false,
+      id: '',
+      llm_used: false,
+      error: 'llm_disabled',
+    })
+    renderProfile()
+    await waitFor(() => expect(screen.getByRole('img', { name: '陶渊明' })).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: '重新评定' }))
+
+    await waitFor(() => expect(screen.getByText(/没有可用的模型/)).toBeTruthy())
+    // 上一次评出来的人还在，不该因为一次失败就把他抹掉
+    expect(screen.getByText('陶渊明')).toBeTruthy()
+  })
+
+  it('模型给的名字不在名录里时如实说', async () => {
+    const user = userEvent.setup()
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: TAO }))
+    mockedApi.evaluateFigure.mockResolvedValue({
+      ok: false,
+      id: '',
+      llm_used: true,
+      error: 'not_in_pool',
+    })
+    renderProfile()
+    await waitFor(() => expect(screen.getByRole('img', { name: '陶渊明' })).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: '重新评定' }))
+
+    await waitFor(() => expect(screen.getByText(/不在名录里/)).toBeTruthy())
+  })
+
+  it('名录空着时说一声，而不是让人以为还没做完', async () => {
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: figure({ pool_size: 0 }) }))
+    renderProfile()
+
+    await waitFor(() =>
+      expect(screen.getByText('这一册名录里还没有人。')).toBeTruthy(),
+    )
+    expect(mockedApi.evaluateFigure).not.toHaveBeenCalled()
+  })
+
+  it('换到另一册时重读画像，并把评定重新交给后台', async () => {
+    const user = userEvent.setup()
+    mockedApi.getProfile
+      .mockResolvedValueOnce(profile({ figure: TAO }))
+      .mockResolvedValueOnce(profile({ avatar: 'female', figure: figure({ needs_refresh: true }) }))
+      .mockResolvedValue(profile({ avatar: 'female', figure: figure({ ...TAO, name: '李清照', id: 'liqingzhao' }) }))
+    mockedApi.evaluateFigure.mockResolvedValue({ ok: true, id: 'liqingzhao', llm_used: true, error: '' })
+
+    renderProfile()
+    await waitFor(() => expect(screen.getByRole('img', { name: '陶渊明' })).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: '女' }))
+
+    // 两边是两份名录、两个人，切过去得让服务端来说
+    await waitFor(() => expect(mockedApi.evaluateFigure).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('img', { name: '李清照' })).toBeTruthy())
+  })
+})
+
 describe('数据库不可用', () => {
   const BROKEN: ProfileResponse = {
     available: false,
@@ -335,6 +553,7 @@ describe('数据库不可用', () => {
     traits: [],
     categories: CATEGORIES,
     pending: 0,
+    figure: figure(),
   }
 
   it('说明原因，而不是谎称"还没有特征"', async () => {
@@ -394,5 +613,31 @@ describe('英文界面', () => {
     await user.click(screen.getByRole('button', { name: 'Read them again' }))
 
     await waitFor(() => expect(mockedApi.extractProfile).toHaveBeenCalledWith('en'))
+  })
+
+  it('评出来的人也译过来，理由与候选人计数都不夹中文', async () => {
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: TAO_EN }))
+    renderEnglish()
+
+    expect(await screen.findByRole('img', { name: 'Tao Yuanming' })).toBeTruthy()
+    expect(screen.getByText('The one you most resemble')).toBeTruthy()
+    expect(screen.getByText('Eastern Jin · He would not bow for five pecks of rice.')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Where the likeness lies' })).toBeTruthy()
+    expect(screen.getByText('Chosen 2026-09-17, from 24 candidates')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Judge it again' })).toBeTruthy()
+    expect(screen.queryByText('陶渊明')).toBeNull()
+  })
+
+  it('英文界面里评定，请求带上 en——名字与理由才会是英文', async () => {
+    const user = userEvent.setup()
+    mockedApi.getProfile.mockResolvedValue(profile({ figure: TAO_EN }))
+    renderEnglish()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Judge it again' })).toBeTruthy(),
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Judge it again' }))
+
+    await waitFor(() => expect(mockedApi.evaluateFigure).toHaveBeenCalledWith('en'))
   })
 })

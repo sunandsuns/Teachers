@@ -3,8 +3,8 @@
 
 覆盖：健康检查与语料规模 → 前端页面可编译 → vite 代理转发 →
 寻章检索命中古籍 → 原典分块读取 → 求教（含 LLM 状态）→ 回响（历史记录）→
-画像（形象与归纳）→ 阅读页章节链路 → 感悟页筛选 → 知识库（双链与关系图谱）→
-错误路径。
+画像（形象与归纳）→ 历史人物名录与画像文件 → 阅读页章节链路 → 感悟页筛选 →
+知识库（双链与关系图谱）→ 错误路径。
 
 所有请求都走 vite 代理（``localhost:5173``），即浏览器实际使用的那条链路；
 后端 API 直连只用于 A 段，以便区分"后端故障"与"代理故障"。
@@ -326,6 +326,45 @@ def main():
     check("自己造出来的特征已清理干净",
           {x["id"] for x in left} == before,
           "清掉 %d 条，剩 %d 条" % (len(added), len(left)))
+
+    print()
+    print("=== G2. 最像你的一位历史人物 ===")
+    # 与画像同一段：**不断言"一定评出了谁"**（上游好坏不定，评不出来时保持原样
+    # 是设计）。要验的是：名录读得出来、画像文件真的取得到、穿越读不到。
+
+    def get_raw(path):
+        """取原始字节：画像不是 JSON，解不了码也不需要解。"""
+        try:
+            with opener.open(FRONT + path, timeout=20) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, b""
+
+    prof = json.loads(get(FRONT + "/api/profile"))
+    figure = prof["figure"]
+    check("画像里带着历史人物这一块",
+          {"id", "name", "era", "blurb", "reason", "credit", "portrait",
+           "week", "chosen_at", "pool_size", "needs_refresh"} <= set(figure))
+    check("名录读得出来（该性别下不止一两个人）",
+          figure["pool_size"] > 1, "%d 位候选" % figure["pool_size"])
+    check("要不要重评是个布尔值", isinstance(figure["needs_refresh"], bool))
+    check("选中的人物与画像地址同时有或同时无",
+          bool(figure["id"]) == bool(figure["portrait"]),
+          figure["id"] or "还没评出人来")
+    if figure["id"]:
+        check("选中的人带得出时代与署名",
+              bool(figure["era"]) and bool(figure["credit"]), figure["era"])
+        check("记着是哪个周评出的", len(figure["week"]) == 8, figure["week"])
+
+    # 画像走真实的 webp 响应；404 与穿越一并验掉
+    portrait_id = urllib.parse.quote(figure["id"] or "taoyuanming")
+    code, body = get_raw("/api/profile/figure/portrait/" + portrait_id)
+    check("画像文件取得到", code == 200 and len(body) > 1024,
+          "HTTP %d，%d 字节" % (code, len(body)))
+    code, _ = get_raw("/api/profile/figure/portrait/" + urllib.parse.quote("查无此人"))
+    check("不在名录里的 id 返回 404", code == 404, code)
+    code, _ = get_raw("/api/profile/figure/portrait/..%2F..%2F.env")
+    check("穿越的 id 也返回 404", code == 404, code)
 
     print()
     print("=== H. 阅读页章节链路 ===")

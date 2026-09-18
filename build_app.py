@@ -51,7 +51,9 @@ WEB_DIR = ROOT / "web"
 WEB_DIST = WEB_DIR / "dist"
 
 #: 随包分发的语料目录。改这里就要同步改 packaging/app.spec 的说明与启动说明。
-CORPUS_DIRS = ("理解笔记", "books", "MaoZeDongAnthology", "WangYangMing")
+#: ``figures`` 是「最像你的一位历史人物」的名录与画像——放包外同样是为了让用户
+#: 自己能加人（加一条记录 + 一张 webp 就行，不必重打包）。
+CORPUS_DIRS = ("理解笔记", "books", "MaoZeDongAnthology", "WangYangMing", "figures")
 #: 部署态的语料根目录名（server/paths.py 会在 exe 同级找它）
 CORPUS_NAME = "corpus"
 

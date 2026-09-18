@@ -14,6 +14,7 @@ import type {
   ChatTurn,
   DeleteResult,
   ExtractResult,
+  FigureResult,
   HistoryListResponse,
   HistoryStatus,
   InsightItem,
@@ -167,11 +168,22 @@ export const api = {
       body: JSON.stringify({ lang }),
     }),
 
-  /** 切换形象性别。存后端而不是浏览器本地：它属于画像这份数据。 */
+  /** 切换形象性别。存后端而不是浏览器本地：它属于画像这份数据。
+   *  它同时是**历史人物的筛选池**——男册只在男性名录里挑人。 */
   setAvatar: (avatar: Avatar) =>
     request<{ avatar: Avatar }>('/profile/avatar', {
       method: 'PUT',
       body: JSON.stringify({ gender: avatar }),
+    }),
+
+  /** 让模型重新评一次"最像你的一位历史人物"。**会阻塞几十秒**。
+   *
+   *  后端不判断"该不该评"（那是读到画像时给出的 `needs_refresh` 的活儿），
+   *  被调用就评——用户也可能就是想让它重看一遍。 */
+  evaluateFigure: (lang: Lang = activeLang()) =>
+    request<FigureResult>('/profile/figure', {
+      method: 'POST',
+      body: JSON.stringify({ lang }),
     }),
 
   /** 删掉一条特征。用户不认同的判断就该能抹掉。 */

@@ -155,6 +155,15 @@ const ZH = {
   'profile.figureCredit.male': '陈洪绶《仿古图册·陶渊明像》',
   'profile.figureCredit.female': '陈洪绶《仿古图册·仕女》',
   'profile.figureSource': '克利夫兰艺术博物馆藏',
+  // —— 最像你的一位历史人物 ——
+  // 还没评出人来时，中间那一栏就是上面的册页；评出来了就换成那个人。
+  'profile.figure.picked': '最像你的一位',
+  'profile.figure.reason': '像在哪里',
+  'profile.figure.meta': '{date} 从 {count} 位候选人中选出',
+  'profile.figure.evaluate': '重新评定',
+  'profile.figure.evaluating': '正在评定…',
+  'profile.figure.done': '评定了最像你的一位',
+  'profile.figure.none': '这一册名录里还没有人。',
   'profile.extract': '重新归纳',
   'profile.extracting': '正在归纳…',
   'profile.pending': '有 {count} 条新提问还没归纳过',
@@ -169,10 +178,16 @@ const ZH = {
   'profile.unavailable': '画像暂时用不了：{error}。问答记录与其它功能不受影响。',
   'profile.loadFailed': '读取画像失败',
   'profile.extractFailed': '归纳失败，请稍后再试',
+  'profile.figureFailed': '评定失败，请稍后再试',
   'profile.deleteFailed': '删除失败',
   'profile.err.noRecords': '还没有求教记录——先去「求教」问几个问题，再回来归纳',
   'profile.err.noLlm': '当前没有可用的模型，归纳暂时做不了',
+  'profile.err.noLlmFigure': '当前没有可用的模型，评定暂时做不了',
   'profile.err.nothingNew': '这次没读出新的特征。多聊几次，线索够了再来。',
+  'profile.err.noTraits': '还没有可依的画像——先归纳一次，再来评定',
+  'profile.err.noPool': '这一册名录里还没有候选人，评定无从做起',
+  'profile.err.notInPool': '模型给的名字不在名录里，这次不算数',
+  'profile.err.noStore': '画像暂时用不了，无法评定',
   'profile.footnote': '特征由模型归纳，可能出错。看着不认同的那条，删掉就好。',
 
   // ── 感悟 ────────────────────────────────────────────────────
@@ -393,6 +408,14 @@ const EN: Record<MessageKey, string> = {
   'profile.figureCredit.male': 'Chen Hongshou, “Portrait of Tao Yuanming”',
   'profile.figureCredit.female': 'Chen Hongshou, “A Lady”',
   'profile.figureSource': 'Cleveland Museum of Art',
+  // —— the historical figure you most resemble ——
+  'profile.figure.picked': 'The one you most resemble',
+  'profile.figure.reason': 'Where the likeness lies',
+  'profile.figure.meta': 'Chosen {date}, from {count} candidates',
+  'profile.figure.evaluate': 'Judge it again',
+  'profile.figure.evaluating': 'Judging…',
+  'profile.figure.done': 'Chosen the one you most resemble',
+  'profile.figure.none': 'There is nobody in this album yet.',
   'profile.extract': 'Read them again',
   'profile.extracting': 'Reading…',
   'profile.pending': '{count} new questions not read yet',
@@ -409,11 +432,18 @@ const EN: Record<MessageKey, string> = {
     'The portrait is unavailable right now: {error}. Your history and everything else still work.',
   'profile.loadFailed': 'Could not read the portrait',
   'profile.extractFailed': 'Could not read it — please try again later',
+  'profile.figureFailed': 'Could not judge it — please try again later',
   'profile.deleteFailed': 'Delete failed',
   'profile.err.noRecords': 'No questions yet — ask a few in Ask, then come back',
   'profile.err.noLlm': 'No model is available right now, so this cannot be read',
+  'profile.err.noLlmFigure': 'No model is available right now, so this cannot be judged',
   'profile.err.nothingNew':
     'Nothing new this time. Talk a while longer, then come back once there is more to go on.',
+  'profile.err.noTraits': 'Nothing to go on yet — read your traits first',
+  'profile.err.noPool': 'There is nobody in this album to choose from',
+  'profile.err.notInPool':
+    'The model named someone outside the album, so it does not count',
+  'profile.err.noStore': 'The portrait is unavailable, so nobody can be chosen',
   'profile.footnote':
     'Traits are inferred by a model and can be wrong. If one does not ring true, just remove it.',
 
