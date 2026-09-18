@@ -18,6 +18,13 @@
 整个应用跟着挂**：书架、寻章、求教都不依赖数据库，历史记录只是附加功能。
 所以本模块一律不抛异常给上层，而是把失败记在 :attr:`Database.error` 里，
 由业务层决定"这一次没有历史记录"该怎么办。
+
+结构变更怎么办
+--------------------------------------------------------------------------
+建表语句全是 ``IF NOT EXISTS``，对**已经存在**的表不会补列。桌面版的升级方式
+是"把新包解压到旧目录旁边"——库会接着用，不能假设用户会删库重来。所以除了
+建表，还有一份 :data:`MIGRATIONS`：每次打开都看一眼列在不在，缺了就补。
+当前规模不需要版本表，一张补列清单足够。
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ from ..paths import resolve_data_dir
 DB_FILENAME = "history.db"
 
 #: 建表语句。全部 ``IF NOT EXISTS``，因此每次打开都执行一遍即可完成"迁移"，
-#: 不需要额外的版本表——当前只有一个初始版本，等真的需要改结构时再引入。
+#: 缺的列由 :data:`MIGRATIONS` 补上。
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -49,6 +56,9 @@ CREATE TABLE IF NOT EXISTS history (
     -- 实际产出回答的模型名；NULL 表示这次是本地检索降级，没走模型
     model           TEXT,
     retrieved_count INTEGER NOT NULL DEFAULT 0,
+    -- 同一个话题（一次会话里的连续追问）共用一个 id。升级前的老记录为 NULL，
+    -- 显示时各算各的话题，不回填。
+    conversation_id TEXT,
     -- Unix 时间戳（秒）。只存数值、显示时再格式化：清理与排序都要拿它做比较，
     -- 多存一份 ISO 字符串就多一个可能与之不一致的来源。
     created_ts      REAL    NOT NULL
@@ -56,7 +66,24 @@ CREATE TABLE IF NOT EXISTS history (
 
 -- 列表页永远按时间倒序取，且清理按时间范围删，这条索引两处都吃得上
 CREATE INDEX IF NOT EXISTS idx_history_created ON history (created_ts DESC);
+
 """
+
+#: 依赖后加列的语句，**必须等 :data:`MIGRATIONS` 跑完再执行**。
+#:
+#: 老库里还没有 ``conversation_id`` 这一列，先建这个索引会直接报
+#: ``no such column``——而建库一旦失败，整个历史记录功能就不可用了，
+#: 升级用户打开「回响」只会看到一片空白。这条差点被漏掉。
+POST_MIGRATION_DDL = """
+CREATE INDEX IF NOT EXISTS idx_history_conversation ON history (conversation_id, created_ts);
+"""
+
+#: 后加的列。``(表名, 列名, 补列语句)``。
+#: ``ALTER TABLE ADD COLUMN`` 只对**已有**的旧库需要，新建的库在 :data:`SCHEMA`
+#: 里就有这些列了。
+MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("history", "conversation_id", "ALTER TABLE history ADD COLUMN conversation_id TEXT"),
+)
 
 
 class DatabaseUnavailable(RuntimeError):
@@ -108,7 +135,7 @@ class Database:
     # ── 建库 ────────────────────────────────────────────────────────────
 
     def _prepare(self) -> bool:
-        """建目录 → 建库 → 建表。幂等，失败只记原因、不抛。"""
+        """建目录 → 建库 → 建表 → 补列。幂等，失败只记原因、不抛。"""
         with self._lock:
             if self._ready is not None:
                 return self._ready
@@ -124,6 +151,8 @@ class Database:
                     except sqlite3.Error:
                         pass
                     connection.executescript(SCHEMA)
+                    self._migrate(connection)
+                    connection.executescript(POST_MIGRATION_DDL)
                     connection.commit()
                 finally:
                     connection.close()
@@ -133,6 +162,20 @@ class Database:
             self._ready = True
             self._error = ""
             return True
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        """给旧库补上新加的列。
+
+        每次打开都查一遍 ``PRAGMA table_info``：代价是一次极轻的查询，换来的是
+        "用户把新包解压到旧目录上、库照样能用"。
+        """
+        for table, column, statement in MIGRATIONS:
+            existing = {
+                row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in existing:
+                connection.execute(statement)
 
     def connect(self) -> sqlite3.Connection:
         """开一个连接（调用方负责关闭）。**不检查可用性**，供 :meth:`_prepare`

@@ -17,6 +17,16 @@
 代价是清理有滞后：一条记录最多能活到"两个半个月"（正好在一轮清理之后写入，
 就得等下一轮才被扫到）。对"只留半个月"这件事来说，这点误差无关紧要——
 换来的是随时可中断、随时可重启，且不写任何额外状态。
+
+话题（会话）
+--------------------------------------------------------------------------
+一次会话里的连续追问算同一个「话题」，共用一个 ``conversation_id``。列表因此
+可以按话题聚合成一张卡片，而不是把追问散成十几条、每条再贴一遍整篇回答——
+那正是"记录太长、翻不动"的来源。
+
+升级前的老记录没有 ``conversation_id``（为 NULL），显示时用 ``solo:<记录id>``
+当成"自成一话题"。**不回填**：老库里那些记录确实不属于同一次会话，硬凑成
+一个话题反而是在编造关系。
 """
 
 from __future__ import annotations
@@ -24,9 +34,10 @@ from __future__ import annotations
 import os
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from .db import Database
 
@@ -41,6 +52,16 @@ META_LAST_PURGE = "last_purge_ts"
 #: 单次最多返回多少条。防止前端传个巨大的 limit 把整库读进内存
 MAX_LIMIT = 200
 DEFAULT_LIMIT = 20
+
+#: 没有会话的老记录，用它拼出"自成一话题"的 id
+SOLO_PREFIX = "solo:"
+#: 话题 id 取 uuid4 前多少位。12 位十六进制足够单机不重复，且便于人眼扫过
+TOPIC_ID_LENGTH = 12
+
+
+def new_topic_id() -> str:
+    """生成一个新的话题 id。"""
+    return uuid.uuid4().hex[:TOPIC_ID_LENGTH]
 
 
 def retention_days(env: Optional[dict[str, str]] = None) -> float:
@@ -72,6 +93,8 @@ class Record:
     model: Optional[str]
     retrieved_count: int
     created_ts: float
+    #: 所属话题；老记录为 None
+    conversation_id: Optional[str] = None
 
     @property
     def llm_used(self) -> bool:
@@ -83,6 +106,25 @@ class Record:
         return _iso(self.created_ts) or ""
 
 
+@dataclass(frozen=True)
+class Topic:
+    """一个话题：一次会话里的连续追问。
+
+    ``id`` 是给接口用的标识——老记录没有会话 id，用 ``solo:<记录id>`` 顶上，
+    这样前端只有一种"话题"要处理。
+    """
+
+    id: str
+    #: 话题的第一问，充当标题
+    title: str
+    question_count: int
+    first_ts: float
+    last_ts: float
+    #: 最近一问与它的回答（列表上用来做预览）
+    latest_question: str
+    latest_answer: str
+
+
 def _row_to_record(row: Any) -> Record:
     return Record(
         id=row["id"],
@@ -91,7 +133,44 @@ def _row_to_record(row: Any) -> Record:
         model=row["model"],
         retrieved_count=row["retrieved_count"],
         created_ts=row["created_ts"],
+        conversation_id=row["conversation_id"],
     )
+
+
+def _topic_condition(topic_id: str) -> tuple[Optional[str], tuple]:
+    """话题 id → WHERE 条件。认不出来的 id 返回 ``(None, ())``。
+
+    ``solo:<记录id>`` 表示"这条老记录自成一话题"，按主键找；其余按
+    ``conversation_id`` 找。
+    """
+    cleaned = (topic_id or "").strip()
+    if not cleaned:
+        return None, ()
+    if cleaned.startswith(SOLO_PREFIX):
+        raw = cleaned[len(SOLO_PREFIX) :]
+        if not raw.isdigit():
+            return None, ()
+        return "id = ?", (int(raw),)
+    return "conversation_id = ?", (cleaned,)
+
+
+#: 按话题聚合。``?`` 依次是 solo 前缀、limit、offset。
+#:
+#: 取首尾记录用 ``MIN(id)/MAX(id)`` 而不是时间：同一次会话里几条记录的时间戳
+#: 可能落在同一秒，而 id 是严格递增的，谁先谁后不会含糊。
+_TOPIC_ROWS_SQL = """
+SELECT
+    COALESCE(conversation_id, ? || id) AS topic_id,
+    COUNT(*)        AS question_count,
+    MIN(id)         AS first_id,
+    MAX(id)         AS last_id,
+    MIN(created_ts) AS first_ts,
+    MAX(created_ts) AS last_ts
+FROM history
+GROUP BY topic_id
+ORDER BY last_ts DESC, last_id DESC
+LIMIT ? OFFSET ?
+"""
 
 
 def _read_meta(connection, key: str) -> Optional[float]:
@@ -159,17 +238,22 @@ class HistoryStore:
         *,
         model: Optional[str] = None,
         retrieved_count: int = 0,
+        conversation_id: Optional[str] = None,
         now: Optional[float] = None,
     ) -> Optional[int]:
-        """存一条。返回新记录的 id；存不进去返回 None（调用方照常返回答案）。"""
+        """存一条。返回新记录的 id；存不进去返回 None（调用方照常返回答案）。
+
+        ``conversation_id`` 由调用方给（追问时沿用上一轮的话题 id），也可以不给。
+        """
         timestamp = time.time() if now is None else now
         try:
             self._maybe_purge(now=timestamp)
             with self._db.session() as connection:
                 cursor = connection.execute(
-                    "INSERT INTO history (question, answer, model, retrieved_count, created_ts) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (question, answer, model, int(retrieved_count), timestamp),
+                    "INSERT INTO history "
+                    "(question, answer, model, retrieved_count, conversation_id, created_ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (question, answer, model, int(retrieved_count), conversation_id, timestamp),
                 )
                 return int(cursor.lastrowid)
         except Exception:  # noqa: BLE001 — 库不可用或写入失败，都按"这次没记上"处理
@@ -183,6 +267,17 @@ class HistoryStore:
                 return cursor.rowcount > 0
         except Exception:  # noqa: BLE001
             return False
+
+    def delete_topic(self, topic_id: str) -> int:
+        """删掉整个话题，返回删掉的条数（认不出的 id 或失败为 0）。"""
+        where, params = _topic_condition(topic_id)
+        if where is None:
+            return 0
+        try:
+            with self._db.session() as connection:
+                return connection.execute(f"DELETE FROM history WHERE {where}", params).rowcount
+        except Exception:  # noqa: BLE001
+            return 0
 
     def clear(self) -> int:
         """清空全部。返回删掉的条数（失败为 0）。"""
@@ -204,6 +299,90 @@ class HistoryStore:
                 rows = connection.execute(
                     "SELECT * FROM history ORDER BY created_ts DESC, id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
+                ).fetchall()
+                return total, [_row_to_record(row) for row in rows]
+        except Exception:  # noqa: BLE001
+            return 0, []
+
+    def list_topics(
+        self, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[int, list[Topic]]:
+        """按话题聚合列出，最近活跃的在前。返回 ``(话题总数, 本页话题)``。"""
+        limit = max(1, min(int(limit), MAX_LIMIT))
+        offset = max(0, int(offset))
+        try:
+            with self._db.session() as connection:
+                total = int(
+                    connection.execute(
+                        "SELECT COUNT(*) AS n FROM ("
+                        "  SELECT COALESCE(conversation_id, ? || id) AS t"
+                        "  FROM history GROUP BY t"
+                        ")",
+                        (SOLO_PREFIX,),
+                    ).fetchone()["n"]
+                )
+                if total == 0:
+                    return 0, []
+                rows = connection.execute(_TOPIC_ROWS_SQL, (SOLO_PREFIX, limit, offset)).fetchall()
+                return total, self._build_topics(connection, rows)
+        except Exception:  # noqa: BLE001
+            return 0, []
+
+    @staticmethod
+    def _build_topics(connection, rows: Sequence[Any]) -> list[Topic]:
+        """给每条聚合结果补上"第一问"与"最近一问答"的正文。
+
+        首尾两条**一次查回来**，而不是每个话题各查一遍：一页二十个话题就是
+        四十次查询，白白慢上几十毫秒。
+        """
+        wanted: list[int] = []
+        for row in rows:
+            wanted.extend((row["first_id"], row["last_id"]))
+        texts: dict[int, tuple[str, str]] = {}
+        if wanted:
+            marks = ",".join("?" * len(wanted))
+            for record in connection.execute(
+                f"SELECT id, question, answer FROM history WHERE id IN ({marks})", wanted
+            ):
+                texts[record["id"]] = (record["question"], record["answer"])
+
+        topics: list[Topic] = []
+        for row in rows:
+            first = texts.get(row["first_id"], ("", ""))
+            last = texts.get(row["last_id"], ("", ""))
+            topics.append(
+                Topic(
+                    id=row["topic_id"],
+                    title=first[0],
+                    question_count=int(row["question_count"]),
+                    first_ts=float(row["first_ts"]),
+                    last_ts=float(row["last_ts"]),
+                    latest_question=last[0],
+                    latest_answer=last[1],
+                )
+            )
+        return topics
+
+    def list_by_topic(
+        self, topic_id: str, *, limit: int = MAX_LIMIT, offset: int = 0
+    ) -> tuple[int, list[Record]]:
+        """一个话题里的全部问答，按时间**正序**（先问的在前面，读起来才是对话）。"""
+        where, params = _topic_condition(topic_id)
+        if where is None:
+            return 0, []
+        limit = max(1, min(int(limit), MAX_LIMIT))
+        offset = max(0, int(offset))
+        try:
+            with self._db.session() as connection:
+                total = int(
+                    connection.execute(
+                        f"SELECT COUNT(*) AS n FROM history WHERE {where}", params
+                    ).fetchone()["n"]
+                )
+                rows = connection.execute(
+                    f"SELECT * FROM history WHERE {where} "
+                    "ORDER BY created_ts ASC, id ASC LIMIT ? OFFSET ?",
+                    (*params, limit, offset),
                 ).fetchall()
                 return total, [_row_to_record(row) for row in rows]
         except Exception:  # noqa: BLE001

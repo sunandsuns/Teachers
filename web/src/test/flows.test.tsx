@@ -17,8 +17,11 @@ vi.mock('../api/client', () => ({
     probeModel: vi.fn(),
     askStatus: vi.fn(),
     listHistory: vi.fn(),
+    listTopics: vi.fn(),
+    topicRecords: vi.fn(),
     historyStatus: vi.fn(),
     deleteHistory: vi.fn(),
+    deleteTopic: vi.fn(),
     clearHistory: vi.fn(),
     dailyInsight: vi.fn(),
     randomInsight: vi.fn(),
@@ -76,6 +79,7 @@ describe('问答流程', () => {
       llm_used: false,
       model: null,
       history_id: 1,
+      conversation_id: 't1',
     })
     window.history.replaceState({}, '', '/ask')
   })
@@ -121,6 +125,8 @@ describe('导航', () => {
     vi.clearAllMocks()
     mockedApi.listBooks.mockResolvedValue([])
     mockedApi.listHistory.mockResolvedValue({ available: true, error: '', total: 0, items: [] })
+    mockedApi.listTopics.mockResolvedValue({ available: true, error: '', total: 0, items: [] })
+    mockedApi.topicRecords.mockResolvedValue({ available: true, error: '', total: 0, items: [] })
     mockedApi.historyStatus.mockResolvedValue({
       available: true,
       error: '',

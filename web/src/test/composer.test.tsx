@@ -45,6 +45,7 @@ describe('求教输入框', () => {
       llm_used: false,
       model: null,
       history_id: 1,
+      conversation_id: 't1',
     })
   })
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
-from .history import get_history_store
+from .history import get_history_store, new_topic_id
 from .llm import EndpointOverride, generate_answer_with_model, llm_status, probe_endpoint
 from .llm import normalize_lang, resolve_session
 from .retriever import ensure_retriever
@@ -42,6 +42,8 @@ class Answer:
     model: Optional[str]
     #: 落库后的记录 id；没记上（库不可用等）为 None
     history_id: Optional[int] = None
+    #: 这次问答所属的话题。追问时把它带回来，才归得到同一个话题下。
+    conversation_id: Optional[str] = None
 
     @property
     def llm_used(self) -> bool:
@@ -60,6 +62,7 @@ def ask(
     override: Optional[EndpointOverride] = None,
     lang: str = "",
     history: Optional[Sequence[tuple[str, str]]] = None,
+    conversation_id: Optional[str] = None,
 ) -> Answer:
     """回答一个问题。
 
@@ -72,6 +75,10 @@ def ask(
     ``history`` 是最近几轮 ``(问题, 回答)``。**追问能不能接上上文全看它**——
     不带的话，模型收到的永远是一个孤零零的新问题。
 
+    ``conversation_id`` 是话题归属：带上就是接着那个话题追问，不带则新开一个。
+    **无论库是否可用都会给出一个话题 id**——它在前端只是个分组凭据，不该
+    因为"这次没记上账"就丢掉。
+
     回答会顺手存进历史记录。**存不进去不影响返回**：由 ``HistoryStore`` 内部
     吞掉失败，这里只如实带上 ``history_id``（没存上就是 None）。
     一次已经成功的求教，不该因为"附带的记账动作"失败而变成失败。
@@ -79,6 +86,7 @@ def ask(
     results = ensure_retriever().search(question, top_k=top_k)
     session = resolve_session(override)
     answer_lang = normalize_lang(lang)
+    topic_id = (conversation_id or "").strip() or new_topic_id()
 
     if not session.custom:
         key_hint = DEFAULT_KEY_HINT
@@ -98,6 +106,7 @@ def ask(
         answer,
         model=model,
         retrieved_count=len(results),
+        conversation_id=topic_id,
     )
     return Answer(
         question=question,
@@ -105,6 +114,7 @@ def ask(
         retrieved=len(results),
         model=model,
         history_id=record_id,
+        conversation_id=topic_id,
     )
 
 

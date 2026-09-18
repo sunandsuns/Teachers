@@ -49,6 +49,11 @@ class AskRequest(BaseModel):
     lang: str = Field(
         "", max_length=10, description="作答语言：zh / en；留空或无法识别时按 zh"
     )
+    conversation_id: str = Field(
+        "",
+        max_length=64,
+        description="话题 id：带上就是接着那个话题追问，留空则新开一个",
+    )
     history: list[ConversationTurn] = Field(
         default_factory=list,
         max_length=MAX_REQUEST_TURNS,
@@ -69,6 +74,7 @@ class AskResponse(BaseModel):
     history_id: Optional[int] = Field(
         None, description="这条问答在历史记录里的 id；未记上（库不可用等）为 null"
     )
+    conversation_id: str = Field(..., description="这次问答所属的话题；追问时原样带回")
 
 
 class AskStatusResponse(BaseModel):
@@ -101,7 +107,8 @@ def ask(request: AskRequest):
     请求里带 ``llm`` 时改用用户自填的端点（Key 只在本进程内存中存活，
     不落盘、不回显）；不带则走 ``.env`` 里的默认模型。
 
-    ``lang`` 决定回答用什么语言写；``history`` 是最近几轮问答，**追问依赖它**。
+    ``lang`` 决定回答用什么语言写；``history`` 是最近几轮问答，**追问依赖它**；
+    ``conversation_id`` 决定这次问答归到哪个话题下（不带则新开一个，响应里回传）。
 
     这次问答会存进历史记录（界面的「回响」页），``history_id`` 是它的编号。
     历史记录只保留最近半个月，自动清理。
@@ -117,6 +124,7 @@ def ask(request: AskRequest):
         override=request.llm.to_override() if request.llm else None,
         lang=request.lang,
         history=[(turn.question, turn.answer) for turn in request.history],
+        conversation_id=request.conversation_id,
     )
     return AskResponse(
         question=result.question,
@@ -125,6 +133,7 @@ def ask(request: AskRequest):
         llm_used=result.llm_used,
         model=result.model,
         history_id=result.history_id,
+        conversation_id=result.conversation_id or "",
     )
 
 

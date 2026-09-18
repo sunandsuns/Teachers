@@ -126,6 +126,7 @@ describe('Advisor 模型标识', () => {
       llm_used: true,
       model: 'deepseek-v4-pro-0813',
       history_id: 1,
+      conversation_id: 't1',
     })
 
     const user = userEvent.setup()
@@ -149,6 +150,7 @@ describe('Advisor 模型标识', () => {
       llm_used: false,
       model: null,
       history_id: 1,
+      conversation_id: 't1',
     })
 
     const user = userEvent.setup()

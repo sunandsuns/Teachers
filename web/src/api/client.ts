@@ -22,6 +22,7 @@ import type {
   SearchResponse,
   SourceChunk,
   ThemeListResponse,
+  TopicListResponse,
 } from './types'
 
 // 类型从这里一并转出，调用方只认 '../api/client' 这一个入口
@@ -42,6 +43,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(message)
   }
   return resp.json() as Promise<T>
+}
+
+/** 求教时随行带的会话信息：追问要接得上文，也要知道自己属于哪个话题。 */
+export interface AskContext {
+  /** 最近几轮问答（新的在后） */
+  history?: ChatTurn[]
+  /** 所属话题；不带则后端新开一个，响应里回传 */
+  conversationId?: string
 }
 
 export const api = {
@@ -69,14 +78,15 @@ export const api = {
    * `lang` 决定**回答用什么语言写**：语料是中文的，检索永远在中文里进行，
    * 但英文界面下模型会用英文作答、降级文案也换英文。
    *
-   * `history` 是最近几轮问答（新的在后）。**追问靠它接上文**——不带的话，
-   * 后端收到的只是一个孤零零的新问题，回答会从头再讲一遍。 */
+   * `context.history` 是最近几轮问答。**追问靠它接上文**——不带的话，后端收到
+   * 的只是一个孤零零的新问题，回答会从头再讲一遍。
+   * `context.conversationId` 决定这次归到哪个话题下（不给就新开一个）。 */
   ask: (
     question: string,
     topK = 5,
     llm?: LLMEndpoint | null,
     lang: Lang = activeLang(),
-    history: ChatTurn[] = [],
+    context: AskContext = {},
   ) =>
     request<AskResponse>('/ask', {
       method: 'POST',
@@ -84,8 +94,9 @@ export const api = {
         question,
         top_k: topK,
         lang,
+        ...(context.conversationId ? { conversation_id: context.conversationId } : {}),
         // 空数组就别发这个字段，没必要让请求体白带一段
-        ...(history.length ? { history } : {}),
+        ...(context.history?.length ? { history: context.history } : {}),
         ...(llm ? { llm } : {}),
       }),
     }),
@@ -102,6 +113,19 @@ export const api = {
   // 「回响」——求教历史的读写。记录由后端在每次求教时自动存入。
   listHistory: (limit = 20, offset = 0) =>
     request<HistoryListResponse>(`/history?limit=${limit}&offset=${offset}`),
+
+  /** 话题列表：一次会话里的连续追问聚成一张卡片。页面用它，不用平铺的列表。 */
+  listTopics: (limit = 20, offset = 0) =>
+    request<TopicListResponse>(`/history/topics?limit=${limit}&offset=${offset}`),
+
+  /** 一个话题里的全部问答，按时间正序（读起来就是一段对话）。 */
+  topicRecords: (topicId: string) =>
+    request<HistoryListResponse>(`/history/topics/${encodeURIComponent(topicId)}`),
+
+  deleteTopic: (topicId: string) =>
+    request<DeleteResult>(`/history/topics/${encodeURIComponent(topicId)}`, {
+      method: 'DELETE',
+    }),
 
   /** 存储概况。打开页面时调它，后端顺带做一次机会式清理。 */
   historyStatus: () => request<HistoryStatus>('/history/status'),

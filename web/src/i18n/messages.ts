@@ -104,7 +104,7 @@ const ZH = {
 
   // ── 回响 ────────────────────────────────────────────────────
   'history.title': '回响',
-  'history.description': '问过的困惑与得到的回答都收在这里，只留最近半个月',
+  'history.description': '问过的困惑与得到的回答都收在这里，同一件事的追问归在一处，只留最近半个月',
   'history.clear': '清空',
   'history.total': '共 {count} 条',
   'history.retention': '只保留最近 {days} 天',
@@ -120,7 +120,13 @@ const ZH = {
   'history.askAgain': '再问一次',
   'history.delete': '删除',
   'history.loadMoreBusy': '读取中…',
-  'history.loadMore': '加载更多（还有 {count} 条）',
+  'history.loadMore': '加载更多（还有 {count} 个话题）',
+  'history.topicTurns': '{count} 轮追问',
+  'history.expand': '展开这段对话',
+  'history.collapse': '收起',
+  'history.loadingTopic': '正在展开这段对话…',
+  'history.deleteTopic': '删除整段',
+  'history.confirmDeleteTopic': '确定删除这整段对话（共 {count} 轮）吗？此操作不可撤销。',
   'history.confirmClear': '确定要清空全部历史记录吗？此操作不可撤销。',
   'history.loadFailed': '读取历史记录失败',
   'history.loadMoreFailed': '读取更多记录失败',
@@ -253,7 +259,7 @@ const EN: Record<MessageKey, string> = {
 
   'history.title': 'Echoes',
   'history.description':
-    'Every question you asked and every answer you got, kept for the last fortnight only',
+    'Every question and answer, follow-ups kept together with the question they belong to — last fortnight only',
   'history.clear': 'Clear all',
   'history.total': '{count} in total',
   'history.retention': 'keeps the last {days} days',
@@ -269,7 +275,14 @@ const EN: Record<MessageKey, string> = {
   'history.askAgain': 'Ask again',
   'history.delete': 'Delete',
   'history.loadMoreBusy': 'Loading…',
-  'history.loadMore': 'Load more ({count} left)',
+  'history.loadMore': 'Load more ({count} conversations left)',
+  'history.topicTurns': '{count} turns',
+  'history.expand': 'Show the conversation',
+  'history.collapse': 'Collapse',
+  'history.loadingTopic': 'Opening the conversation…',
+  'history.deleteTopic': 'Delete the whole conversation',
+  'history.confirmDeleteTopic':
+    'Delete this whole conversation ({count} turns)? This cannot be undone.',
   'history.confirmClear': 'Clear all history? This cannot be undone.',
   'history.loadFailed': 'Could not read the history',
   'history.loadMoreFailed': 'Could not read more records',

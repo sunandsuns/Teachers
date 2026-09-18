@@ -43,6 +43,7 @@ const ANSWER = {
   llm_used: true,
   model: 'some-model',
   history_id: 1,
+  conversation_id: 't1',
 }
 
 function renderAskPage() {

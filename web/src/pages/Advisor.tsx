@@ -41,6 +41,9 @@ export default function Advisor() {
   // 让人能接着旧问题追问，而不是重新打一遍字。
   const [params] = useSearchParams()
   const [question, setQuestion] = useState(() => params.get('q') ?? '')
+  // 话题：首问留空让后端新开一个，之后每次都用响应里回传的那个。
+  // 从「回响」点"再问一次"跳过来时会带 ?topic=…，于是这次追问仍归在原话题下。
+  const [conversationId, setConversationId] = useState(() => params.get('topic') ?? '')
   const [history, setHistory] = useState<Exchange[]>([])
   const [asking, setAsking] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -74,18 +77,17 @@ export default function Advisor() {
     setAsking(true)
     setError(null)
     try {
-      const answer = await api.ask(
-        trimmed,
-        5,
-        payload,
-        lang,
+      const answer = await api.ask(trimmed, 5, payload, lang, {
+        conversationId,
         // 带上最近几轮：追问要接得上刚才的话
-        history.slice(-FOLLOW_UP_TURNS).map(ex => ({
+        history: history.slice(-FOLLOW_UP_TURNS).map(ex => ({
           question: ex.question,
           answer: ex.answer.answer,
         })),
-      )
+      })
       setHistory(prev => [...prev, { question: trimmed, answer }])
+      // 首问时后端会新开一个话题，这里接住它——后面几问才归得到同一个话题下
+      setConversationId(answer.conversation_id)
       setQuestion('')
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }))
     } catch (err) {

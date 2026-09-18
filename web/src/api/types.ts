@@ -83,6 +83,8 @@ export interface AskResponse {
   model: string | null
   /** 这次问答在「回响」里的编号；没能记上（数据库不可用）时为 null */
   history_id: number | null
+  /** 这次问答所属的话题；追问时原样带回，好归到同一张卡片下 */
+  conversation_id: string
 }
 
 export interface AskStatus {
@@ -131,9 +133,32 @@ export interface HistoryItem {
   model: string | null
   llm_used: boolean
   retrieved_count: number
+  /** 所属话题；升级前的老记录为 null */
+  conversation_id: string | null
   /** 本地时区的 ISO 8601 */
   created_at: string
   created_ts: number
+}
+
+/** 一个话题：一次会话里的连续追问聚成的一张卡片。 */
+export interface TopicItem {
+  /** 话题 id；升级前的老记录是 `solo:<记录id>` */
+  id: string
+  /** 话题的第一问，充当标题 */
+  title: string
+  question_count: number
+  first_ts: number
+  last_ts: number
+  latest_question: string
+  latest_answer: string
+}
+
+export interface TopicListResponse {
+  available: boolean
+  error: string
+  /** 话题数，不是记录数 */
+  total: number
+  items: TopicItem[]
 }
 
 /**

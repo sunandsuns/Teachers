@@ -1,6 +1,21 @@
+/** 「回响」（求教历史）页面。
+ *
+ * 列表按**话题**聚合：一次会话里的连续追问算一个话题，列表上是卡片，
+ * 点开才展开那段对话。平铺的列表追问几轮就没法看了——同一件事会散成好几条，
+ * 每条再贴一遍整篇回答。
+ *
+ * 两条不变的契约（别的都是排版）：
+ *
+ * 1. **列表与概况是两件事**——概况来自 `/api/history/status`，它同时负责告诉
+ *    用户"记录留多久、下次什么时候清理"。删掉东西之后那句"共 N 条"必须跟着变，
+ *    否则界面当场自相矛盾。
+ * 2. **数据库不可用不是错误页**——`available: false` 时要照常渲染、说明原因，
+ *    而不是弹一个红色报错或者显示成"还没有记录"（那会让人以为记录丢了）。
+ */
+
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, type HistoryItem, type HistoryStatus } from '../api/client'
+import { api, type HistoryItem, type HistoryStatus, type TopicItem } from '../api/client'
 import Markdown from '../components/Markdown'
 import { Empty, ErrorBox, Loading } from '../components/Status'
 import Button from '../components/ui/Button'
@@ -8,8 +23,11 @@ import PageHeader from '../components/ui/PageHeader'
 import { useI18n, type Lang } from '../i18n'
 import type { MessageKey } from '../i18n'
 
-/** 一页取多少条。取多了首屏要等，取少了翻页次数多。 */
+/** 一页取多少个话题。取多了首屏要等，取少了翻页次数多。 */
 const PAGE_SIZE = 20
+
+/** 卡片上那段预览的字符上限。 */
+const PREVIEW_LIMIT = 120
 
 type Translate = (key: MessageKey, params?: Record<string, string | number>) => string
 
@@ -51,6 +69,18 @@ function formatDay(iso: string | null, t: Translate, lang: Lang): string {
   return `${date.getMonth() + 1} 月 ${date.getDate()} 日`
 }
 
+/** 回答是整篇 Markdown，卡片上只摊平取开头一小段。
+ *
+ * 不用 CSS 的多行截断：Markdown 里换行与标记符号都得先压掉，
+ * 否则预览第一行可能只有个 `##`。 */
+function preview(text: string): string {
+  const flat = text
+    .replace(/[#>*`|-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return flat.length > PREVIEW_LIMIT ? `${flat.slice(0, PREVIEW_LIMIT)}…` : flat
+}
+
 /** 存储概况那条小字：有多少条、留多久、下次何时清理。 */
 function StatusLine({ status }: { status: HistoryStatus }) {
   const { lang, t } = useI18n()
@@ -79,12 +109,18 @@ function StatusLine({ status }: { status: HistoryStatus }) {
 export default function History() {
   const { lang, t } = useI18n()
   const navigate = useNavigate()
-  const [items, setItems] = useState<HistoryItem[]>([])
-  const [total, setTotal] = useState(0)
+  const [topics, setTopics] = useState<TopicItem[]>([])
+  //: 话题总数（不是记录数——记录总数在 status 里）
+  const [topicTotal, setTopicTotal] = useState(0)
   const [status, setStatus] = useState<HistoryStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [more, setMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  //: 展开的是哪个话题
+  const [openTopic, setOpenTopic] = useState<string | null>(null)
+  //: 取回来的话题记录按话题 id 缓存——反复折叠不该重复请求
+  const [records, setRecords] = useState<Record<string, HistoryItem[]>>({})
+  const [opening, setOpening] = useState<string | null>(null)
 
   // 列表与概况一起取：两者都要，分两次发只是多一个来回。
   // 概况这一趟还会让后端顺带做一次过期清理（见 services/history.py）。
@@ -92,10 +128,15 @@ export default function History() {
     setLoading(true)
     setError(null)
     try {
-      const [listing, storage] = await Promise.all([api.listHistory(PAGE_SIZE, 0), api.historyStatus()])
-      setItems(listing.items)
-      setTotal(listing.total)
+      const [listing, storage] = await Promise.all([
+        api.listTopics(PAGE_SIZE, 0),
+        api.historyStatus(),
+      ])
+      setTopics(listing.items)
+      setTopicTotal(listing.total)
       setStatus(storage)
+      setRecords({})
+      setOpenTopic(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : t('history.loadFailed'))
     } finally {
@@ -110,9 +151,9 @@ export default function History() {
   async function loadMore() {
     setMore(true)
     try {
-      const listing = await api.listHistory(PAGE_SIZE, items.length)
-      setItems(prev => [...prev, ...listing.items])
-      setTotal(listing.total)
+      const listing = await api.listTopics(PAGE_SIZE, topics.length)
+      setTopics(prev => [...prev, ...listing.items])
+      setTopicTotal(listing.total)
     } catch (err) {
       setError(err instanceof Error ? err.message : t('history.loadMoreFailed'))
     } finally {
@@ -120,13 +161,65 @@ export default function History() {
     }
   }
 
-  async function remove(id: number) {
+  async function toggleTopic(topic: TopicItem) {
+    if (openTopic === topic.id) {
+      setOpenTopic(null)
+      return
+    }
+    setOpenTopic(topic.id)
+    if (records[topic.id]) return
+    setOpening(topic.id)
+    try {
+      const listing = await api.topicRecords(topic.id)
+      setRecords(prev => ({ ...prev, [topic.id]: listing.items }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('history.loadFailed'))
+    } finally {
+      setOpening(null)
+    }
+  }
+
+  async function removeRecord(topicId: string, id: number) {
     try {
       await api.deleteHistory(id)
-      setItems(prev => prev.filter(item => item.id !== id))
-      setTotal(prev => Math.max(0, prev - 1))
-      // 概况里的总数也要跟着动，否则那句"共 N 条"会立刻说谎
-      setStatus(prev => (prev ? { ...prev, total: Math.max(0, prev.total - 1) } : prev))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('history.deleteFailed'))
+      return
+    }
+    const rest = (records[topicId] ?? []).filter(item => item.id !== id)
+    setRecords(prev => ({ ...prev, [topicId]: rest }))
+    // 概况那行写的是记录总数，删一条就得跟着减
+    setStatus(prev => (prev ? { ...prev, total: Math.max(0, prev.total - 1) } : prev))
+    if (rest.length === 0) {
+      // 话题空了就整张卡片撤掉，别留一个"0 轮追问"在那儿
+      setTopics(prev => prev.filter(item => item.id !== topicId))
+      setTopicTotal(prev => Math.max(0, prev - 1))
+      setOpenTopic(null)
+    } else {
+      setTopics(prev =>
+        prev.map(item =>
+          item.id === topicId ? { ...item, question_count: rest.length } : item,
+        ),
+      )
+    }
+  }
+
+  async function removeTopic(topic: TopicItem) {
+    // 整段删掉是不可撤销的，问一句再动手
+    if (!window.confirm(t('history.confirmDeleteTopic', { count: topic.question_count }))) return
+    try {
+      const result = await api.deleteTopic(topic.id)
+      setTopics(prev => prev.filter(item => item.id !== topic.id))
+      setTopicTotal(prev => Math.max(0, prev - 1))
+      setStatus(prev =>
+        prev ? { ...prev, total: Math.max(0, prev.total - result.deleted) } : prev,
+      )
+      setRecords(prev => {
+        const next = { ...prev }
+        delete next[topic.id]
+        return next
+      })
+      setOpenTopic(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : t('history.deleteFailed'))
     }
@@ -148,7 +241,7 @@ export default function History() {
   return (
     <section className="mx-auto w-full max-w-3xl">
       <PageHeader title={t('history.title')} description={t('history.description')}>
-        {total > 0 && (
+        {topicTotal > 0 && (
           <Button variant="secondary" size="sm" onClick={clearAll}>
             {t('history.clear')}
           </Button>
@@ -157,62 +250,112 @@ export default function History() {
 
       {status && <StatusLine status={status} />}
 
-      {unavailable && (
-        <ErrorBox message={t('history.unavailable', { error: status.error })} />
-      )}
+      {unavailable && <ErrorBox message={t('history.unavailable', { error: status.error })} />}
 
       {loading && <Loading text={t('history.loading')} />}
       {error && <ErrorBox message={error} />}
 
-      {!loading && !unavailable && items.length === 0 && <Empty>{t('history.empty')}</Empty>}
+      {!loading && !unavailable && topics.length === 0 && <Empty>{t('history.empty')}</Empty>}
 
-      <div className="space-y-5">
-        {items.map(item => (
-          <article key={item.id} className="card p-5 animate-fade-up">
-            <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-              <h2 className="min-w-0 font-serif text-base font-bold leading-relaxed text-ink-900">
-                {item.question}
-              </h2>
-              <span className="shrink-0 pt-0.5 text-xs text-ink-400">
-                {formatTime(item.created_ts, t, lang)}
-              </span>
-            </header>
+      <div className="space-y-4">
+        {topics.map(topic => {
+          const open = openTopic === topic.id
+          const items = records[topic.id] ?? []
+          return (
+            <article key={topic.id} className="card animate-fade-up">
+              <button
+                type="button"
+                onClick={() => void toggleTopic(topic)}
+                aria-expanded={open}
+                className="w-full px-5 py-4 text-left"
+              >
+                <span className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+                  <span className="min-w-0 break-words font-serif text-base font-bold leading-relaxed text-ink-900">
+                    {topic.title}
+                  </span>
+                  <span className="shrink-0 pt-0.5 text-xs text-ink-400">
+                    {formatTime(topic.last_ts, t, lang)}
+                  </span>
+                </span>
+                {/* 收起时给一段预览：不点开也能想起这件事聊到哪了 */}
+                {!open && (
+                  <span className="mt-2 block text-sm leading-relaxed text-ink-500">
+                    {preview(topic.latest_answer)}
+                  </span>
+                )}
+                <span className="mt-3 flex flex-wrap items-center gap-2 text-xs text-ink-400">
+                  <span>{t('history.topicTurns', { count: topic.question_count })}</span>
+                  <span aria-hidden="true" className="h-1 w-1 rounded-full bg-paper-400" />
+                  <span>{open ? t('history.collapse') : t('history.expand')}</span>
+                </span>
+              </button>
 
-            <div className="mt-3 border-t border-paper-200 pt-3">
-              <Markdown content={item.answer} />
-            </div>
+              {open && (
+                <div className="mx-5 border-t border-paper-200 pb-5 pt-4">
+                  {opening === topic.id && <Loading text={t('history.loadingTopic')} />}
 
-            <footer className="mt-3 flex flex-wrap items-center gap-2 border-t border-paper-200 pt-3 text-xs text-ink-400">
-              <span>{t('history.cited', { count: item.retrieved_count })}</span>
-              <span aria-hidden="true" className="h-1 w-1 rounded-full bg-paper-400" />
-              <span>
-                {item.llm_used
-                  ? t('history.aiAnswer', { model: item.model ?? '' })
-                  : t('history.localMode')}
-              </span>
-              <span className="ml-auto flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => navigate(`/ask?q=${encodeURIComponent(item.question)}`)}
-                >
-                  {t('history.askAgain')}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => remove(item.id)}>
-                  {t('history.delete')}
-                </Button>
-              </span>
-            </footer>
-          </article>
-        ))}
+                  <div className="space-y-5">
+                    {items.map(record => (
+                      <div key={record.id} className="space-y-2">
+                        <p className="break-words font-serif text-sm font-bold leading-relaxed text-ink-900">
+                          {record.question}
+                        </p>
+                        <Markdown content={record.answer} />
+                        <div className="flex flex-wrap items-center gap-2 border-t border-paper-200 pt-2 text-xs text-ink-400">
+                          <span>{formatTime(record.created_ts, t, lang)}</span>
+                          <span aria-hidden="true" className="h-1 w-1 rounded-full bg-paper-400" />
+                          <span>{t('history.cited', { count: record.retrieved_count })}</span>
+                          <span aria-hidden="true" className="h-1 w-1 rounded-full bg-paper-400" />
+                          <span>
+                            {record.llm_used
+                              ? t('history.aiAnswer', { model: record.model ?? '' })
+                              : t('history.localMode')}
+                          </span>
+                          <span className="ml-auto flex items-center gap-1">
+                            {/* 带上话题一起跳过去：接着问的问题仍归在这件事下 */}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                navigate(
+                                  `/ask?q=${encodeURIComponent(record.question)}` +
+                                    `&topic=${encodeURIComponent(topic.id)}`,
+                                )
+                              }
+                            >
+                              {t('history.askAgain')}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => void removeRecord(topic.id, record.id)}
+                            >
+                              {t('history.delete')}
+                            </Button>
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex justify-end">
+                    <Button variant="ghost" size="sm" onClick={() => void removeTopic(topic)}>
+                      {t('history.deleteTopic')}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </article>
+          )
+        })}
       </div>
 
-      {items.length < total && (
+      {topics.length < topicTotal && (
         <div className="flex justify-center pt-6">
           <Button variant="secondary" onClick={loadMore} disabled={more}>
             {more
               ? t('history.loadMoreBusy')
-              : t('history.loadMore', { count: total - items.length })}
+              : t('history.loadMore', { count: topicTotal - topics.length })}
           </Button>
         </div>
       )}
