@@ -1,3 +1,5 @@
+import { categoryName, useI18n } from '../i18n'
+
 /**
  * 类目标记。
  *
@@ -24,10 +26,13 @@ export function categoryDot(category: string): string {
 }
 
 export default function CategoryTag({ category }: { category: string }) {
+  const { lang } = useI18n()
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-paper-300 bg-paper-50 px-2 py-0.5 text-xs text-ink-600">
       <span className={`h-1.5 w-1.5 rounded-full ${categoryDot(category)}`} aria-hidden="true" />
-      {category}
+      {/* 色点按原始中文名取色、文字按当前语言显示：语料里叫什么不影响配色，
+          换语言也不会让某个类目忽然换颜色 */}
+      {categoryName(category, lang)}
     </span>
   )
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type SearchKind, type SearchResultItem } from '../api/client'
+import { sourceLabel, useI18n, type MessageKey } from '../i18n'
 import { Loading, ErrorBox } from '../components/Status'
 import Badge from '../components/ui/Badge'
 import Button from '../components/ui/Button'
@@ -8,12 +9,15 @@ import Chip from '../components/ui/Chip'
 import PageHeader from '../components/ui/PageHeader'
 import Segmented from '../components/ui/Segmented'
 
+/** 示例词固定用中文：检索是在中文语料上做的分词匹配，
+ * 换成英文关键词只会得到空结果——与其给一个点了没用的示例，
+ * 不如保留中文词，并在输入框提示里说明"要输中文"。 */
 const EXAMPLES = ['自强不息', '知足者富', '不战而屈人之兵', '才者德之资也', '上善若水']
 
-const KIND_TABS: { value: SearchKind; label: string }[] = [
-  { value: 'all', label: '全部' },
-  { value: 'notes', label: '深读笔记' },
-  { value: 'source', label: '原典全文' },
+const KIND_TABS: { value: SearchKind; key: MessageKey }[] = [
+  { value: 'all', key: 'search.kind.all' },
+  { value: 'notes', key: 'search.kind.notes' },
+  { value: 'source', key: 'search.kind.source' },
 ]
 
 /** 结果深链：笔记跳到具体章节，原典跳到原典页并定位到那一段。 */
@@ -30,6 +34,7 @@ function resultLink(result: SearchResultItem): string {
  * 结果直接深链回 Reader 页：笔记定位到章节，原典定位到字符位置。
  */
 export default function Search() {
+  const { lang, t } = useI18n()
   const [query, setQuery] = useState('')
   const [kind, setKind] = useState<SearchKind>('all')
   const [results, setResults] = useState<SearchResultItem[] | null>(null)
@@ -45,7 +50,7 @@ export default function Search() {
       const resp = await api.search(keyword, 12, nextKind)
       setResults(resp.results)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '检索失败，请稍后再试')
+      setError(err instanceof Error ? err.message : t('search.failed'))
     } finally {
       setSearching(false)
     }
@@ -58,10 +63,7 @@ export default function Search() {
 
   return (
     <section>
-      <PageHeader
-        title="寻章"
-        description="在全部经典的深读笔记与原典全文中检索一句话，直接跳到它所在的位置"
-      />
+      <PageHeader title={t('search.title')} description={t('search.description')} />
 
       <form
         onSubmit={event => {
@@ -73,8 +75,8 @@ export default function Search() {
         <input
           value={query}
           onChange={event => setQuery(event.target.value)}
-          placeholder="输入关键词，例如：上善若水"
-          aria-label="检索关键词"
+          placeholder={t('search.placeholder')}
+          aria-label={t('search.keywordLabel')}
           className="field min-w-0 flex-1 font-serif"
         />
         <Button
@@ -82,17 +84,22 @@ export default function Search() {
           disabled={searching || !query.trim()}
           className="shrink-0 sm:px-6"
         >
-          检索
+          {t('search.submit')}
         </Button>
       </form>
 
       <div className="mb-6">
-        <Segmented value={kind} options={KIND_TABS} onChange={switchKind} />
+        <Segmented
+          value={kind}
+          ariaLabel={t('search.scopeGroup')}
+          options={KIND_TABS.map(tab => ({ value: tab.value, label: t(tab.key) }))}
+          onChange={switchKind}
+        />
       </div>
 
       {results === null && (
         <div className="card p-8 text-center">
-          <p className="font-serif text-base text-ink-500">试试这些关键词：</p>
+          <p className="font-serif text-base text-ink-500">{t('search.examplesTitle')}</p>
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             {EXAMPLES.map(word => (
               <Chip
@@ -109,13 +116,15 @@ export default function Search() {
         </div>
       )}
 
-      {searching && <Loading text="正在翻检经典…" />}
+      {searching && <Loading text={t('search.searching')} />}
       {error && <ErrorBox message={error} />}
 
       {results !== null && !searching && (
         <>
           <p className="mb-4 text-sm text-ink-500">
-            {results.length ? `命中 ${results.length} 段` : '没有找到相关段落，换个词试试'}
+            {results.length
+              ? t('search.hits', { count: results.length })
+              : t('search.noHits')}
           </p>
           <ol className="space-y-3">
             {results.map(result => (
@@ -127,14 +136,16 @@ export default function Search() {
                   <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                     <span className="flex items-center gap-2">
                       <Badge tone={result.kind === 'source' ? 'ink' : 'brand'}>
-                        {result.kind === 'source' ? '原典' : '笔记'}
+                        {result.kind === 'source'
+                          ? t('search.badge.source')
+                          : t('search.badge.notes')}
                       </Badge>
                       <span className="font-serif text-sm font-bold text-cinnabar-600">
-                        {result.source}
+                        {sourceLabel(result.source, lang)}
                       </span>
                     </span>
                     <span className="shrink-0 text-xs text-ink-400">
-                      相关度 {result.score.toFixed(3)}
+                      {t('search.score', { score: result.score.toFixed(3) })}
                     </span>
                   </div>
                   <p className="line-clamp-4 whitespace-pre-wrap font-serif text-sm leading-relaxed text-ink-700">

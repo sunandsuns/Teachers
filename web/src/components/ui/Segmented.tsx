@@ -7,6 +7,9 @@ interface SegmentedProps<T extends string> {
   value: T
   options: readonly Option<T>[]
   onChange: (value: T) => void
+  /** 这组开关管的是什么。读屏软件只会念出各按钮的字面，
+   *  不给组名就听不出"这几个按钮是一伙的、在切什么"。 */
+  ariaLabel?: string
   className?: string
 }
 
@@ -21,11 +24,13 @@ export default function Segmented<T extends string>({
   value,
   options,
   onChange,
+  ariaLabel,
   className = '',
 }: SegmentedProps<T>) {
   return (
     <div
       role="group"
+      aria-label={ariaLabel}
       className={`inline-flex rounded-lg border border-paper-300 bg-paper-200/60 p-0.5 ${className}`}
     >
       {options.map(option => {

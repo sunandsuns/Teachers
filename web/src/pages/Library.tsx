@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type BookSummary } from '../api/client'
+import { authorName, bookTitle, categoryName, useI18n } from '../i18n'
 import { useAsync } from '../hooks/useAsync'
 import { Loading, ErrorBox, Empty } from '../components/Status'
 import CategoryTag from '../components/Category'
@@ -8,6 +9,7 @@ import PageHeader from '../components/ui/PageHeader'
 import Chip from '../components/ui/Chip'
 
 function BookCard({ book }: { book: BookSummary }) {
+  const { lang, t } = useI18n()
   return (
     <Link
       to={`/books/${book.book_id}`}
@@ -15,24 +17,29 @@ function BookCard({ book }: { book: BookSummary }) {
     >
       <div className="mb-3 flex items-start justify-between gap-3">
         <h2 className="font-serif text-lg font-bold leading-snug text-ink-900 transition-colors group-hover:text-cinnabar-600">
-          {book.title}
+          {bookTitle(book.title, lang)}
         </h2>
         <CategoryTag category={book.category} />
       </div>
-      <p className="text-sm text-ink-500">{book.author}</p>
+      <p className="text-sm text-ink-500">{authorName(book.author, lang)}</p>
       <p className="mt-auto pt-5 text-xs text-ink-400">
-        {book.chapter_count > 0 ? `${book.chapter_count} 章` : '暂无内容'}
-        {book.has_source ? ' · 含原典' : ''}
+        {book.chapter_count > 0
+          ? t('library.chapters', { count: book.chapter_count })
+          : t('library.noContent')}
+        {book.has_source ? t('library.hasSource') : ''}
       </p>
     </Link>
   )
 }
 
 export default function Library() {
+  const { lang, t } = useI18n()
   const { data: books, error, loading } = useAsync(() => api.listBooks(), [])
   const [category, setCategory] = useState<string | null>(null)
 
-  // 分类顺序按书目顺序首次出现决定，与后端注册表保持一致
+  // 分类顺序按书目顺序首次出现决定，与后端注册表保持一致。
+  // 筛选用**原始中文类目**而不是显示名：显示名会随语言变，
+  // 拿它当键会让"切换语言"把已选中的筛选条件弄丢。
   const categories = useMemo(() => {
     const seen: string[] = []
     for (const book of books ?? []) {
@@ -48,15 +55,18 @@ export default function Library() {
 
   if (loading) return <Loading />
   if (error) return <ErrorBox message={error} />
-  if (!books?.length) return <Empty>书架还是空的</Empty>
+  if (!books?.length) return <Empty>{t('library.empty')}</Empty>
 
   return (
     <section>
-      <PageHeader title="书架" description={`${books.length} 部经典 · 点击进入阅读`} />
+      <PageHeader
+        title={t('library.title')}
+        description={t('library.description', { count: books.length })}
+      />
 
       <div className="mb-6 flex flex-wrap gap-2">
         <Chip active={category === null} onClick={() => setCategory(null)} count={books.length}>
-          全部
+          {t('library.all')}
         </Chip>
         {categories.map(name => (
           <Chip
@@ -65,7 +75,7 @@ export default function Library() {
             onClick={() => setCategory(name)}
             count={books.filter(book => book.category === name).length}
           >
-            {name}
+            {categoryName(name, lang)}
           </Chip>
         ))}
       </div>
@@ -77,7 +87,7 @@ export default function Library() {
           ))}
         </div>
       ) : (
-        <Empty>该分类下暂无书目</Empty>
+        <Empty>{t('library.emptyCategory')}</Empty>
       )}
     </section>
   )

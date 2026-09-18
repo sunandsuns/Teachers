@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
+import { authorName, bookTitle, useI18n, type MessageKey } from '../i18n'
 import { useAsync } from '../hooks/useAsync'
 import { useSourceReader } from '../hooks/useSourceReader'
 import Markdown from '../components/Markdown'
@@ -11,12 +12,13 @@ import Segmented from '../components/ui/Segmented'
 
 type Tab = 'notes' | 'source'
 
-const TABS: { value: Tab; label: string }[] = [
-  { value: 'notes', label: '理解笔记' },
-  { value: 'source', label: '原典全文' },
+const TABS: { value: Tab; key: MessageKey }[] = [
+  { value: 'notes', key: 'reader.tab.notes' },
+  { value: 'source', key: 'reader.tab.source' },
 ]
 
 export default function Reader() {
+  const { lang, t } = useI18n()
   const { bookId = '' } = useParams()
   // 支持深链：/books/13?chapter=04 由「寻章」笔记结果跳转而来，
   // /books/13?tab=source&offset=120000 由原典结果跳转而来
@@ -47,7 +49,7 @@ export default function Reader() {
 
   if (bookLoading) return <Loading />
   if (bookError) return <ErrorBox message={bookError} />
-  if (!book) return <Empty>未找到此书</Empty>
+  if (!book) return <Empty>{t('reader.notFound')}</Empty>
 
   // 只有篇幅超过一块的原典才需要显示翻页进度
   const paginated = source.total > source.chunkSize && source.chunkSize > 0
@@ -60,25 +62,32 @@ export default function Reader() {
             to="/"
             className="mb-2 inline-block text-sm text-ink-400 transition-colors hover:text-cinnabar-600"
           >
-            ← 书架
+            {t('reader.back')}
           </Link>
           <h1 className="font-serif text-2xl font-bold tracking-tight text-ink-900">
-            {book.title}
+            {bookTitle(book.title, lang)}
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-2.5 text-sm text-ink-500">
-            <span>{book.author}</span>
+            <span>{authorName(book.author, lang)}</span>
             <CategoryTag category={book.category} />
           </div>
         </div>
-        {book.has_source && <Segmented value={tab} options={TABS} onChange={setTab} />}
+        {book.has_source && (
+          <Segmented
+            value={tab}
+            ariaLabel={t('reader.viewGroup')}
+            options={TABS.map(item => ({ value: item.value, label: t(item.key) }))}
+            onChange={setTab}
+          />
+        )}
       </div>
 
       {tab === 'notes' ? (
         <div className="flex flex-col gap-6 lg:flex-row">
-          <nav className="lg:w-64 lg:shrink-0" aria-label="章节列表">
+          <nav className="lg:w-64 lg:shrink-0" aria-label={t('reader.chapterList')}>
             <div className="card overflow-hidden lg:sticky lg:top-20">
               <p className="border-b border-paper-200 px-4 py-2.5 text-xs text-ink-400">
-                共 {chapters?.length ?? 0} 章
+                {t('reader.chapterCount', { count: chapters?.length ?? 0 })}
               </p>
               <ul className="max-h-96 overflow-y-auto p-1.5 lg:max-h-sidebar">
                 {chapters?.map(ch => {
@@ -105,7 +114,7 @@ export default function Reader() {
                   <li className="px-3 py-2 text-sm text-cinnabar-600">{chaptersError}</li>
                 )}
                 {!chapters?.length && !chaptersError && (
-                  <li className="px-3 py-2 text-sm text-ink-400">暂无章节</li>
+                  <li className="px-3 py-2 text-sm text-ink-400">{t('reader.noChapters')}</li>
                 )}
               </ul>
             </div>
@@ -120,22 +129,24 @@ export default function Reader() {
                 <Markdown content={chapterDetail.content} />
               </>
             ) : (
-              <Empty>选择左侧章节开始阅读</Empty>
+              <Empty>{t('reader.pickChapter')}</Empty>
             )}
           </article>
         </div>
       ) : (
         // 原典正文单独居中成栏：满宽会让一行排到六十余字，中文长文读起来很累
         <article className="card mx-auto w-full max-w-3xl p-6 sm:p-8">
-          {source.loading && !source.text && <Loading text="加载原典…" />}
+          {source.loading && !source.text && <Loading text={t('reader.loadingSource')} />}
           {source.error && <ErrorBox message={source.error} />}
           {source.text && (
             <>
               {source.startOffset > 0 && (
                 <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-paper-300 bg-paper-100 px-4 py-2.5 text-sm text-ink-600">
-                  <span>从第 {source.startOffset.toLocaleString()} 字处开始显示</span>
+                  <span>
+                    {t('reader.startAt', { offset: source.startOffset.toLocaleString() })}
+                  </span>
                   <Button variant="secondary" size="sm" onClick={source.restart}>
-                    从头读
+                    {t('reader.fromStart')}
                   </Button>
                 </div>
               )}
@@ -145,10 +156,13 @@ export default function Reader() {
               {paginated && (
                 <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-paper-200 pt-4 text-sm text-ink-500">
                   <span>
-                    已载入 {source.startOffset + source.text.length > source.total
-                      ? source.total.toLocaleString()
-                      : (source.startOffset + source.text.length).toLocaleString()}{' '}
-                    / {source.total.toLocaleString()} 字
+                    {t('reader.progress', {
+                      loaded: (source.startOffset + source.text.length > source.total
+                        ? source.total
+                        : source.startOffset + source.text.length
+                      ).toLocaleString(),
+                      total: source.total.toLocaleString(),
+                    })}
                   </span>
                   {source.hasMore && (
                     <Button
@@ -157,7 +171,7 @@ export default function Reader() {
                       onClick={source.loadMore}
                       disabled={source.loading}
                     >
-                      {source.loading ? '载入中…' : '载入后续'}
+                      {source.loading ? t('reader.loading') : t('reader.loadMore')}
                     </Button>
                   )}
                 </div>

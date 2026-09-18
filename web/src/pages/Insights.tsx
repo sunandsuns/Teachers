@@ -6,8 +6,10 @@ import Badge from '../components/ui/Badge'
 import Button from '../components/ui/Button'
 import Chip from '../components/ui/Chip'
 import PageHeader from '../components/ui/PageHeader'
+import { useI18n, themeName } from '../i18n'
 
 function InsightCard({ insight }: { insight: InsightItem }) {
+  const { lang } = useI18n()
   return (
     <article className="card flex flex-col p-5 hover:border-cinnabar-300">
       <blockquote className="border-l-2 border-cinnabar-400 pl-4 font-kai text-lg leading-relaxed text-ink-900">
@@ -18,7 +20,7 @@ function InsightCard({ insight }: { insight: InsightItem }) {
         <span className="font-serif text-xs text-ink-400">—— {insight.source}</span>
         <div className="flex flex-wrap gap-1.5">
           {insight.themes.map(theme => (
-            <Badge key={theme}>{theme}</Badge>
+            <Badge key={theme}>{themeName(theme, lang)}</Badge>
           ))}
         </div>
       </div>
@@ -27,6 +29,7 @@ function InsightCard({ insight }: { insight: InsightItem }) {
 }
 
 export default function Insights() {
+  const { t, lang } = useI18n()
   const [theme, setTheme] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
 
@@ -41,11 +44,11 @@ export default function Insights() {
 
   return (
     <section>
-      <PageHeader title="感悟" description="每日一句经典智慧，给生活一点提醒" />
+      <PageHeader title={t('insight.title')} description={t('insight.description')} />
 
       {daily && (
         <div className="card mb-6 border-cinnabar-200 bg-cinnabar-50 px-6 py-10 text-center sm:px-10">
-          <span className="text-xs tracking-widest text-cinnabar-600">今日感悟</span>
+          <span className="text-xs tracking-widest text-cinnabar-600">{t('insight.daily')}</span>
           <blockquote className="mx-auto mt-5 max-w-2xl font-kai text-xl leading-relaxed text-ink-900 sm:text-2xl">
             {daily.text}
           </blockquote>
@@ -58,7 +61,7 @@ export default function Insights() {
 
       <div className="mb-8 flex flex-wrap items-center gap-3">
         <Button variant="secondary" onClick={() => setRefreshKey(k => k + 1)}>
-          随机一则
+          {t('insight.random')}
         </Button>
         {randomItem && (
           <p className="min-w-0 flex-1 truncate font-serif text-sm text-ink-600">
@@ -75,25 +78,24 @@ export default function Insights() {
 
       {themeData && (
         <>
-          <h2 className="mb-4 font-serif text-lg font-bold text-ink-900">按主题浏览</h2>
+          <h2 className="mb-4 font-serif text-lg font-bold text-ink-900">{t('insight.byTheme')}</h2>
           <div className="mb-6 flex flex-wrap gap-2">
             <Chip active={theme === null} onClick={() => setTheme(null)}>
-              全部
+              {t('insight.all')}
             </Chip>
-            {themeData.themes.map(t => (
+            {themeData.themes.map(tm => (
               <Chip
-                key={t}
-                active={theme === t}
-                onClick={() => setTheme(t)}
-                count={themeData.counts[t]}
+                key={tm}
+                active={theme === tm}
+                onClick={() => setTheme(tm)}
+                count={themeData.counts[tm]}
               >
-                {t}
+                {themeName(tm, lang)}
               </Chip>
             ))}
           </div>
-          {/* 未选主题时下方本来是一片空白，补一句引导把动作说清楚 */}
           {theme === null && (
-            <p className="text-sm text-ink-400">选择一个主题，看看不同的经典怎么说</p>
+            <p className="text-sm text-ink-400">{t('insight.pickTheme')}</p>
           )}
         </>
       )}
@@ -104,7 +106,7 @@ export default function Insights() {
             themeInsights.items.map(item => <InsightCard key={item.id} insight={item} />)
           ) : (
             <div className="lg:col-span-2">
-              <Empty>该主题下暂无感悟</Empty>
+              <Empty>{t('insight.emptyTheme')}</Empty>
             </div>
           )}
         </div>

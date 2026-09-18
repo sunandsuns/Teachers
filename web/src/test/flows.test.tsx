@@ -110,7 +110,7 @@ describe('问答流程', () => {
 
     const input = (await screen.findByPlaceholderText(
       '输入你的问题或困境…',
-    )) as HTMLInputElement
+    )) as HTMLTextAreaElement
     expect(input.value).toBe('迷茫时该怎么办')
   })
 })

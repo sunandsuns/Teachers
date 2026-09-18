@@ -1,14 +1,16 @@
 import type { ReactNode } from 'react'
+import { useI18n } from '../i18n'
 
 /** 载入态：转圈 + 文案。原来只有一段 animate-pulse 文字，看不出"在加载"还是"卡住了"。 */
-export function Loading({ text = '加载中…' }: { text?: string }) {
+export function Loading({ text }: { text?: string }) {
+  const { t } = useI18n()
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-20 text-ink-500">
       <span
         aria-hidden="true"
         className="h-5 w-5 animate-spin rounded-full border-2 border-paper-300 border-t-cinnabar-500"
       />
-      <span className="text-sm">{text}</span>
+      <span className="text-sm">{text ?? t('status.loading')}</span>
     </div>
   )
 }

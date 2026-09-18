@@ -3,6 +3,7 @@
  * 数据形状在 `types.ts`，这里只管怎么发请求。
  */
 
+import { activeLang, tCurrent, type Lang } from '../i18n/messages'
 import type {
   AskResponse,
   AskStatus,
@@ -34,7 +35,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!resp.ok) {
     const detail = await resp.json().catch(() => null)
-    const message = detail?.detail ?? `请求失败（${resp.status}）`
+    // 后端给了 detail 就用它（那是更具体的诊断信息），没给才用这句兜底。
+    // 这里在 React 之外，只能读"当前语言"而不是 hook。
+    const message = detail?.detail ?? tCurrent('error.requestFailed', { status: resp.status })
     throw new Error(message)
   }
   return resp.json() as Promise<T>
@@ -60,11 +63,14 @@ export const api = {
       `/search?q=${encodeURIComponent(q)}&top_k=${topK}&kind=${kind}`,
     ),
 
-  /** 求教。`llm` 省略时用后端内置的默认模型，见 `useModelSettings`。 */
-  ask: (question: string, topK = 5, llm?: LLMEndpoint | null) =>
+  /** 求教。`llm` 省略时用后端内置的默认模型，见 `useModelSettings`。
+   *
+   * `lang` 决定**回答用什么语言写**：语料是中文的，检索永远在中文里进行，
+   * 但英文界面下模型会用英文作答、降级文案也换英文。 */
+  ask: (question: string, topK = 5, llm?: LLMEndpoint | null, lang: Lang = activeLang()) =>
     request<AskResponse>('/ask', {
       method: 'POST',
-      body: JSON.stringify({ question, top_k: topK, ...(llm ? { llm } : {}) }),
+      body: JSON.stringify({ question, top_k: topK, lang, ...(llm ? { llm } : {}) }),
     }),
 
   /** 测一个自定义端点通不通。Key 只在这一次请求里传递，后端不留存。 */
