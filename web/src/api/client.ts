@@ -18,6 +18,9 @@ import type {
   HistoryStatus,
   InsightItem,
   InsightListResponse,
+  KbGraph,
+  KbNode,
+  KbNodeDetail,
   LLMEndpoint,
   ProbeResult,
   ProfileResponse,
@@ -177,4 +180,23 @@ export const api = {
 
   /** 清空画像（**不**动问答记录）。 */
   clearProfile: () => request<DeleteResult>('/profile', { method: 'DELETE' }),
+
+  // 「知识库」——15 部书与 8 个主题之间的双链与关系图谱。
+  /** 全图。默认不含 352 个章节节点，那会把书与书之间的结构淹掉。 */
+  kbGraph: (chapters = false) =>
+    request<KbGraph>(`/kb/graph?chapters=${chapters}`),
+
+  /** 以某个节点为中心的局部图（焦点 + 邻居）。书节点会带上自己的章节。 */
+  kbLocal: (nodeId: string, chapters = true) =>
+    request<KbGraph>(
+      `/kb/nodes/${encodeURIComponent(nodeId)}/local?chapters=${chapters}`,
+    ),
+
+  /** 节点详情：出链、反向链接、主题明细、互参原文。 */
+  kbNode: (nodeId: string) =>
+    request<KbNodeDetail>(`/kb/nodes/${encodeURIComponent(nodeId)}`),
+
+  /** 按名字找节点。空查询返回关联最多的若干节点。 */
+  kbSearch: (q = '', limit = 20) =>
+    request<KbNode[]>(`/kb/search?q=${encodeURIComponent(q)}&limit=${limit}`),
 }

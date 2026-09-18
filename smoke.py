@@ -3,7 +3,8 @@
 
 覆盖：健康检查与语料规模 → 前端页面可编译 → vite 代理转发 →
 寻章检索命中古籍 → 原典分块读取 → 求教（含 LLM 状态）→ 回响（历史记录）→
-画像（形象与归纳）→ 阅读页章节链路 → 感悟页筛选 → 错误路径。
+画像（形象与归纳）→ 阅读页章节链路 → 感悟页筛选 → 知识库（双链与关系图谱）→
+错误路径。
 
 所有请求都走 vite 代理（``localhost:5173``），即浏览器实际使用的那条链路；
 后端 API 直连只用于 A 段，以便区分"后端故障"与"代理故障"。
@@ -80,6 +81,7 @@ def main():
     check("App.tsx 已转译", ("jsx" in app))
     check("含寻章路由 /search", "/search" in app)
     check("含画像路由 /profile", "/profile" in app)
+    check("含知识库路由 /knowledge", "/knowledge" in app)
 
     print()
     print("=== C. 经 vite 代理访问后端（前端真实链路）===")
@@ -377,10 +379,85 @@ def main():
     check("随机感悟返回", bool(rand["text"]), rand["text"][:20])
 
     print()
-    print("=== J. 错误路径 ===")
+    print("=== J. 知识库（双链与关系图谱）===")
+    # 这一段验的是"笔记里写下的关系真的被读成了图"：15 部书 + 8 个主题是节点，
+    # 笔记里的主题表与交叉点段是边。孤岛与认不出的引用都算故障——前者说明语料
+    # 断了链，后者说明笔记里写错了书名（比如写了《通鉴》却没登记别名）。
+    kb = json.loads(get(FRONT + "/api/kb/graph"))
+    node_ids = {n["id"] for n in kb["nodes"]}
+    check("节点数 == 15 部书 + 8 个主题", len(node_ids) == 23, len(kb["nodes"]))
+    check("书节点齐备", all("book:%02d" % i in node_ids for i in range(1, 16)))
+    check("主题节点齐备", all("theme:%s" % th in node_ids for th in t["themes"]))
+    check("每条边的两端都在节点表里",
+          all(e["source"] in node_ids and e["target"] in node_ids for e in kb["edges"]))
+    check("图上没有自环", all(e["source"] != e["target"] for e in kb["edges"]))
+    check("互参边都带着原文",
+          all(e["label"] for e in kb["edges"] if e["kind"] == "cross"))
+    check("认不出的引用为空",
+          kb["stats"]["unresolved_refs"] == [], kb["stats"]["unresolved_refs"])
+    check("主题都在封闭集合内",
+          kb["stats"]["unknown_themes"] == [], kb["stats"]["unknown_themes"])
+
+    connected = {e["source"] for e in kb["edges"]} | {e["target"] for e in kb["edges"]}
+    isolated = [n["label"] for n in kb["nodes"]
+                if n["kind"] == "book" and n["id"] not in connected]
+    check("没有孤立的书", not isolated, isolated or "无")
+    print("        节点 %d｜边 %d（主题归属 %d / 经典互参 %d）" % (
+        len(kb["nodes"]), kb["stats"]["edges"],
+        kb["stats"]["theme_edges"], kb["stats"]["cross_edges"]))
+
+    expanded = json.loads(get(FRONT + "/api/kb/graph?chapters=true"))
+    chapter_nodes = [n for n in expanded["nodes"] if n["kind"] == "chapter"]
+    check("展开后含全部章节", len(chapter_nodes) == h["total_chapters"], len(chapter_nodes))
+    check("每章都有一条构成边",
+          sum(1 for e in expanded["edges"] if e["kind"] == "part") == len(chapter_nodes))
+
+    node = json.loads(get(FRONT + "/api/kb/nodes/book:08"))
+    check("书节点带元信息", node["node"]["meta"]["author"] == "老子",
+          node["node"]["meta"]["author"])
+    check("出链与反链是两个方向",
+          {l["direction"] for l in node["outgoing"]} == {"out"}
+          and {l["direction"] for l in node["backlinks"]} == {"in"})
+    check("《道德经》被多本书参照", len(node["backlinks"]) >= 3,
+          [l["label"] for l in node["backlinks"]])
+    check("八个主题明细齐备", len(node["theme_rows"]) == 8, len(node["theme_rows"]))
+    check("每条主题明细都带着判断与章句",
+          all(r["judgment"] and r["quote"] for r in node["theme_rows"]))
+
+    # 双链的要点：A 写了它参照 B，那么站在 B 这边必须看得见 A。
+    # 取语料里确定存在的一对（贞观政要·与项目内其他经典的交叉点 → 道德经）。
+    other = json.loads(get(FRONT + "/api/kb/nodes/book:15"))
+    out_labels = {l["label"] for l in other["outgoing"]}
+    check("《贞观政要》写出了它参照的经典", "道德经" in out_labels, sorted(out_labels))
+    check("被参照的那本能看到这条反向链接",
+          any(l["label"] == "贞观政要" for l in node["backlinks"]),
+          [l["label"] for l in node["backlinks"]])
+
+    local = json.loads(get(FRONT + "/api/kb/nodes/book:08/local"))
+    focus = local["stats"]["focus"]
+    check("局部图只留与焦点相连的边",
+          all(e["source"] == focus or e["target"] == focus for e in local["edges"]),
+          "%d 条边" % len(local["edges"]))
+    check("局部图带上这本书自己的章节",
+          any(n["kind"] == "chapter" for n in local["nodes"]),
+          sum(1 for n in local["nodes"] if n["kind"] == "chapter"))
+    check("局部图是全图的子集",
+          {(e["source"], e["target"], e["kind"]) for e in local["edges"]}
+          <= {(e["source"], e["target"], e["kind"]) for e in expanded["edges"]})
+
+    hits = json.loads(get(FRONT + "/api/kb/search?q=" + urllib.parse.quote("道德")))
+    check("按名字找得到节点", any(n["id"] == "book:08" for n in hits),
+          [n["label"] for n in hits])
+    check("空查询返回关联最多的节点",
+          json.loads(get(FRONT + "/api/kb/search"))[0]["degree"] > 0)
+
+    print()
+    print("=== K. 错误路径 ===")
     # 未知 id 必须是干净 404；返回 500 或（更糟）回退成前端 HTML 都算故障：
     # 前端 fetch 会拿到一段 HTML 再报 JSON 解析错误，排查起来非常痛苦。
-    for path in ("/api/books/nope", "/api/books/01/chapters/nope", "/api/insight/999999"):
+    for path in ("/api/books/nope", "/api/books/01/chapters/nope",
+                 "/api/insight/999999", "/api/kb/nodes/book:99",
+                 "/api/kb/nodes/nonsense/local"):
         try:
             get(FRONT + path)
             code = 200

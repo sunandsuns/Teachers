@@ -3,6 +3,7 @@ import Library from './pages/Library'
 import Reader from './pages/Reader'
 import Advisor from './pages/Advisor'
 import History from './pages/History'
+import Knowledge from './pages/Knowledge'
 import Profile from './pages/Profile'
 import Insights from './pages/Insights'
 import Search from './pages/Search'
@@ -68,6 +69,7 @@ export default function App() {
           <Route path="/" element={<Library />} />
           <Route path="/books/:bookId" element={<Reader />} />
           <Route path="/search" element={<Search />} />
+          <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/ask" element={<Advisor />} />
           <Route path="/history" element={<History />} />
           <Route path="/profile" element={<Profile />} />

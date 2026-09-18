@@ -230,3 +230,80 @@ export interface ExtractResult {
   llm_used: boolean
   error: string
 }
+
+// ── 知识库 ──────────────────────────────────────────────────────────────
+// 节点 ID 是带类型前缀的字符串（`book:08` / `theme:逆境` / `chapter:08:04`），
+// 前端不需要另一张对照表就能判断它是什么。
+
+export type KbNodeKind = 'book' | 'theme' | 'chapter'
+
+/** 边类型：主题归属 / 经典互参 / 章节构成 */
+export type KbEdgeKind = 'theme' | 'cross' | 'part'
+
+/** 节点上的附属信息。**按 kind 取用**：书的字段与主题的字段不重叠。 */
+export interface KbNodeMeta {
+  book_id?: string
+  book_title?: string
+  chapter_id?: string
+  theme?: string
+  author?: string
+  category?: string
+  chapter_count?: number
+  has_source?: boolean
+}
+
+export interface KbNode {
+  id: string
+  kind: KbNodeKind
+  label: string
+  /** 关联边数。界面据它决定节点大小 */
+  degree: number
+  meta: KbNodeMeta
+}
+
+export interface KbEdge {
+  source: string
+  target: string
+  kind: KbEdgeKind
+  /** 边上的说明。空串表示"关系成立但没留下说明" */
+  label: string
+  weight: number
+}
+
+export interface KbGraph {
+  nodes: KbNode[]
+  edges: KbEdge[]
+  stats: Record<string, unknown>
+}
+
+/** 一条双链。`direction` 为 out 时 `node_id` 是目标，in 时是来源。 */
+export interface KbLink {
+  node_id: string
+  label: string
+  kind: KbEdgeKind
+  edge_label: string
+  direction: 'out' | 'in'
+}
+
+/** 某书在某主题下的判断与代表章句。 */
+export interface KbThemeRow {
+  theme: string
+  book_id: string
+  book_title: string
+  judgment: string
+  quote: string
+}
+
+/** 笔记里写下的一句互参原文。 */
+export interface KbCrossRef {
+  name: string
+  detail: string
+}
+
+export interface KbNodeDetail {
+  node: KbNode
+  outgoing: KbLink[]
+  backlinks: KbLink[]
+  theme_rows: KbThemeRow[]
+  cross_refs: KbCrossRef[]
+}

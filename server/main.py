@@ -21,6 +21,7 @@ from .routers.ask import router as ask_router
 from .routers.books import router as books_router
 from .routers.history import router as history_router
 from .routers.insight import router as insight_router
+from .routers.kb import router as kb_router
 from .routers.profile import router as profile_router
 from .routers.search import router as search_router
 from .services.content_loader import get_loader
@@ -73,6 +74,7 @@ app.include_router(ask_router)
 app.include_router(insight_router)
 app.include_router(history_router)
 app.include_router(profile_router)
+app.include_router(kb_router)
 
 
 @app.get("/api/health")
@@ -117,6 +119,7 @@ else:
                 "insight": "/api/insight/daily",
                 "history": "/api/history",
                 "profile": "/api/profile",
+                "kb": "/api/kb/graph",
                 "docs": "/docs",
             },
         }
