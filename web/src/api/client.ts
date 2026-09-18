@@ -13,6 +13,7 @@ import type {
   ChapterSummary,
   ChatTurn,
   DeleteResult,
+  DeleteTargets,
   ExtractResult,
   FigureResult,
   HistoryListResponse,
@@ -139,6 +140,18 @@ export const api = {
 
   deleteHistory: (id: number) =>
     request<DeleteResult>(`/history/${id}`, { method: 'DELETE' }),
+
+  /**
+   * 勾选删除：一次删掉几条记录，或者几段完整对话，或者两者混着。
+   *
+   * 走 POST 而不是 DELETE：要删的东西是一份清单，塞进 URL 又长又容易撞上各种
+   * 长度限制，而带 body 的 DELETE 在代理与客户端那边历来支持不齐。
+   */
+  deleteSelected: (targets: DeleteTargets) =>
+    request<DeleteResult>('/history/delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids: targets.ids ?? [], topics: targets.topics ?? [] }),
+    }),
 
   clearHistory: () => request<DeleteResult>('/history', { method: 'DELETE' }),
 

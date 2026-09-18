@@ -24,6 +24,9 @@ from pydantic import BaseModel, Field
 
 from ..services.history import MAX_LIMIT, get_history_store
 
+#: 一次批量删除最多接受多少个目标。见 :class:`BulkDeleteRequest`。
+MAX_BULK_TARGETS = 500
+
 router = APIRouter(prefix="/api/history", tags=["history"])
 
 
@@ -95,6 +98,26 @@ class DeleteResponse(BaseModel):
     """删除结果。``deleted`` 是实际删掉的条数。"""
 
     deleted: int
+
+
+class BulkDeleteRequest(BaseModel):
+    """勾选删除的目标：记录 id 与话题 id 可以混着给，也可以只给一边。
+
+    两个清单都设了长度上限：这是**不可撤销**的操作，与其收下一个畸形请求
+    （比如几万个 id）去拼一条巨型 SQL，不如当场返回 422。界面上的勾选量来自
+    已加载的列表，远够不到这个数。
+    """
+
+    ids: list[int] = Field(
+        default_factory=list,
+        max_length=MAX_BULK_TARGETS,
+        description="要删的记录 id",
+    )
+    topics: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_BULK_TARGETS,
+        description="要整段删掉的话题 id（含老记录的 solo:<记录id>）",
+    )
 
 
 def _to_item(record) -> HistoryItem:
@@ -182,6 +205,22 @@ async def delete_topic(topic_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"话题不存在: {topic_id}")
     return DeleteResponse(deleted=deleted)
+
+
+@router.post("/delete", response_model=DeleteResponse)
+async def delete_selected(request: BulkDeleteRequest):
+    """按记录与话题**混合**删一批——界面上勾选删除走的就是这里。
+
+    为什么是 ``POST`` 而不是 ``DELETE``：要删的东西是一份清单（记录 id 与话题 id
+    两串），塞进 URL 既长又容易撞上各种长度限制，而带 body 的 ``DELETE`` 在
+    代理与客户端那边历来支持不齐。这里没有幂等语义要守，POST 更实在。
+
+    **删不到东西不算失败**：勾选的目标里可能有刚被过期清理掉的一条，那不该让
+    整批失败。返回 200 与真实删掉的条数，由界面去说明结果。
+    """
+    return DeleteResponse(
+        deleted=get_history_store().delete_many(ids=request.ids, topics=request.topics)
+    )
 
 
 @router.get("/status", response_model=HistoryStatusResponse)

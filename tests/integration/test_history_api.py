@@ -18,8 +18,15 @@ from server.services import history as history_module
 from server.services.db import Database
 
 
-def ask(client, question: str, top_k: int = 2):
-    response = client.post("/api/ask", json={"question": question, "top_k": top_k})
+def ask(client, question: str, top_k: int = 2, conversation_id: str = ""):
+    """求教一次，返回响应体。
+
+    ``conversation_id`` 非空就是"接着那个话题追问"——造话题数据要用它。
+    """
+    payload: dict = {"question": question, "top_k": top_k}
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+    response = client.post("/api/ask", json=payload)
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -76,6 +83,70 @@ class TestHistoryFlow:
         assert client.delete("/api/history").json() == {"deleted": 3}
         listing = client.get("/api/history").json()
         assert listing["total"] == 0 and listing["items"] == []
+
+
+class TestBulkDelete:
+    """勾选删除：一次请求里把几条记录与几段对话混着删掉。
+
+    界面上的「选择」模式走的就是这里。它比单条删除多担一层风险——**清单是
+    客户端给的**，所以两条底线必须守住：空清单不能退化成"清空全部"，
+    认不出的值不能拼进 SQL。
+    """
+
+    def test_deletes_a_mixed_selection(self, client):
+        ask(client, "谁在背后说我坏话？", conversation_id="t1")
+        ask(client, "躲不开怎么办？", conversation_id="t1")
+        solo = ask(client, "该不该换工作？")
+        keep = ask(client, "怎么让孩子爱读书？", conversation_id="t2")
+
+        response = client.post(
+            "/api/history/delete",
+            json={"ids": [solo["history_id"]], "topics": ["t1"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"deleted": 3}
+        left = client.get("/api/history").json()
+        assert [item["id"] for item in left["items"]] == [keep["history_id"]]
+        # 概况那行写的是记录总数，删完必须跟着变，否则界面当场自相矛盾
+        assert client.get("/api/history/status").json()["total"] == 1
+
+    def test_nothing_matched_is_not_an_error(self, client):
+        """勾的目标里可能有一条刚被过期清理掉——那不该让整批都失败。"""
+        response = client.post(
+            "/api/history/delete", json={"ids": [424242], "topics": ["没有这个话题"]}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"deleted": 0}
+
+    def test_an_empty_selection_deletes_nothing(self, client):
+        """空清单不能退化成"清空全部"——那正是最危险的一种误操作。"""
+        ask(client, "留下的问题")
+
+        assert client.post("/api/history/delete", json={}).json() == {"deleted": 0}
+        assert client.post("/api/history/delete", json={"ids": [], "topics": []}).json() == {
+            "deleted": 0
+        }
+        assert client.get("/api/history").json()["total"] == 1
+
+    def test_junk_in_the_lists_is_ignored(self, client):
+        """id 来自 JSON，类型不作指望：认不出的丢掉，绝不拼进 SQL。"""
+        ask(client, "留下的问题")
+
+        response = client.post(
+            "/api/history/delete",
+            json={"ids": [-1, 0], "topics": ["", "solo:abc"]},
+        )
+
+        assert response.json() == {"deleted": 0}
+        assert client.get("/api/history").json()["total"] == 1
+
+    def test_an_oversized_selection_is_rejected(self, client):
+        """不可撤销的操作，与其收下几万个 id 去拼巨型 SQL，不如当场退回。"""
+        response = client.post("/api/history/delete", json={"ids": list(range(1, 502))})
+
+        assert response.status_code == 422
 
 
 class TestHistoryStatus:
@@ -140,3 +211,10 @@ class TestGracefulDegradation:
         # 什么都没有，删不到就是 404，而不是 500
         assert client.delete("/api/history/1").status_code == 404
         assert client.delete("/api/history").json() == {"deleted": 0}
+
+    def test_bulk_delete_do_not_blow_up(self, client, broken_db):
+        # 勾选删除更不能 500：用户点了"删除选中"，界面总得有个交代
+        response = client.post("/api/history/delete", json={"ids": [1], "topics": ["t1"]})
+
+        assert response.status_code == 200
+        assert response.json() == {"deleted": 0}

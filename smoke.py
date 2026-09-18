@@ -271,6 +271,34 @@ def main():
     check("自己造出来的记录已清理干净",
           left_history["total"] == listing["total"] - 2, "%d 条" % left_history["total"])
 
+    # 勾选删除：挑着删，而不是只能一条条点、或者整库清空。这里造的仍然是自己的
+    # 记录——同话题连问两次验"整段删"，另造一条验"按 id 删"，验完一并收干净。
+    topic = "smoke-bulk-topic"
+    made = [post("/api/ask", {"question": "冒烟自检：勾选删除 %d" % i, "top_k": 1,
+                              "conversation_id": topic}, timeout=ASK_TIMEOUT)
+            for i in (1, 2)]
+    check("同话题的两次问答归到一段",
+          all(x.get("conversation_id") == topic for x in made),
+          [x.get("conversation_id") for x in made])
+
+    gone = post("/api/history/delete", {"ids": [], "topics": [topic]})
+    check("勾选删除：勾中整段即删掉段内所有记录", gone["deleted"] == 2, gone)
+
+    # 界面上"全都没勾"和"勾了但已被别处删掉"都会走到这里，两者都不许误伤
+    untouched = post("/api/history/delete", {"ids": [], "topics": []})
+    check("勾选删除：没勾任何东西时不误删", untouched["deleted"] == 0, untouched)
+
+    spare = post("/api/ask", {"question": "冒烟自检：勾选删单条", "top_k": 1},
+                 timeout=ASK_TIMEOUT)
+    one = post("/api/history/delete", {"ids": [spare["history_id"]], "topics": []})
+    check("勾选删除：只勾单条就只删那条", one["deleted"] == 1, one)
+    gone_code, _ = delete("/api/history/%d" % spare["history_id"])
+    check("勾选删除后那条确实没了", gone_code == 404, gone_code)
+
+    after_bulk = json.loads(get(FRONT + "/api/history?limit=5"))
+    check("勾选删除的自造记录已清理干净",
+          after_bulk["total"] == left_history["total"], "%d 条" % after_bulk["total"])
+
     print()
     print("=== G. 画像 ===")
     # 画像与「回响」是同一个库、同一批素材：从问过的记录里归纳"你是谁"。

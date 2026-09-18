@@ -22,6 +22,7 @@ vi.mock('../api/client', () => ({
     historyStatus: vi.fn(),
     deleteHistory: vi.fn(),
     deleteTopic: vi.fn(),
+    deleteSelected: vi.fn(),
     clearHistory: vi.fn(),
     dailyInsight: vi.fn(),
     randomInsight: vi.fn(),
@@ -162,5 +163,74 @@ describe('导航', () => {
 
     await user.click(screen.getByText('感悟'))
     await waitFor(() => expect(screen.getByText('按主题浏览')).toBeTruthy())
+  })
+})
+
+/** 集成测试：在**整个应用里**走一遍勾选删除。
+ *
+ * 单页面的测试已经覆盖了勾选的细节，这一条额外盯住两件只有装在一起才会出问题的事：
+ * 页面是按路由懒加载的（点进「回响」时要等那块 chunk 到位），以及
+ * 列表页拿到的数据确实来自接口而不是别的页面的残留。
+ */
+describe('回响的勾选删除（整个应用里）', () => {
+  const NOW = Date.now() / 1000
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedApi.listBooks.mockResolvedValue([])
+    mockedApi.listTopics.mockResolvedValue({
+      available: true,
+      error: '',
+      total: 1,
+      items: [
+        {
+          id: 't1',
+          title: '工作中遇到小人怎么办？',
+          question_count: 2,
+          first_ts: NOW - 60,
+          last_ts: NOW,
+          latest_question: '那要是躲不开呢？',
+          latest_answer: '敬而远之。',
+        },
+      ],
+    })
+    mockedApi.historyStatus.mockResolvedValue({
+      available: true,
+      error: '',
+      db_path: 'C:/data/history.db',
+      total: 2,
+      retention_days: 15,
+      last_purge_at: null,
+      next_purge_at: null,
+      size_bytes: 4096,
+    })
+    mockedApi.deleteSelected.mockResolvedValue({ deleted: 2 })
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('从导航进回响，勾一段再删掉', async () => {
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>,
+    )
+    const user = userEvent.setup()
+
+    await user.click(screen.getByText('回响'))
+    await waitFor(() => expect(screen.getByText('工作中遇到小人怎么办？')).toBeTruthy())
+
+    await user.click(screen.getByRole('button', { name: '选择' }))
+    await user.click(
+      screen.getByRole('checkbox', { name: '勾选这段对话：工作中遇到小人怎么办？' }),
+    )
+    expect(screen.getByText('已选 1 个话题 · 0 条记录')).toBeTruthy()
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await user.click(screen.getByRole('button', { name: '删除选中' }))
+
+    await waitFor(() =>
+      expect(mockedApi.deleteSelected).toHaveBeenCalledWith({ topics: ['t1'], ids: [] }),
+    )
+    confirm.mockRestore()
   })
 })

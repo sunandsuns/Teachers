@@ -26,6 +26,7 @@ vi.mock('../api/client', () => ({
     historyStatus: vi.fn(),
     deleteHistory: vi.fn(),
     deleteTopic: vi.fn(),
+    deleteSelected: vi.fn(),
     clearHistory: vi.fn(),
   },
 }))
@@ -139,6 +140,7 @@ beforeEach(() => {
   mockedApi.historyStatus.mockResolvedValue(STATUS)
   mockedApi.deleteHistory.mockResolvedValue({ deleted: 1 })
   mockedApi.deleteTopic.mockResolvedValue({ deleted: 2 })
+  mockedApi.deleteSelected.mockResolvedValue({ deleted: 3 })
   mockedApi.clearHistory.mockResolvedValue({ deleted: 2 })
 })
 
@@ -314,6 +316,128 @@ describe('回响的删除', () => {
 
     await waitFor(() => expect(screen.getByText(/还没有求教记录/)).toBeTruthy())
     expect(screen.queryByRole('button', { name: '清空' })).toBeNull()
+  })
+})
+
+describe('回响的勾选删除', () => {
+  /** 渲染并进入选择模式。之后才看得到勾选框。 */
+  async function startSelecting() {
+    const user = userEvent.setup()
+    renderHistory()
+    await user.click(await screen.findByRole('button', { name: '选择' }))
+    return user
+  }
+
+  const topicBox = (title: string) => screen.getByRole('checkbox', { name: `勾选这段对话：${title}` })
+
+  it('默认不给勾选框，点了「选择」才出现', async () => {
+    const user = userEvent.setup()
+    renderHistory()
+    await screen.findByText('工作中遇到小人怎么办？')
+
+    // 平时不摆一堆勾选框：这一页最常做的事是"翻看"，不是"删"
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: '选择' }))
+
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+  })
+
+  it('勾中一段对话后在操作条上报数', async () => {
+    const user = await startSelecting()
+
+    await user.click(topicBox('工作中遇到小人怎么办？'))
+
+    expect(screen.getByText('已选 1 个话题 · 0 条记录')).toBeTruthy()
+  })
+
+  it('没勾任何东西时删除是禁用的', async () => {
+    await startSelecting()
+
+    expect(screen.getByText('勾选要删的内容')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '删除选中' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('整段勾中之后，段内每条不再单独给勾选框', async () => {
+    const user = await startSelecting()
+    await user.click(topicBox('工作中遇到小人怎么办？'))
+
+    await openFirstTopic(user)
+
+    await waitFor(() => expect(screen.getByText('引用 5 段经典')).toBeTruthy())
+    // 段内两条注定跟着一起走，再让人一条条勾只会让人怀疑"是不是漏了哪条"
+    expect(screen.queryByRole('checkbox', { name: /勾选这条问答/ })).toBeNull()
+    // 于是只剩两个话题各自的勾选框（这一段的那个是勾中的，另一段的是空的）；
+    // 段内两条若还给框，这里会是 4
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+  })
+
+  it('也能只勾其中一条问答', async () => {
+    const user = await startSelecting()
+    await openFirstTopic(user)
+    await waitFor(() => expect(screen.getByText('引用 5 段经典')).toBeTruthy())
+
+    await user.click(screen.getByRole('checkbox', { name: /那要是躲不开呢/ }))
+
+    expect(screen.getByText('已选 0 个话题 · 1 条记录')).toBeTruthy()
+  })
+
+  it('全选之后可以一键取消', async () => {
+    const user = await startSelecting()
+
+    await user.click(screen.getByRole('button', { name: '全选' }))
+    expect(screen.getByText('已选 2 个话题 · 0 条记录')).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: '取消全选' }))
+    expect(screen.getByText('勾选要删的内容')).toBeTruthy()
+  })
+
+  it('删除前要确认，取消则不动', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const user = await startSelecting()
+    await user.click(topicBox('工作中遇到小人怎么办？'))
+
+    await user.click(screen.getByRole('button', { name: '删除选中' }))
+
+    expect(confirm).toHaveBeenCalled()
+    expect(mockedApi.deleteSelected).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
+  it('确认后一次请求删掉混选，并按服务端重读', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const user = await startSelecting()
+
+    // 勾一条单独的问答，再勾另一整段——两种目标混在一次请求里
+    await openFirstTopic(user)
+    await waitFor(() => expect(screen.getByText('引用 5 段经典')).toBeTruthy())
+    await user.click(screen.getByRole('checkbox', { name: /那要是躲不开呢/ }))
+    await user.click(topicBox('迷茫的时候该怎么选择方向？'))
+
+    expect(screen.getByText('已选 1 个话题 · 1 条记录')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '删除选中' }))
+
+    await waitFor(() =>
+      expect(mockedApi.deleteSelected).toHaveBeenCalledWith({ topics: ['solo:9'], ids: [1] }),
+    )
+    // 话题聚合、轮数、总数都变了，本地推算容易和服务端对不上，直接重读
+    await waitFor(() => expect(mockedApi.listTopics).toHaveBeenCalledTimes(2))
+    // 删了多少以服务端返回的为准，不自己猜
+    await waitFor(() => expect(screen.getByText('已删除 3 条记录')).toBeTruthy())
+    confirm.mockRestore()
+  })
+
+  it('退出选择会把已勾的清掉', async () => {
+    const user = await startSelecting()
+    await user.click(topicBox('工作中遇到小人怎么办？'))
+    expect(screen.getByText('已选 1 个话题 · 0 条记录')).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: '退出选择' }))
+
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
+    // 再进来时不该还记着上次勾了什么——那会让人误删
+    await user.click(screen.getByRole('button', { name: '选择' }))
+    expect(screen.getByText('勾选要删的内容')).toBeTruthy()
   })
 })
 

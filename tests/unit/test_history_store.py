@@ -431,6 +431,7 @@ class TestUnavailableDatabase:
         assert broken.delete(1) is False
         assert broken.clear() == 0
         assert broken.purge(force=True) == 0
+        assert broken.delete_many(ids=[1], topics=["t1"]) == 0
 
     def test_path_is_still_reported(self, broken, tmp_path):
         """不可用时也要说得清"本打算写在哪"，否则没法排查。"""

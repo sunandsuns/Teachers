@@ -154,6 +154,25 @@ def _topic_condition(topic_id: str) -> tuple[Optional[str], tuple]:
     return "conversation_id = ?", (cleaned,)
 
 
+def _clean_ids(values: Any) -> list[int]:
+    """把外部传来的 id 列表收拾成一串正整数，认不出的直接丢掉。
+
+    接口上的 id 来自 JSON，类型不作指望（可能混进字符串、浮点、布尔）。
+    一律先转成字符串再判"是不是纯数字"：``True`` → ``"True"`` 被挡下，
+    ``-1`` → 带负号也被挡下，不会拼进 SQL 里。
+    """
+    if not isinstance(values, (list, tuple)):
+        return []
+    cleaned = set()
+    for value in values:
+        raw = str(value).strip()
+        if raw.isdigit():
+            number = int(raw)
+            if number > 0:
+                cleaned.add(number)
+    return sorted(cleaned)
+
+
 #: 按话题聚合。``?`` 依次是 solo 前缀、limit、offset。
 #:
 #: 取首尾记录用 ``MIN(id)/MAX(id)`` 而不是时间：同一次会话里几条记录的时间戳
@@ -284,6 +303,46 @@ class HistoryStore:
         try:
             with self._db.session() as connection:
                 return connection.execute("DELETE FROM history").rowcount
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def delete_many(
+        self,
+        *,
+        ids: Any = (),
+        topics: Any = (),
+    ) -> int:
+        """按记录 id 与话题 id **混合**删一批，返回实际删掉的条数。
+
+        界面上勾选删除就是走这里：用户可能同时勾了几条单独的问答和几段完整对话，
+        分两次请求既慢又会出现"删了一半"的中间态。
+
+        两条刻意的取舍：
+
+        - **不存在的目标跳过，不报错**。用户勾了一堆，其中一条恰好刚被过期清理
+          掉（保留期到了），不该因此让整批都失败——那才是真的让人恼火。
+        - **一个都没认出就什么都不做**。空手去拼 ``DELETE ... WHERE`` 会把整库
+          删掉，这里必须挡住。
+        """
+        clauses: list[tuple[str, tuple]] = []
+        numbers = _clean_ids(ids)
+        if numbers:
+            marks = ",".join("?" * len(numbers))
+            clauses.append((f"id IN ({marks})", tuple(numbers)))
+        for topic_id in topics if isinstance(topics, (list, tuple)) else ():
+            where, params = _topic_condition(str(topic_id))
+            if where is not None:
+                clauses.append((where, params))
+        if not clauses:
+            return 0
+
+        combined = " OR ".join(f"({where})" for where, _ in clauses)
+        params = tuple(value for _, values in clauses for value in values)
+        try:
+            with self._db.session() as connection:
+                return connection.execute(
+                    f"DELETE FROM history WHERE {combined}", params
+                ).rowcount
         except Exception:  # noqa: BLE001
             return 0
 

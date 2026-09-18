@@ -191,6 +191,19 @@ export interface DeleteResult {
   deleted: number
 }
 
+/**
+ * 勾选删除的目标：记录 id 与话题 id 可以混着给，也可以只给一边。
+ *
+ * 后端把两串条件并起来删（`WHERE id IN (...) OR conversation_id = ...`），
+ * 所以一次请求就能删掉"几条单独问答 + 几段完整对话"的混合选择。
+ */
+export interface DeleteTargets {
+  /** 要删的记录 id */
+  ids?: number[]
+  /** 要整段删掉的话题 id（含老记录的 `solo:<记录id>`） */
+  topics?: string[]
+}
+
 /** 一条画像特征。 */
 export interface TraitItem {
   id: number
