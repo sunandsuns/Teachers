@@ -69,6 +69,12 @@ export interface LLMEndpoint {
   model: string
 }
 
+/** 一轮旧问答。追问时随请求带上，模型才知道"刚才聊到哪"。 */
+export interface ChatTurn {
+  question: string
+  answer: string
+}
+
 export interface AskResponse {
   question: string
   answer: string

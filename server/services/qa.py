@@ -16,16 +16,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from .history import get_history_store
 from .llm import EndpointOverride, generate_answer_with_model, llm_status, probe_endpoint
-from .llm import resolve_session
+from .llm import normalize_lang, resolve_session
 from .retriever import ensure_retriever
 
 #: 走自定义端点时，降级文案要指向用户真正能改的地方——
 #: 让他去配一个自己没听说过的环境变量，等于没说。
 CUSTOM_KEY_HINT = "自定义模型的接口地址与 API Key"
+CUSTOM_KEY_HINT_EN = "the endpoint and API key filled in model settings"
+
+#: 走内置端点时的提示。这是个环境变量名，让它保持原样，两种语言都去 .env 里找。
+DEFAULT_KEY_HINT = "LLM_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -49,11 +53,24 @@ class Answer:
         return self.model is not None
 
 
-def ask(question: str, *, top_k: int = 5, override: Optional[EndpointOverride] = None) -> Answer:
+def ask(
+    question: str,
+    *,
+    top_k: int = 5,
+    override: Optional[EndpointOverride] = None,
+    lang: str = "",
+    history: Optional[Sequence[tuple[str, str]]] = None,
+) -> Answer:
     """回答一个问题。
 
     ``override`` 非空时改用请求方填的端点；该端点的可用性不影响默认配置，
     反之亦然（各自的路由器与冷却表相互独立）。
+
+    ``lang`` 决定**回答用什么语言写**（``zh`` / ``en``；不认识的值按中文）。
+    检索与语料始终是中文，这里管的是作答语言。
+
+    ``history`` 是最近几轮 ``(问题, 回答)``。**追问能不能接上上文全看它**——
+    不带的话，模型收到的永远是一个孤零零的新问题。
 
     回答会顺手存进历史记录。**存不进去不影响返回**：由 ``HistoryStore`` 内部
     吞掉失败，这里只如实带上 ``history_id``（没存上就是 None）。
@@ -61,12 +78,20 @@ def ask(question: str, *, top_k: int = 5, override: Optional[EndpointOverride] =
     """
     results = ensure_retriever().search(question, top_k=top_k)
     session = resolve_session(override)
+    answer_lang = normalize_lang(lang)
+
+    if not session.custom:
+        key_hint = DEFAULT_KEY_HINT
+    else:
+        key_hint = CUSTOM_KEY_HINT_EN if answer_lang == "en" else CUSTOM_KEY_HINT
 
     answer, model = generate_answer_with_model(
         question,
         results,
         router=session.router,
-        key_hint=CUSTOM_KEY_HINT if session.custom else "LLM_API_KEY",
+        key_hint=key_hint,
+        lang=answer_lang,
+        history=history,
     )
     record_id = get_history_store().save(
         question,

@@ -10,6 +10,7 @@ import type {
   BookSummary,
   ChapterDetail,
   ChapterSummary,
+  ChatTurn,
   DeleteResult,
   HistoryListResponse,
   HistoryStatus,
@@ -66,11 +67,27 @@ export const api = {
   /** 求教。`llm` 省略时用后端内置的默认模型，见 `useModelSettings`。
    *
    * `lang` 决定**回答用什么语言写**：语料是中文的，检索永远在中文里进行，
-   * 但英文界面下模型会用英文作答、降级文案也换英文。 */
-  ask: (question: string, topK = 5, llm?: LLMEndpoint | null, lang: Lang = activeLang()) =>
+   * 但英文界面下模型会用英文作答、降级文案也换英文。
+   *
+   * `history` 是最近几轮问答（新的在后）。**追问靠它接上文**——不带的话，
+   * 后端收到的只是一个孤零零的新问题，回答会从头再讲一遍。 */
+  ask: (
+    question: string,
+    topK = 5,
+    llm?: LLMEndpoint | null,
+    lang: Lang = activeLang(),
+    history: ChatTurn[] = [],
+  ) =>
     request<AskResponse>('/ask', {
       method: 'POST',
-      body: JSON.stringify({ question, top_k: topK, lang, ...(llm ? { llm } : {}) }),
+      body: JSON.stringify({
+        question,
+        top_k: topK,
+        lang,
+        // 空数组就别发这个字段，没必要让请求体白带一段
+        ...(history.length ? { history } : {}),
+        ...(llm ? { llm } : {}),
+      }),
     }),
 
   /** 测一个自定义端点通不通。Key 只在这一次请求里传递，后端不留存。 */

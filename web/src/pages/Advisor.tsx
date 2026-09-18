@@ -31,6 +31,10 @@ const SUGGESTIONS: { zh: string; en: string }[] = [
 /** 问题长度上限。更长也不是不行，只是检索质量会跟着掉，不如引导用户把话收一收。 */
 const MAX_QUESTION_LENGTH = 500
 
+/** 追问时带上前几轮。给了模型才接得上上文；给多了只是白占请求体，
+ * 后端也只认最近几轮（见 `prompt.MAX_HISTORY_TURNS`）。 */
+const FOLLOW_UP_TURNS = 3
+
 export default function Advisor() {
   const { lang, t } = useI18n()
   // 支持 ?q= 预填：「回响」页的「再问一次」就是这么跳过来的，
@@ -70,7 +74,17 @@ export default function Advisor() {
     setAsking(true)
     setError(null)
     try {
-      const answer = await api.ask(trimmed, 5, payload, lang)
+      const answer = await api.ask(
+        trimmed,
+        5,
+        payload,
+        lang,
+        // 带上最近几轮：追问要接得上刚才的话
+        history.slice(-FOLLOW_UP_TURNS).map(ex => ({
+          question: ex.question,
+          answer: ex.answer.answer,
+        })),
+      )
       setHistory(prev => [...prev, { question: trimmed, answer }])
       setQuestion('')
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }))

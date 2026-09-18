@@ -9,7 +9,7 @@
 - ``transport`` —— OpenAI 兼容协议的 HTTP 细节
 - ``router``    —— 模型发现、探活、缓存与失败轮换（单端点）
 - ``session``   —— 默认端点与请求级自定义端点之间的选择与隔离
-- ``prompt``    —— 提示词构造与离线降级排版
+- ``prompt``    —— 提示词构造、对话历史编排与离线降级排版
 - 本模块        —— 把上面几层组装成"问一个问题，拿到一个回答"
 """
 
@@ -25,11 +25,17 @@ from .config import (
     load_env_file,
 )
 from .prompt import (
+    DEFAULT_LANG,
+    MAX_HISTORY_TURNS,
     SYSTEM_PROMPT,
+    SYSTEM_PROMPT_EN,
     build_context,
+    build_messages,
     build_user_prompt,
     clean_excerpt,
     local_fallback,
+    normalize_lang,
+    system_prompt,
 )
 from .router import ModelRouter, get_router, reset_router
 from .session import (
@@ -43,13 +49,17 @@ from .transport import LLMTransportError, chat, list_models
 
 __all__ = [
     "DEFAULT_BASE_URL",
+    "DEFAULT_LANG",
     "EndpointOverride",
     "LLMConfig",
     "LLMSession",
     "LLMTransportError",
+    "MAX_HISTORY_TURNS",
     "ModelRouter",
     "SYSTEM_PROMPT",
+    "SYSTEM_PROMPT_EN",
     "build_context",
+    "build_messages",
     "build_user_prompt",
     "chat",
     "clean_excerpt",
@@ -62,11 +72,20 @@ __all__ = [
     "load_config",
     "load_env_file",
     "local_fallback",
+    "normalize_lang",
     "probe_endpoint",
     "reset_endpoints",
     "reset_router",
     "resolve_session",
+    "system_prompt",
 ]
+
+#: 模型返回空回答时记在降级文案里的原因。两种语言各一句，
+#: 与排版语言保持一致——英文界面里夹一句中文解释很突兀。
+EMPTY_ANSWER_NOTE = {
+    "zh": "模型返回了空回答",
+    "en": "The model returned an empty answer",
+}
 
 
 def has_llm() -> bool:
@@ -90,13 +109,17 @@ def generate_answer(
     search_results: Sequence[Any],
     *,
     router: Optional[ModelRouter] = None,
+    lang: str = DEFAULT_LANG,
+    history: Optional[Sequence[Any]] = None,
 ) -> str:
     """生成回答；没有可用模型时降级为本地检索排版，绝不抛异常给调用方。
 
     ``router`` 省略时用进程级单例（即 ``.env`` 里的默认配置）；传入自定义路由
     即可改用另一套端点（见 ``session.py``），无需改动本函数。
+
+    ``lang`` 决定作答语言，``history`` 是最近几轮问答（追问时接得上上文）。
     """
-    return _generate(question, search_results, router=router)[0]
+    return _generate(question, search_results, router=router, lang=lang, history=history)[0]
 
 
 def generate_answer_with_model(
@@ -105,13 +128,22 @@ def generate_answer_with_model(
     *,
     router: Optional[ModelRouter] = None,
     key_hint: str = "LLM_API_KEY",
+    lang: str = DEFAULT_LANG,
+    history: Optional[Sequence[Any]] = None,
 ) -> tuple[str, Optional[str]]:
     """:func:`generate_answer` 的变体，额外返回实际使用的模型名（未用 LLM 时为 ``None``）。
 
     ``key_hint`` 决定降级文案里提示用户去配哪个 Key——走自定义端点时应该是
     "检查你在设置里填的地址与 Key"，而不是让人去找一个自己没听说过的环境变量。
     """
-    return _generate(question, search_results, router=router, key_hint=key_hint)
+    return _generate(
+        question,
+        search_results,
+        router=router,
+        key_hint=key_hint,
+        lang=lang,
+        history=history,
+    )
 
 
 def _generate(
@@ -120,6 +152,8 @@ def _generate(
     *,
     router: Optional[ModelRouter] = None,
     key_hint: str = "LLM_API_KEY",
+    lang: str = DEFAULT_LANG,
+    history: Optional[Sequence[Any]] = None,
 ) -> tuple[str, Optional[str]]:
     """两个公开入口共用的实现：返回 ``(正文, 模型名)``，降级时模型名为 None。
 
@@ -129,18 +163,33 @@ def _generate(
     对着一个空白回答，用户能做的只有再问一遍。
     """
     target = router if router is not None else get_router()
+    answer_lang = normalize_lang(lang)
     if not target.config.enabled:
-        return local_fallback(question, search_results, key_hint=key_hint), None
+        return (
+            local_fallback(question, search_results, key_hint=key_hint, lang=answer_lang),
+            None,
+        )
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_user_prompt(question, search_results)},
-    ]
+    messages = build_messages(question, search_results, lang=answer_lang, history=history)
     try:
         content, model = target.chat(messages)
     except LLMTransportError as exc:
-        return local_fallback(question, search_results, str(exc), key_hint=key_hint), None
+        return (
+            local_fallback(
+                question, search_results, str(exc), key_hint=key_hint, lang=answer_lang
+            ),
+            None,
+        )
 
     if not content or not content.strip():
-        return local_fallback(question, search_results, "模型返回了空回答", key_hint=key_hint), None
+        return (
+            local_fallback(
+                question,
+                search_results,
+                EMPTY_ANSWER_NOTE[answer_lang],
+                key_hint=key_hint,
+                lang=answer_lang,
+            ),
+            None,
+        )
     return content, model
