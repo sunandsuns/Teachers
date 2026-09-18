@@ -463,15 +463,21 @@ def extract(
     except LLMTransportError as exc:
         return ExtractionResult(0, profile.count(), False, error=str(exc))
 
-    # 模型确实看过这批提问了，记下时刻，免得下次打开画像页又把同一批再审一遍
-    profile.mark_extracted()
-
     traits = parse_traits(content)
     if not traits:
-        # 模型答了，但里面没有可用的特征。不算错误，只是这次没收获
+        # 模型答了，但里面没有可用的特征。不算错误，只是这次没收获。
+        #
+        # 这里**不能**推进"已归纳到此刻"：那等于把这批提问永久消费掉了。
+        # 模型把思维链当答案吐回来、或把 JSON 裹在散文里，都是常态；
+        # 一旦因为这种一次性的答歪就推进时刻，下次换了模型也再没机会重看这批
+        # 提问——画像会卡死在"没有新内容可归纳"上，再也长不出东西。
+        # 宁可下次再送一遍，也不能把素材悄悄丢掉。
         return ExtractionResult(0, profile.count(), True, error="nothing_usable")
 
     written = profile.upsert(traits)
+    # 确实落库了才算"这批提问已经被消化"，这时才记时刻，
+    # 免得下次打开画像页又把同一批送一遍
+    profile.mark_extracted()
     return ExtractionResult(written, profile.count(), True)
 
 

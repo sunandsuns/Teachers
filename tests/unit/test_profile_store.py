@@ -260,9 +260,21 @@ class TestExtract:
         assert result.llm_used is True
         assert result.error == "nothing_usable"
 
+    def test_a_harvest_that_came_to_nothing_does_not_stamp(self, store):
+        """答歪了就不许推进时刻——否则这批提问被永久消费掉。
+
+        模型把思维链当答案吐回来、或把 JSON 裹在散文里，都是常事。若这时
+        也把"已归纳到此刻"推到现在，下次换了模型也再没机会重看这批提问，
+        画像就卡死在"没有新内容可归纳"上。宁可下次再送一遍。
+        """
+        extract(store, [record("随便问问")], router=FakeRouter("我不知道该说什么"))
+
+        assert store.last_extract_ts() == 0.0
+
     def test_extracting_stamps_the_moment(self, store):
-        """归纳过就记下时刻，免得下次打开画像页又把同一批提问送一遍。"""
-        extract(store, [record("我最近很迷茫")], router=FakeRouter("[]"))
+        """真归纳出东西了才记下时刻，免得下次打开画像页又把同一批提问送一遍。"""
+        payload = json.dumps([trait()], ensure_ascii=False)
+        extract(store, [record("我最近很迷茫")], router=FakeRouter(payload))
 
         assert store.last_extract_ts() > 0
 
