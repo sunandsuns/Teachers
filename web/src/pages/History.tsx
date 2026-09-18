@@ -15,6 +15,9 @@
  *    **混着删**（几段对话 + 几条单独的问答），一次请求交出去。
  * 4. **整段勾中之后，段内每条不再单独给勾选框**——它们注定一起走，再让人勾一遍
  *    只会徒增怀疑："我是不是漏了哪一条？"。想只删其中一条，就先取消整段的勾选。
+ * 5. **问"删不删"一律用页内的确认条，不许用 `window.confirm`**——原生 modal 在
+ *    嵌入式页面里会被静默拦掉（返回 false），点下去一点动静都没有。详见
+ *    `components/ui/ConfirmBar`。
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -23,6 +26,7 @@ import { api, type HistoryItem, type HistoryStatus, type TopicItem } from '../ap
 import Markdown from '../components/Markdown'
 import { Empty, ErrorBox, Loading } from '../components/Status'
 import Button from '../components/ui/Button'
+import ConfirmBar from '../components/ui/ConfirmBar'
 import PageHeader from '../components/ui/PageHeader'
 import { useI18n, type Lang } from '../i18n'
 import type { MessageKey } from '../i18n'
@@ -34,6 +38,16 @@ const PAGE_SIZE = 20
 const PREVIEW_LIMIT = 120
 
 type Translate = (key: MessageKey, params?: Record<string, string | number>) => string
+
+/** 要先问一句再动手的删除动作。
+ *
+ * 刻意只存"要做哪件事"，不存目标清单：真正执行时按**当时**的勾选去算，
+ * 免得在确认条上停留的那几秒里，数据已经和弹出来时不是一回事了。
+ */
+type PendingAction =
+  | { kind: 'selected' }
+  | { kind: 'topic'; topic: TopicItem }
+  | { kind: 'all' }
 
 /** 时间戳 → "刚刚 / 3 小时前 / 9月14日 20:31"。
  *
@@ -135,6 +149,8 @@ export default function History() {
   const [pickedRecords, setPickedRecords] = useState<ReadonlySet<number>>(new Set())
   //: 删除请求在飞。按钮要禁掉，免得手快连点两次
   const [busy, setBusy] = useState(false)
+  //: 待确认的删除动作；非空时页面上会出现一条确认条
+  const [pending, setPending] = useState<PendingAction | null>(null)
 
   /** 清掉全部勾选，并退出选择模式。
    *
@@ -233,8 +249,11 @@ export default function History() {
   }
 
   async function removeTopic(topic: TopicItem) {
-    // 整段删掉是不可撤销的，问一句再动手
-    if (!window.confirm(t('history.confirmDeleteTopic', { count: topic.question_count }))) return
+    // 整段删掉是不可撤销的，先问一句——交给页内的确认条去问
+    setPending({ kind: 'topic', topic })
+  }
+
+  async function doRemoveTopic(topic: TopicItem) {
     try {
       const result = await api.deleteTopic(topic.id)
       setTopics(prev => prev.filter(item => item.id !== topic.id))
@@ -254,8 +273,11 @@ export default function History() {
   }
 
   async function clearAll() {
-    // 清空是不可撤销的，问一句再动手
-    if (!window.confirm(t('history.confirmClear'))) return
+    // 清空是不可撤销的，先问一句
+    setPending({ kind: 'all' })
+  }
+
+  async function doClearAll() {
     try {
       await api.clearHistory()
       await load()
@@ -306,11 +328,17 @@ export default function History() {
     }
   }
 
-  async function removeSelected() {
-    const count = pickedTopics.size + pickedRecords.size
-    if (count === 0) return
-    if (!window.confirm(t('history.confirmDeleteSelected', { count }))) return
-    setBusy(true)
+  /** 勾选删除：先把确认条摆出来，真正动手在 confirmPending 里。 */
+  function removeSelected() {
+    if (pickedTopics.size + pickedRecords.size === 0) {
+      // 一个都没勾就点，也得给句话：静默地什么都不发生，最容易被当成"按钮坏了"
+      setNote(t('history.nothingPicked'))
+      return
+    }
+    setPending({ kind: 'selected' })
+  }
+
+  async function doRemoveSelected() {
     try {
       const result = await api.deleteSelected({
         topics: [...pickedTopics],
@@ -324,9 +352,35 @@ export default function History() {
       setNote(t('history.deletedSelected', { count: result.deleted }))
     } catch (err) {
       setError(err instanceof Error ? err.message : t('history.deleteFailed'))
+    }
+  }
+
+  /** 确认条上按了「确认删除」：这才真正动手。 */
+  async function confirmPending() {
+    const action = pending
+    if (!action) return
+    setBusy(true)
+    try {
+      if (action.kind === 'selected') await doRemoveSelected()
+      else if (action.kind === 'topic') await doRemoveTopic(action.topic)
+      else await doClearAll()
     } finally {
       setBusy(false)
+      setPending(null)
     }
+  }
+
+  /** 确认条上那句话。数量在这里现算——pending 里只存"要删什么"。 */
+  function describePending(action: PendingAction): string {
+    if (action.kind === 'selected') {
+      return t('history.confirmDeleteSelected', {
+        count: pickedTopics.size + pickedRecords.size,
+      })
+    }
+    if (action.kind === 'topic') {
+      return t('history.confirmDeleteTopic', { count: action.topic.question_count })
+    }
+    return t('history.confirmClear')
   }
 
   const unavailable = status !== null && !status.available
@@ -342,13 +396,19 @@ export default function History() {
               variant="secondary"
               size="sm"
               onClick={() => (selecting ? dropSelection() : setSelecting(true))}
+              disabled={busy || pending !== null}
             >
               {selecting ? t('history.exitSelect') : t('history.select')}
             </Button>
             {/* 选择模式下把「清空」收起来：清空是"全都要删"，
                 与"挑几条删"是两种相反的心智，并排摆着容易点错 */}
             {!selecting && (
-              <Button variant="secondary" size="sm" onClick={clearAll}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={clearAll}
+                disabled={busy || pending !== null}
+              >
                 {t('history.clear')}
               </Button>
             )}
@@ -356,7 +416,22 @@ export default function History() {
         )}
       </PageHeader>
 
-      {selecting && (
+      {/* 确认条摆在最上面，并把选择栏顶掉——两处都报数只会互相打架。
+          卡片上的勾选框留着：确认条上的数字是渲染时现算的，改勾选它立刻跟着变，
+          用户点头时看到的数就是真会删掉的数 */}
+      {pending && (
+        <ConfirmBar
+          message={describePending(pending)}
+          confirmLabel={t('common.confirmDelete')}
+          busyLabel={t('common.deleting')}
+          cancelLabel={t('common.cancel')}
+          busy={busy}
+          onConfirm={() => void confirmPending()}
+          onCancel={() => setPending(null)}
+        />
+      )}
+
+      {selecting && !pending && (
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-sm bg-paper-50 px-4 py-2.5 ring-1 ring-paper-300">
           <span className="text-sm text-ink-600">
             {pickedCount > 0
@@ -367,14 +442,16 @@ export default function History() {
               : t('history.pickedNone')}
           </span>
           <span className="ml-auto flex items-center gap-1">
-            <Button variant="ghost" size="sm" onClick={toggleSelectAll}>
+            <Button variant="ghost" size="sm" onClick={toggleSelectAll} disabled={busy}>
               {allPicked ? t('history.selectNone') : t('history.selectAll')}
             </Button>
             <Button
               variant="secondary"
               size="sm"
               onClick={() => void removeSelected()}
-              disabled={pickedCount === 0 || busy}
+              disabled={busy}
+              /* 没勾中也让点：点下去会得到一句"还没勾选要删的内容"。
+                 灰着按钮虽然"正确"，但用户只会觉得按钮坏了 */
             >
               {t('history.deleteSelected')}
             </Button>

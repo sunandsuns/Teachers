@@ -258,54 +258,57 @@ describe('回响的删除', () => {
   })
 
   it('删除整段要先确认，取消则不动', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = userEvent.setup()
     renderHistory()
     await openFirstTopic(user)
 
     await user.click(await screen.findByRole('button', { name: '删除整段' }))
 
-    expect(confirm).toHaveBeenCalled()
+    // 点下去只是把确认条摆出来，绝不先斩后奏
+    const bar = await screen.findByRole('alertdialog')
+    expect(bar.textContent).toContain('确定删除这整段对话')
+    await user.click(screen.getByRole('button', { name: '取消' }))
+
     expect(mockedApi.deleteTopic).not.toHaveBeenCalled()
-    confirm.mockRestore()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('确认后删掉整段，卡片消失', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     renderHistory()
     await openFirstTopic(user)
 
     await user.click(await screen.findByRole('button', { name: '删除整段' }))
+    await user.click(await screen.findByRole('button', { name: '确认删除' }))
 
     await waitFor(() => expect(mockedApi.deleteTopic).toHaveBeenCalledWith('t1'))
     await waitFor(() => expect(screen.queryByText('工作中遇到小人怎么办？')).toBeNull())
-    confirm.mockRestore()
   })
 
   it('清空要先确认，取消则不动', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = userEvent.setup()
     renderHistory()
 
     await user.click(await screen.findByRole('button', { name: '清空' }))
 
-    expect(confirm).toHaveBeenCalled()
+    const bar = await screen.findByRole('alertdialog')
+    expect(bar.textContent).toContain('确定要清空全部历史记录')
+    await user.click(screen.getByRole('button', { name: '取消' }))
+
     expect(mockedApi.clearHistory).not.toHaveBeenCalled()
-    confirm.mockRestore()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('确认后清空并重新读取', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     renderHistory()
 
     await user.click(await screen.findByRole('button', { name: '清空' }))
+    await user.click(await screen.findByRole('button', { name: '确认删除' }))
 
     await waitFor(() => expect(mockedApi.clearHistory).toHaveBeenCalled())
     // 清空之后要重新拉一次：本地把数组清掉不如以服务端为准
     await waitFor(() => expect(mockedApi.listTopics).toHaveBeenCalledTimes(2))
-    confirm.mockRestore()
   })
 
   it('没有记录时不显示清空按钮', async () => {
@@ -351,11 +354,15 @@ describe('回响的勾选删除', () => {
     expect(screen.getByText('已选 1 个话题 · 0 条记录')).toBeTruthy()
   })
 
-  it('没勾任何东西时删除是禁用的', async () => {
-    await startSelecting()
+  it('没勾任何东西就点删除，会给一句提示而不是闷声不动', async () => {
+    const user = await startSelecting()
 
     expect(screen.getByText('勾选要删的内容')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '删除选中' }).hasAttribute('disabled')).toBe(true)
+    await user.click(screen.getByRole('button', { name: '删除选中' }))
+
+    // 按钮故意不禁用：灰按钮在用户眼里就是"点了没反应"
+    expect(screen.getByText(/还没勾选要删的内容/)).toBeTruthy()
+    expect(mockedApi.deleteSelected).not.toHaveBeenCalled()
   })
 
   it('整段勾中之后，段内每条不再单独给勾选框', async () => {
@@ -393,19 +400,21 @@ describe('回响的勾选删除', () => {
   })
 
   it('删除前要确认，取消则不动', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = await startSelecting()
     await user.click(topicBox('工作中遇到小人怎么办？'))
 
     await user.click(screen.getByRole('button', { name: '删除选中' }))
 
-    expect(confirm).toHaveBeenCalled()
+    const bar = await screen.findByRole('alertdialog')
+    expect(bar.textContent).toContain('确定删除选中的 1 项')
+    await user.click(screen.getByRole('button', { name: '取消' }))
+
     expect(mockedApi.deleteSelected).not.toHaveBeenCalled()
-    confirm.mockRestore()
+    // 取消之后勾选还留着：接着补勾两条再删，不该从头选起
+    expect(screen.getByText('已选 1 个话题 · 0 条记录')).toBeTruthy()
   })
 
   it('确认后一次请求删掉混选，并按服务端重读', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = await startSelecting()
 
     // 勾一条单独的问答，再勾另一整段——两种目标混在一次请求里
@@ -416,6 +425,7 @@ describe('回响的勾选删除', () => {
 
     expect(screen.getByText('已选 1 个话题 · 1 条记录')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: '删除选中' }))
+    await user.click(await screen.findByRole('button', { name: '确认删除' }))
 
     await waitFor(() =>
       expect(mockedApi.deleteSelected).toHaveBeenCalledWith({ topics: ['solo:9'], ids: [1] }),
@@ -424,7 +434,28 @@ describe('回响的勾选删除', () => {
     await waitFor(() => expect(mockedApi.listTopics).toHaveBeenCalledTimes(2))
     // 删了多少以服务端返回的为准，不自己猜
     await waitFor(() => expect(screen.getByText('已删除 3 条记录')).toBeTruthy())
-    confirm.mockRestore()
+  })
+
+  it('确认条摆着时改勾选，数字跟着改——按最后看到的那份删', async () => {
+    const user = await startSelecting()
+    await user.click(topicBox('工作中遇到小人怎么办？'))
+    await user.click(screen.getByRole('button', { name: '删除选中' }))
+
+    const bar = await screen.findByRole('alertdialog')
+    expect(bar.textContent).toContain('确定删除选中的 1 项')
+
+    // 临时又想去掉另一段：勾上它，确认条上的数字必须跟着走，
+    // 否则用户点头时的"1 项"和实际删掉的不是一回事
+    await user.click(topicBox('迷茫的时候该怎么选择方向？'))
+    await waitFor(() => expect(bar.textContent).toContain('确定删除选中的 2 项'))
+
+    await user.click(screen.getByRole('button', { name: '确认删除' }))
+    await waitFor(() =>
+      expect(mockedApi.deleteSelected).toHaveBeenCalledWith({
+        topics: ['t1', 'solo:9'],
+        ids: [],
+      }),
+    )
   })
 
   it('退出选择会把已勾的清掉', async () => {

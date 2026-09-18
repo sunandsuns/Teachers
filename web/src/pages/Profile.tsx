@@ -47,6 +47,7 @@ import {
 } from '../api/client'
 import { Empty, ErrorBox, Loading } from '../components/Status'
 import Button from '../components/ui/Button'
+import ConfirmBar from '../components/ui/ConfirmBar'
 import PageHeader from '../components/ui/PageHeader'
 import Segmented from '../components/ui/Segmented'
 import { useI18n, traitCategory, type MessageKey } from '../i18n'
@@ -257,6 +258,9 @@ export default function Profile() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  /** 待确认的「清空画像」。用页内确认条而不是 window.confirm：
+   *  原生弹窗在嵌入式页面里会被静默拦掉，点下去毫无反应。 */
+  const [confirmingClear, setConfirmingClear] = useState(false)
   /** 工具栏下面那行状态话：正在归纳 / 这次新增了几条 / 正在评定 */
   const [note, setNote] = useState<string | null>(null)
   /** 后台自动动作每进页面只做一次，否则做完重新读取会再触发一轮。两条各记一个。 */
@@ -478,14 +482,19 @@ export default function Profile() {
     }
   }
 
-  async function clearAll() {
-    if (!window.confirm(t('profile.confirmClear'))) return
+  function clearAll() {
+    setConfirmingClear(true)
+  }
+
+  async function doClearAll() {
     try {
       await api.clearProfile()
       setNote(null)
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : t('profile.deleteFailed'))
+    } finally {
+      setConfirmingClear(false)
     }
   }
 
@@ -499,14 +508,32 @@ export default function Profile() {
     <section className="mx-auto w-full max-w-5xl">
       <PageHeader title={t('profile.title')} description={t('profile.description')}>
         {data !== null && data.total > 0 && (
-          <Button variant="secondary" size="sm" onClick={clearAll}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={clearAll}
+            disabled={confirmingClear || busy}
+          >
             {t('profile.clear')}
           </Button>
         )}
-        <Button size="sm" onClick={() => void runExtract()} disabled={busy}>
+        <Button size="sm" onClick={() => void runExtract()} disabled={busy || confirmingClear}>
           {busy ? t('profile.extracting') : t('profile.extract')}
         </Button>
       </PageHeader>
+
+      {/* 清空不可撤销，问一句再动手；确认条就在页头下面，与触发它的按钮同屏 */}
+      {confirmingClear && (
+        <ConfirmBar
+          message={t('profile.confirmClear')}
+          confirmLabel={t('common.confirmDelete')}
+          busyLabel={t('common.deleting')}
+          cancelLabel={t('common.cancel')}
+          busy={busy}
+          onConfirm={() => void doClearAll()}
+          onCancel={() => setConfirmingClear(false)}
+        />
+      )}
 
       {unavailable && <ErrorBox message={t('profile.unavailable', { error: data.error })} />}
 

@@ -19,6 +19,13 @@ export const DEFAULT_LANG: Lang = 'zh'
 
 /** 中文文案。它同时是键的**唯一来源**——加键先加在这里。 */
 const ZH = {
+  // ── 通用 ────────────────────────────────────────────────────
+  // 确认删除那条页内确认条上的字。写在这里而不是各页复制一份：
+  // 它俩在哪儿出现都是同一个意思。
+  'common.cancel': '取消',
+  'common.confirmDelete': '确认删除',
+  'common.deleting': '正在删除…',
+
   // ── 顶栏 / 页脚 ──────────────────────────────────────────────
   'app.subtitle': '经典智慧知识库',
   'app.footer': '人生导师 · 中国传统经典智慧知识库',
@@ -119,6 +126,7 @@ const ZH = {
   'history.confirmDeleteSelected':
     '确定删除选中的 {count} 项吗？勾中的整段对话会连同里面的每一轮一起删掉，此操作不可撤销。',
   'history.deletedSelected': '已删除 {count} 条记录',
+  'history.nothingPicked': '还没勾选要删的内容——先点上要删的那几条',
   'history.pickTopic': '勾选这段对话：{title}',
   'history.pickRecord': '勾选这条问答：{question}',
   'history.total': '共 {count} 条',
@@ -287,6 +295,10 @@ export type MessageKey = keyof typeof ZH
 
 /** 英文文案。类型是 `Record<MessageKey, string>`——**漏一条就编译不过**。 */
 const EN: Record<MessageKey, string> = {
+  'common.cancel': 'Cancel',
+  'common.confirmDelete': 'Delete',
+  'common.deleting': 'Deleting…',
+
   'app.subtitle': 'Wisdom of the Classics',
   'app.footer': '人生导师 · A treasury of classical Chinese wisdom',
   'nav.label': 'Main navigation',
@@ -383,6 +395,7 @@ const EN: Record<MessageKey, string> = {
   'history.confirmDeleteSelected':
     'Delete the {count} selected item(s)? A selected conversation goes together with every turn in it. This cannot be undone.',
   'history.deletedSelected': '{count} records deleted',
+  'history.nothingPicked': 'Nothing picked yet — tick the ones you want gone',
   'history.pickTopic': 'Pick the conversation: {title}',
   'history.pickRecord': 'Pick this exchange: {question}',
   'history.total': '{count} in total',

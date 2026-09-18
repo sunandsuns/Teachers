@@ -352,28 +352,29 @@ describe('画像的删除', () => {
   })
 
   it('清空要先确认，取消则不动', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const user = userEvent.setup()
     renderProfile()
 
     await user.click(await screen.findByRole('button', { name: '清空画像' }))
 
-    expect(confirm).toHaveBeenCalled()
+    const bar = await screen.findByRole('alertdialog')
+    expect(bar.textContent).toContain('确定清空画像')
+    await user.click(screen.getByRole('button', { name: '取消' }))
+
     expect(mockedApi.clearProfile).not.toHaveBeenCalled()
-    confirm.mockRestore()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('确认后清空并重新读取', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const user = userEvent.setup()
     renderProfile()
 
     await user.click(await screen.findByRole('button', { name: '清空画像' }))
+    await user.click(await screen.findByRole('button', { name: '确认删除' }))
 
     await waitFor(() => expect(mockedApi.clearProfile).toHaveBeenCalled())
     // 以服务端为准，不靠本地把数组清掉
     await waitFor(() => expect(mockedApi.getProfile).toHaveBeenCalledTimes(2))
-    confirm.mockRestore()
   })
 
   it('没有特征时不显示清空按钮', async () => {

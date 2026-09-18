@@ -225,12 +225,11 @@ describe('回响的勾选删除（整个应用里）', () => {
     )
     expect(screen.getByText('已选 1 个话题 · 0 条记录')).toBeTruthy()
 
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     await user.click(screen.getByRole('button', { name: '删除选中' }))
+    await user.click(await screen.findByRole('button', { name: '确认删除' }))
 
     await waitFor(() =>
       expect(mockedApi.deleteSelected).toHaveBeenCalledWith({ topics: ['t1'], ids: [] }),
     )
-    confirm.mockRestore()
   })
 })
