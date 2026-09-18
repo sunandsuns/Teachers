@@ -39,6 +39,7 @@ import server.main as main  # noqa: E402
 from server import paths  # noqa: E402
 from server.services import content_loader  # noqa: E402
 from server.services import history as history_module  # noqa: E402
+from server.services import profile as profile_module  # noqa: E402
 from server.services import retriever as retriever_module  # noqa: E402
 from server.services.llm import router as llm_router_module  # noqa: E402
 from server.services.llm import session as llm_session_module  # noqa: E402
@@ -58,8 +59,11 @@ def isolate_history(tmp_path, monkeypatch):
     """
     monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, str(tmp_path / "data"))
     history_module.reset_history_store()
+    # 画像与历史同一个库文件，单例同样要重置，否则会用上一个用例的路径
+    profile_module.reset_profile_store()
     yield
     history_module.reset_history_store()
+    profile_module.reset_profile_store()
 
 
 @pytest.fixture(autouse=True)

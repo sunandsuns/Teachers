@@ -27,6 +27,7 @@ const ZH = {
   'nav.search': '寻章',
   'nav.ask': '求教',
   'nav.history': '回响',
+  'nav.profile': '画像',
   'nav.insights': '感悟',
   'lang.group': '切换界面语言',
   'lang.zh': '中文',
@@ -138,6 +139,38 @@ const ZH = {
   'history.daysAgo': '{count} 天前',
   'history.noDate': '——',
 
+  // ── 画像 ────────────────────────────────────────────────────
+  'profile.title': '画像',
+  'profile.description':
+    '它只从你自己问过的话里，慢慢拼出"你是谁"——没有依据的一律不写，也从不替你猜',
+  'profile.loading': '正在读取画像…',
+  'profile.empty': '还没有归纳出任何特征。先去「求教」问几个问题，再回来这里。',
+  'profile.emptyHint': '描述得越具体，它越认得出你。',
+  'profile.total': '共 {count} 条特征',
+  'profile.avatarGroup': '形象',
+  'profile.avatar.male': '男',
+  'profile.avatar.female': '女',
+  'profile.figureAlt': '你的形象',
+  'profile.extract': '重新归纳',
+  'profile.extracting': '正在归纳…',
+  'profile.pending': '有 {count} 条新提问还没归纳过',
+  'profile.autoExtracting': '已经问过 {count} 条，正在归纳…',
+  'profile.extracted': '新增 {count} 条特征',
+  'profile.nothingNew': '这次没读出新的东西',
+  'profile.clear': '清空画像',
+  'profile.confirmClear': '确定清空画像吗？问答记录不会受影响，之后可以重新归纳。',
+  'profile.deleteTrait': '删掉这条',
+  'profile.evidence': '依据：{text}',
+  'profile.confidence': '把握 {percent}%',
+  'profile.unavailable': '画像暂时用不了：{error}。问答记录与其它功能不受影响。',
+  'profile.loadFailed': '读取画像失败',
+  'profile.extractFailed': '归纳失败，请稍后再试',
+  'profile.deleteFailed': '删除失败',
+  'profile.err.noRecords': '还没有求教记录——先去「求教」问几个问题，再回来归纳',
+  'profile.err.noLlm': '当前没有可用的模型，归纳暂时做不了',
+  'profile.err.nothingNew': '这次没读出新的特征。多聊几次，线索够了再来。',
+  'profile.footnote': '特征由模型归纳，可能出错。看着不认同的那条，删掉就好。',
+
   // ── 感悟 ────────────────────────────────────────────────────
   'insight.title': '感悟',
   'insight.description': '每日一句经典智慧，给生活一点提醒',
@@ -184,6 +217,7 @@ const EN: Record<MessageKey, string> = {
   'nav.search': 'Search',
   'nav.ask': 'Ask',
   'nav.history': 'Echoes',
+  'nav.profile': 'Portrait',
   'nav.insights': 'Insights',
   'lang.group': 'Interface language',
   'lang.zh': '中文',
@@ -294,6 +328,42 @@ const EN: Record<MessageKey, string> = {
   'history.daysAgo': '{count} d ago',
   'history.noDate': '—',
 
+  'profile.title': 'Portrait',
+  'profile.description':
+    'Built only from the questions you have asked — nothing without evidence, and it never guesses on your behalf',
+  'profile.loading': 'Reading your portrait…',
+  'profile.empty':
+    'Nothing recorded yet. Go to Ask and pose a few questions, then come back here.',
+  'profile.emptyHint': 'The more specifically you describe things, the better it knows you.',
+  'profile.total': '{count} traits in all',
+  'profile.avatarGroup': 'Figure',
+  'profile.avatar.male': 'Male',
+  'profile.avatar.female': 'Female',
+  'profile.figureAlt': 'Your figure',
+  'profile.extract': 'Read them again',
+  'profile.extracting': 'Reading…',
+  'profile.pending': '{count} new questions not read yet',
+  'profile.autoExtracting': '{count} questions so far — reading them now…',
+  'profile.extracted': 'Added {count} traits',
+  'profile.nothingNew': 'Nothing new came out of it this time',
+  'profile.clear': 'Clear the portrait',
+  'profile.confirmClear':
+    'Clear the portrait? Your question history is untouched and you can read it again later.',
+  'profile.deleteTrait': 'Remove',
+  'profile.evidence': 'Because: {text}',
+  'profile.confidence': '{percent}% sure',
+  'profile.unavailable':
+    'The portrait is unavailable right now: {error}. Your history and everything else still work.',
+  'profile.loadFailed': 'Could not read the portrait',
+  'profile.extractFailed': 'Could not read it — please try again later',
+  'profile.deleteFailed': 'Delete failed',
+  'profile.err.noRecords': 'No questions yet — ask a few in Ask, then come back',
+  'profile.err.noLlm': 'No model is available right now, so this cannot be read',
+  'profile.err.nothingNew':
+    'Nothing new this time. Talk a while longer, then come back once there is more to go on.',
+  'profile.footnote':
+    'Traits are inferred by a model and can be wrong. If one does not ring true, just remove it.',
+
   'insight.title': 'Insights',
   'insight.description': 'One piece of classical wisdom a day, as a small reminder for life',
   'insight.daily': 'Today’s insight',
@@ -395,6 +465,19 @@ const THEMES: Record<string, string> = {
   恒心: 'Perseverance',
 }
 
+/** 画像的七个分类。与后端 `profile.TRAIT_CATEGORIES` 一一对应——
+ *  那边是封闭集合（不在里面的特征会被丢掉），所以这里也不会有查不到的情况；
+ *  真查不到就原样显示中文，不至于变成空白。 */
+const TRAIT_CATEGORIES: Record<string, string> = {
+  性格: 'Character',
+  年龄: 'Age',
+  爱好: 'Interests',
+  生活条件: 'Living situation',
+  成熟度: 'Maturity',
+  专业: 'Profession',
+  规划: 'Plans',
+}
+
 function lookup(map: Record<string, string>, value: string, lang: Lang): string {
   if (lang === 'zh' || !value) return value
   return map[value] ?? value
@@ -404,6 +487,8 @@ export const bookTitle = (value: string, lang: Lang) => lookup(BOOK_TITLES, valu
 export const authorName = (value: string, lang: Lang) => lookup(AUTHORS, value, lang)
 export const categoryName = (value: string, lang: Lang) => lookup(CATEGORIES, value, lang)
 export const themeName = (value: string, lang: Lang) => lookup(THEMES, value, lang)
+export const traitCategory = (value: string, lang: Lang) =>
+  lookup(TRAIT_CATEGORIES, value, lang)
 
 /** 检索结果/金句的出处标注，形如 `《资治通鉴》· 才与德`。
  *

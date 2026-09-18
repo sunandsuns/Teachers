@@ -3,7 +3,7 @@
 
 覆盖：健康检查与语料规模 → 前端页面可编译 → vite 代理转发 →
 寻章检索命中古籍 → 原典分块读取 → 求教（含 LLM 状态）→ 回响（历史记录）→
-感悟稳定性 → 阅读页章节链路与感悟页筛选 → 错误路径。
+画像（形象与归纳）→ 阅读页章节链路 → 感悟页筛选 → 错误路径。
 
 所有请求都走 vite 代理（``localhost:5173``），即浏览器实际使用的那条链路；
 后端 API 直连只用于 A 段，以便区分"后端故障"与"代理故障"。
@@ -20,6 +20,13 @@ from pathlib import Path
 
 FRONT = "http://localhost:5173"
 BACK = "http://127.0.0.1:8000"
+
+# 一次求教最多会花掉后端的 LLM_TOTAL_BUDGET（默认 45s），再加上检索与落库的时间。
+# 套接字超时必须比它宽——**比预算还短的超时会以"卡死"收场**，而真实原因只是
+# 我们等得不够久。本文件曾在这里写 40，上游稍慢就必然失败。
+ASK_TIMEOUT = 150
+# 探活有独立的预算（PROBE_BUDGET，约 20s），等它用不着那么久
+PROBE_TIMEOUT = 40
 
 # 后端直连不能走环境代理
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -72,6 +79,7 @@ def main():
     app = get(FRONT + "/src/App.tsx")
     check("App.tsx 已转译", ("jsx" in app))
     check("含寻章路由 /search", "/search" in app)
+    check("含画像路由 /profile", "/profile" in app)
 
     print()
     print("=== C. 经 vite 代理访问后端（前端真实链路）===")
@@ -153,7 +161,7 @@ def main():
         headers={"Content-Type": "application/json"},
     )
     started = time.time()
-    a = json.loads(opener.open(req, timeout=150).read().decode())
+    a = json.loads(opener.open(req, timeout=ASK_TIMEOUT).read().decode())
     elapsed = time.time() - started
     check("求教返回回答", bool(a["answer"]), "%d 字" % len(a["answer"]))
     check("求教引用段落", a["retrieved_count"] == 3, a["retrieved_count"])
@@ -165,7 +173,7 @@ def main():
 
     # 自定义模型通道。这里刻意只走"不会真的连上"的两条路径：
     # smoke 用的是真实 .env，拿真 Key 去探活会花钱，也依赖上游此刻的状态。
-    def post(path, payload, timeout=40):
+    def post(path, payload, timeout=PROBE_TIMEOUT):
         req = urllib.request.Request(
             FRONT + path,
             data=json.dumps(payload).encode(),
@@ -184,7 +192,8 @@ def main():
 
     # 只填一半时，求教应当照常按默认模型走，而不是带着半截配置去试探
     a2 = post("/api/ask", {"question": "如何面对挫折？", "top_k": 2,
-                           "llm": {"base_url": "https://127.0.0.1:1/v1", "api_key": "", "model": ""}})
+                           "llm": {"base_url": "https://127.0.0.1:1/v1", "api_key": "", "model": ""}},
+             timeout=ASK_TIMEOUT)
     check("求教：自定义端点填不全时仍能正常作答", bool(a2["answer"]), "%d 字" % len(a2["answer"]))
 
     d = json.loads(get(FRONT + "/api/insight/daily"))
@@ -219,7 +228,8 @@ def main():
     check("列表按时间倒序", stamps == sorted(stamps, reverse=True), stamps[:3])
 
     # 自己造一条再删掉：既验了删除链路，又不会动到用户原有的记录
-    probe = post("/api/ask", {"question": "冒烟自检：这条用完就删", "top_k": 1})
+    probe = post("/api/ask", {"question": "冒烟自检：这条用完就删", "top_k": 1},
+                 timeout=ASK_TIMEOUT)
     check("求教回传历史编号", isinstance(probe.get("history_id"), int), probe.get("history_id"))
 
     def delete(path):
@@ -229,6 +239,16 @@ def main():
                 return response.status, json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
             return exc.code, None
+
+    def put(path, payload):
+        request = urllib.request.Request(
+            FRONT + path,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with opener.open(request, timeout=20) as response:
+            return json.loads(response.read().decode())
 
     code, body = delete("/api/history/%d" % probe["history_id"])
     check("单条可以删除", code == 200 and body == {"deleted": 1}, body)
@@ -240,8 +260,73 @@ def main():
     check("删除后总数回退", after["total"] == listing["total"],
           "%d → %d" % (listing["total"], after["total"]))
 
+    # 本次冒烟为了验链路而问的那几句也都自动落了库，一并带走。
+    # "不碰用户已有的记录"意味着**自己写的每一条都要收干净**，而不只是那条
+    # 显式命名的探针——否则跑几轮之后，用户的「回响」里会堆满冒烟留下的问题。
+    for made in (a["history_id"], a2["history_id"]):
+        delete("/api/history/%d" % made)
+    left_history = json.loads(get(FRONT + "/api/history?limit=5"))
+    check("自己造出来的记录已清理干净",
+          left_history["total"] == listing["total"] - 2, "%d 条" % left_history["total"])
+
     print()
-    print("=== G. 阅读页章节链路 ===")
+    print("=== G. 画像 ===")
+    # 画像与「回响」是同一个库、同一批素材：从问过的记录里归纳"你是谁"。
+    # 这里**不断言"一定归纳出了东西"**——上游此刻好坏不定，而画像本来就该在
+    # 归纳不出来时保持原样（那是设计，不是故障）。要验的是：结构齐备、
+    # 分类是封闭集合、以及归纳不出来时能说出原因而不是 500。
+    prof = json.loads(get(FRONT + "/api/profile"))
+    check("画像可读（与历史同一个库）", prof["available"] is True,
+          prof.get("error") or "ok")
+    check("分类是七个的封闭集合", len(prof["categories"]) == 7, prof["categories"])
+    check("分类含性格与规划",
+          "性格" in prof["categories"] and "规划" in prof["categories"])
+    check("带出形象性别", prof["avatar"] in ("male", "female"), prof["avatar"])
+    check("每条特征都带依据与把握",
+          all({"id", "category", "content", "evidence", "confidence"} <= set(x)
+              for x in prof["traits"]))
+    check("特征的分类都在封闭集合里",
+          all(x["category"] in prof["categories"] for x in prof["traits"]))
+    check("待归纳的条数是整数", isinstance(prof["pending"], int), prof["pending"])
+
+    switched = put("/api/profile/avatar", {"gender": "female"})
+    check("形象可以切换", switched["avatar"] == "female", switched["avatar"])
+    check("切换后读回来是新值",
+          json.loads(get(FRONT + "/api/profile"))["avatar"] == "female")
+    check("认不出的性别回落默认",
+          put("/api/profile/avatar", {"gender": "别的"})["avatar"] == "male")
+    # 还原成用户原来选的那个，别把人家形象改了
+    put("/api/profile/avatar", {"gender": prof["avatar"]})
+
+    code, _ = delete("/api/profile/traits/999999")
+    check("删不存在的特征返回 404", code == 404, code)
+
+    # 归纳一次，走真实模型。**只删自己造出来的那几条**——与历史那一段同一套
+    # 规矩：不碰用户原有的画像。（副作用：后端的"上次归纳时刻"会前移到此刻，
+    # 于是下次打开画像页不会自动归纳；手动点「重新归纳」照常可用。）
+    before = {x["id"] for x in prof["traits"]}
+    extracted = post("/api/profile/extract", {"lang": "zh"}, timeout=ASK_TIMEOUT)
+    check("归纳响应字段齐备",
+          {"ok", "extracted", "total", "llm_used", "error"} <= set(extracted),
+          extracted.get("error") or "ok")
+    check("没走模型时说得出原因",
+          extracted["llm_used"] or bool(extracted["error"]),
+          extracted["error"] or "llm_used=%s" % extracted["llm_used"])
+    check("新增条数与响应一致",
+          extracted["extracted"] >= 0 and extracted["total"] >= 0,
+          "新增 %d 条，现有 %d 条" % (extracted["extracted"], extracted["total"]))
+
+    added = [x for x in json.loads(get(FRONT + "/api/profile"))["traits"]
+             if x["id"] not in before]
+    for trait in added:
+        delete("/api/profile/traits/%d" % trait["id"])
+    left = json.loads(get(FRONT + "/api/profile"))["traits"]
+    check("自己造出来的特征已清理干净",
+          {x["id"] for x in left} == before,
+          "清掉 %d 条，剩 %d 条" % (len(added), len(left)))
+
+    print()
+    print("=== H. 阅读页章节链路 ===")
     # 阅读页是三段式：书目详情 → 左栏目录 → 右侧正文。前两段原先没有覆盖。
     detail = json.loads(get(FRONT + "/api/books/01"))
     check("书目详情含章节数与原典标记",
@@ -271,7 +356,7 @@ def main():
           "%s｜%d 字" % (body["title"], len(body["content"])))
 
     print()
-    print("=== H. 感悟页筛选 ===")
+    print("=== I. 感悟页筛选 ===")
     theme = t["themes"][0]
     by_theme = json.loads(
         get(FRONT + "/api/insight/by-theme/" + urllib.parse.quote(theme))
@@ -292,7 +377,7 @@ def main():
     check("随机感悟返回", bool(rand["text"]), rand["text"][:20])
 
     print()
-    print("=== I. 错误路径 ===")
+    print("=== J. 错误路径 ===")
     # 未知 id 必须是干净 404；返回 500 或（更糟）回退成前端 HTML 都算故障：
     # 前端 fetch 会拿到一段 HTML 再报 JSON 解析错误，排查起来非常痛苦。
     for path in ("/api/books/nope", "/api/books/01/chapters/nope", "/api/insight/999999"):

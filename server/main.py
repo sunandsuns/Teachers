@@ -21,6 +21,7 @@ from .routers.ask import router as ask_router
 from .routers.books import router as books_router
 from .routers.history import router as history_router
 from .routers.insight import router as insight_router
+from .routers.profile import router as profile_router
 from .routers.search import router as search_router
 from .services.content_loader import get_loader
 from .services.history import get_history_store
@@ -39,6 +40,7 @@ async def lifespan(app: FastAPI):
     顺带碰一下历史记录存储：**把建库动作提到启动时**。它本来是惰性的，但那样
     用户问第一句话时会多等一次建表；更重要的是，万一程序目录不可写而落到了
     用户目录兜底，启动日志里就会写清楚库最终落在哪，排查时不用猜。
+    画像与历史同一个库文件，所以这一次就把两张表都建好了。
     """
     loader = get_loader()
     ensure_retriever(loader)
@@ -70,6 +72,7 @@ app.include_router(search_router)
 app.include_router(ask_router)
 app.include_router(insight_router)
 app.include_router(history_router)
+app.include_router(profile_router)
 
 
 @app.get("/api/health")
@@ -113,6 +116,7 @@ else:
                 "ask": "POST /api/ask",
                 "insight": "/api/insight/daily",
                 "history": "/api/history",
+                "profile": "/api/profile",
                 "docs": "/docs",
             },
         }

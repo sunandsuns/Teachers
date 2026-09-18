@@ -7,17 +7,20 @@ import { activeLang, tCurrent, type Lang } from '../i18n/messages'
 import type {
   AskResponse,
   AskStatus,
+  Avatar,
   BookSummary,
   ChapterDetail,
   ChapterSummary,
   ChatTurn,
   DeleteResult,
+  ExtractResult,
   HistoryListResponse,
   HistoryStatus,
   InsightItem,
   InsightListResponse,
   LLMEndpoint,
   ProbeResult,
+  ProfileResponse,
   SearchKind,
   SearchResponse,
   SourceChunk,
@@ -147,4 +150,31 @@ export const api = {
 
   insightsByBook: (bookId: string) =>
     request<InsightListResponse>(`/insight/by-book/${bookId}`),
+
+  // 「画像」——从问过的话里归纳出的"你是谁"。数据与历史记录同一个库。
+  getProfile: () => request<ProfileResponse>('/profile'),
+
+  /** 归纳画像。**会阻塞几十秒**（要走一次模型），所以放在页面里异步触发，
+   *  不要挡住首屏渲染。
+   *
+   *  `lang` 决定特征正文用哪种语言写；分类始终是中文封闭集合。 */
+  extractProfile: (lang: Lang = activeLang()) =>
+    request<ExtractResult>('/profile/extract', {
+      method: 'POST',
+      body: JSON.stringify({ lang }),
+    }),
+
+  /** 切换形象性别。存后端而不是浏览器本地：它属于画像这份数据。 */
+  setAvatar: (avatar: Avatar) =>
+    request<{ avatar: Avatar }>('/profile/avatar', {
+      method: 'PUT',
+      body: JSON.stringify({ gender: avatar }),
+    }),
+
+  /** 删掉一条特征。用户不认同的判断就该能抹掉。 */
+  deleteTrait: (id: number) =>
+    request<DeleteResult>(`/profile/traits/${id}`, { method: 'DELETE' }),
+
+  /** 清空画像（**不**动问答记录）。 */
+  clearProfile: () => request<DeleteResult>('/profile', { method: 'DELETE' }),
 }

@@ -190,3 +190,43 @@ export interface HistoryStatus {
 export interface DeleteResult {
   deleted: number
 }
+
+/** 一条画像特征。 */
+export interface TraitItem {
+  id: number
+  /** 分类：性格 / 年龄 / 爱好 / 生活条件 / 成熟度 / 专业 / 规划。
+   *  后端的封闭集合，界面把它译成标签，**不要**当成自由文本处理。 */
+  category: string
+  content: string
+  /** 依据：用户自己说过的哪句话让模型这么判断 */
+  evidence: string
+  /** 模型的把握程度，0~1 */
+  confidence: number
+}
+
+/** 形象性别。 */
+export type Avatar = 'male' | 'female'
+
+/** 画像全貌。`available` 为 false 时 `traits` 必为空、`error` 里是原因。 */
+export interface ProfileResponse {
+  available: boolean
+  error: string
+  avatar: Avatar
+  total: number
+  traits: TraitItem[]
+  /** 全部分类，界面按它排引线 */
+  categories: string[]
+  /** 上次归纳之后又问了多少条。大于 0 就值得再归纳一次 */
+  pending: number
+}
+
+/** 一次归纳的结果。`error` 是机器可读的代号，或上游给的错误文本。 */
+export interface ExtractResult {
+  ok: boolean
+  /** 本次新增或更新的条数 */
+  extracted: number
+  /** 画像里现在共有几条 */
+  total: number
+  llm_used: boolean
+  error: string
+}

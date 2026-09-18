@@ -67,6 +67,20 @@ CREATE TABLE IF NOT EXISTS history (
 -- 列表页永远按时间倒序取，且清理按时间范围删，这条索引两处都吃得上
 CREATE INDEX IF NOT EXISTS idx_history_created ON history (created_ts DESC);
 
+CREATE TABLE IF NOT EXISTS traits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 特征分类（性格/年龄/…）。界面上人形两侧的引线按它分组，是个封闭集合
+    category    TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    -- 依据：用户说过的哪句话让模型这么判断。没有依据的特征不该存在
+    evidence    TEXT    NOT NULL DEFAULT '',
+    confidence  REAL    NOT NULL DEFAULT 0.5,
+    created_ts  REAL    NOT NULL,
+    updated_ts  REAL    NOT NULL
+);
+
+-- 按类别取用、按把握排序，这条索引吃得上
+CREATE INDEX IF NOT EXISTS idx_traits_category ON traits (category, confidence DESC);
 """
 
 #: 依赖后加列的语句，**必须等 :data:`MIGRATIONS` 跑完再执行**。

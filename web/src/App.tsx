@@ -3,6 +3,7 @@ import Library from './pages/Library'
 import Reader from './pages/Reader'
 import Advisor from './pages/Advisor'
 import History from './pages/History'
+import Profile from './pages/Profile'
 import Insights from './pages/Insights'
 import Search from './pages/Search'
 import LangToggle from './components/LangToggle'
@@ -14,6 +15,8 @@ const NAV_ITEMS: { to: string; key: MessageKey; end?: boolean }[] = [
   { to: '/ask', key: 'nav.ask' },
   // 「回响」紧跟「求教」：它存的就是求教留下的记录，两块内容是一体的
   { to: '/history', key: 'nav.history' },
+  // 「画像」接着「回响」：它归纳的也正是那些记录，是同一批素材的另一种看法
+  { to: '/profile', key: 'nav.profile' },
   { to: '/insights', key: 'nav.insights' },
 ]
 
@@ -67,6 +70,7 @@ export default function App() {
           <Route path="/search" element={<Search />} />
           <Route path="/ask" element={<Advisor />} />
           <Route path="/history" element={<History />} />
+          <Route path="/profile" element={<Profile />} />
           <Route path="/insights" element={<Insights />} />
         </Routes>
       </main>

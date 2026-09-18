@@ -31,6 +31,7 @@ export {
   categoryName,
   sourceLabel,
   themeName,
+  traitCategory,
 } from './messages'
 
 /** 与 `useModelSettings` 同理存在 localStorage：语言是本机偏好，

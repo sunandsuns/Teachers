@@ -86,6 +86,10 @@ export default {
       minHeight: {
         panel: 'calc(100vh - 13rem)',
       },
+      // 「画像」的人形是 SVG，尺寸靠比例锁住，别写成内联 style
+      aspectRatio: {
+        portrait: '200 / 260',
+      },
       keyframes: {
         'fade-up': {
           '0%': { opacity: '0', transform: 'translateY(6px)' },
