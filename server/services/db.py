@@ -113,19 +113,39 @@ class Database:
     **惰性**：构造时不碰磁盘，第一次真正用到才建目录、建库、建表。
     测试里往环境里塞一个临时路径即可，不必关心清理时机。
 
-    **线程安全**：FastAPI 会把同步接口丢进线程池，同一个存储会被多个线程
-    同时用到。这里用一把锁守住"初始化"，连接则一次操作一个（不共享 sqlite
-    连接对象——它默认不允许跨线程使用，共享反而要处处小心）。桌面版单用户，
-    这点开销可以忽略。
+    **连接是复用的**——这一点比看上去要紧
+    --------------------------------------------------------------------------
+    在本机（Windows）实测：对这个库每做一次"新建连接 → 查一条 → 关掉"，
+    稳定要 **70ms**，连 ``SELECT 1`` 也不例外；而把同一个文件换成非 WAL 的
+    日志模式，同样的操作只要 **0.5ms**。差的不是查询，是 SQLite 打开一个 WAL
+    库时要重建 ``-wal`` / ``-shm`` 这两份共享内存文件的开销：最后一个连接
+    关闭时它们被删掉，下一次打开又得从头来过。
+
+    ``session()`` 原先正是"一次操作一条连接"，于是碰库的接口都背上了这个
+    固定成本——``/api/profile`` 一次请求要做七次操作，实测 471ms（端到端
+    644ms）。改成全程只留一条连接后，同样的七次操作降到 **0.1ms**。
+
+    代价是操作被**串行化**（一把 ``RLock`` 一直守到退出 ``with`` 块）。桌面版
+    单用户、语句都是微秒级，这个代价可以忽略；换来的是不再有连接间的写冲突，
+    ``database is locked`` 这类问题从源头上消失。
+    **但别在 ``session()`` 里做慢活**（调模型、读大文件、发网络请求）——
+    那会把别的请求一起堵在门外。现有调用点都是纯 SQL，改代码时请守住这条。
+
+    **线程安全**：FastAPI 会把同步接口丢进线程池，同一个存储会被多个线程用到。
+    连接以 ``check_same_thread=False`` 打开，但访问一律在锁内，所以仍然安全。
     """
 
     def __init__(self, path: Optional[Path] = None) -> None:
         self._path = Path(path) if path is not None else resolve_data_dir() / DB_FILENAME
-        self._lock = threading.Lock()
+        #: 用 RLock：``session()`` 持着它，而它内部会调 ``_prepare()``，
+        #: 后者也要这把锁。普通 Lock 在这里会当场死锁。
+        self._lock = threading.RLock()
         #: None = 还没试过；True/False = 试过的结论（失败不重试，避免每次请求都
         #: 白等一次磁盘超时）
         self._ready: Optional[bool] = None
         self._error = ""
+        #: 那条被复用的连接。None 表示还没建，或刚被废弃
+        self._conn: Optional[sqlite3.Connection] = None
 
     # ── 状态 ────────────────────────────────────────────────────────────
 
@@ -146,6 +166,47 @@ class Database:
         技术描述 + 原始异常，便于对照排查。"""
         return self._error
 
+    # ── 连接 ────────────────────────────────────────────────────────────
+
+    def _connection(self) -> sqlite3.Connection:
+        """取那条被复用的连接，没有就建一条。**调用方必须已持有 ``_lock``。**
+
+        ``check_same_thread=False``：FastAPI 把同步接口丢进线程池，这条连接
+        会在不同线程上被用到。安全性由调用方的那把锁保证，不是靠 SQLite。
+        """
+        if self._conn is None:
+            self._conn = self.connect(check_same_thread=False)
+        return self._conn
+
+    def _discard(self) -> None:
+        """把当前那条连接丢掉（关掉并置空）。调用方必须已持有 ``_lock``。
+
+        用在"连接坏了"的场合：用户把库文件删了或挪走、盘符掉了。下一次访问
+        会自然重建，不必人工干预。
+        """
+        connection, self._conn = self._conn, None
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+
+    def connect(self, *, check_same_thread: bool = True) -> sqlite3.Connection:
+        """建一条新连接（调用方负责关闭）。
+
+        这是**唯一**开连接的地方：复用连接与独立连接都从这里出去，所以
+        "库打不开"只有这一个失败点，注入故障（测试里 patch 掉它）也只需盯住这里。
+
+        ``check_same_thread=True`` 是 sqlite3 的默认值，也是"另开一条独立连接"
+        该有的样子。复用连接那一条传 False——它必然跨线程被用到，安全性由
+        :data:`Database._lock` 保证，见类注释。
+        """
+        connection = sqlite3.connect(
+            str(self._path), timeout=5.0, check_same_thread=check_same_thread
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
+
     # ── 建库 ────────────────────────────────────────────────────────────
 
     def _prepare(self) -> bool:
@@ -156,22 +217,20 @@ class Database:
             self._ready = False
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                connection = self.connect()
+                connection = self._connection()
+                # WAL 让"读列表"与"写一条"不互相阻塞。失败不算致命
+                # （某些网络盘不支持），因此单独兜住。
                 try:
-                    # WAL 让"读列表"与"写一条"不互相阻塞。失败不算致命
-                    # （某些网络盘不支持），因此单独兜住。
-                    try:
-                        connection.execute("PRAGMA journal_mode = WAL")
-                    except sqlite3.Error:
-                        pass
-                    connection.executescript(SCHEMA)
-                    self._migrate(connection)
-                    connection.executescript(POST_MIGRATION_DDL)
-                    connection.commit()
-                finally:
-                    connection.close()
+                    connection.execute("PRAGMA journal_mode = WAL")
+                except sqlite3.Error:
+                    pass
+                connection.executescript(SCHEMA)
+                self._migrate(connection)
+                connection.executescript(POST_MIGRATION_DDL)
+                connection.commit()
             except (sqlite3.Error, OSError) as exc:
                 self._error = "%s: %s" % (type(exc).__name__, exc)
+                self._discard()
                 return False
             self._ready = True
             self._error = ""
@@ -191,31 +250,45 @@ class Database:
             if column not in existing:
                 connection.execute(statement)
 
-    def connect(self) -> sqlite3.Connection:
-        """开一个连接（调用方负责关闭）。**不检查可用性**，供 :meth:`_prepare`
-        自己使用——否则就递归了。"""
-        connection = sqlite3.connect(str(self._path), timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        return connection
-
     @contextmanager
     def session(self) -> Iterator[sqlite3.Connection]:
-        """一次事务性操作：正常提交、出错回滚、最后必然关闭。
+        """一次事务性操作：正常提交、出错回滚、连接**留着重用**。
 
         库不可用时抛 :class:`DatabaseUnavailable`——这是本模块**唯一**外抛的
         异常，语义明确（"没有数据库可用"），不是"操作失败"。
+
+        回滚这里刻意兜的是 ``BaseException`` 而不是 ``sqlite3.Error``：连接
+        复用之后，"异常没回滚"的后果比以前严重得多——留下的未提交事务会一直
+        攥着写锁，之后每一次写都会失败。调用方抛什么（哪怕是自己代码里的
+        ``TypeError``）都得先回滚干净再往外传。
         """
-        if not self._prepare():
-            raise DatabaseUnavailable(self._error)
-        connection = self.connect()
-        try:
-            yield connection
+        with self._lock:
+            if not self._prepare():
+                raise DatabaseUnavailable(self._error)
+            connection = self._connection()
+            try:
+                yield connection
+            except BaseException as exc:
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
+                # 连接本身坏了（被外部关掉、文件没了）：丢掉它，
+                # 下一次访问会自动重建。这一次按失败处理——业务层本就不抛异常。
+                if isinstance(exc, sqlite3.ProgrammingError):
+                    self._discard()
+                raise
             connection.commit()
-        except sqlite3.Error:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+
+    def close(self) -> None:
+        """关掉这条连接，并把状态复位成"还没准备过"。
+
+        进程退出、以及测试里换数据目录时用；运行时不必调用。
+        复位之后下次访问会重新走一遍建库（幂等），所以关掉再打开是安全的。
+        """
+        with self._lock:
+            self._discard()
+            self._ready = None
 
     def size_bytes(self) -> int:
         """库占用的字节数。WAL 模式下数据可能还在 ``-wal`` 侧文件里，

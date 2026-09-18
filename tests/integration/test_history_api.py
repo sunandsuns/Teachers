@@ -105,7 +105,7 @@ class TestGracefulDegradation:
 
     @pytest.fixture
     def broken_db(self, monkeypatch):
-        def explode(self):
+        def explode(self, **kwargs):
             raise OSError("磁盘满了")
 
         monkeypatch.setattr(Database, "connect", explode)

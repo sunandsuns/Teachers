@@ -19,7 +19,6 @@ from ..services.profile import (
     TRAIT_CATEGORIES,
     extract,
     get_profile_store,
-    pending_count,
 )
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
@@ -127,7 +126,7 @@ def _to_item(trait) -> TraitItem:
     )
 
 
-def _figure_info(store, lang: str) -> FigureInfo:
+def _figure_info(store, lang: str, *, traits=None) -> FigureInfo:
     """把"该性别当前选中的人"读成接口形状。
 
     这里做四件事：取出记录、从名录里还原出那个人、数一下候选人数、判断要不要重评。
@@ -142,8 +141,12 @@ def _figure_info(store, lang: str) -> FigureInfo:
       等于卡死在一个永远不重算的状态。
 
     名录空着时一律不评：调了也只有 ``no_pool``，白白占掉一次模型调用。
+
+    ``traits`` 可以由调用方递进来——``GET /api/profile`` 手上已经有一份，
+    没必要为了这一处再向库里问一遍。
     """
-    traits = store.list()
+    if traits is None:
+        traits = store.list()
     gender = store.avatar()
     stored = store.get_figure(gender)
     figure = figures_service.find(stored.get("id")) if stored.get("id") else None
@@ -173,16 +176,19 @@ async def get_profile(lang: str = "zh"):
             figure=FigureInfo(),
         )
 
-    _, records = get_history_store().list(limit=EXTRACT_SOURCE_LIMIT)
+    traits = store.list()
     return ProfileResponse(
         available=True,
         error="",
         avatar=store.avatar(),
         total=store.count(),
-        traits=[_to_item(trait) for trait in store.list()],
+        traits=[_to_item(trait) for trait in traits],
         categories=list(TRAIT_CATEGORIES),
-        pending=pending_count(records, store.last_extract_ts()),
-        figure=_figure_info(store, lang),
+        # 只数个数，**不把最近 40 条回答的全文读出来**（见 HistoryStore.count_since）
+        pending=get_history_store().count_since(
+            store.last_extract_ts(), window=EXTRACT_SOURCE_LIMIT
+        ),
+        figure=_figure_info(store, lang, traits=traits),
     )
 
 

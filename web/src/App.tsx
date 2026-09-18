@@ -1,14 +1,26 @@
+import { lazy, Suspense } from 'react'
 import { Route, Routes, NavLink } from 'react-router-dom'
-import Library from './pages/Library'
-import Reader from './pages/Reader'
-import Advisor from './pages/Advisor'
-import History from './pages/History'
-import Knowledge from './pages/Knowledge'
-import Profile from './pages/Profile'
-import Insights from './pages/Insights'
-import Search from './pages/Search'
 import LangToggle from './components/LangToggle'
+import { Loading } from './components/Status'
 import { useI18n, type MessageKey } from './i18n'
+
+// 页面按路由**分包**：进哪一页才下载哪一页的代码。
+//
+// 原先八个页面全是静态 import，会被打进同一个 chunk——打开「书架」也得先把
+// 画像、知识图谱、阅读器的代码一起下载并解析完，才看得到第一屏。桌面版虽然
+// 是本地加载，省下的这点网络时间不算什么，但**解析与执行**同样要花，且每个
+// 页面都在为别的页面付这份钱。
+//
+// 代价是切到没去过的页面时多一次本地取 chunk（几毫秒）。Suspense 的兜底
+// 用同一个 Loading 组件，所以万一真的慢，看到的也是熟悉的样子，不会白屏。
+const Library = lazy(() => import('./pages/Library'))
+const Reader = lazy(() => import('./pages/Reader'))
+const Advisor = lazy(() => import('./pages/Advisor'))
+const History = lazy(() => import('./pages/History'))
+const Knowledge = lazy(() => import('./pages/Knowledge'))
+const Profile = lazy(() => import('./pages/Profile'))
+const Insights = lazy(() => import('./pages/Insights'))
+const Search = lazy(() => import('./pages/Search'))
 
 const NAV_ITEMS: { to: string; key: MessageKey; end?: boolean }[] = [
   { to: '/', key: 'nav.library', end: true },
@@ -65,16 +77,18 @@ export default function App() {
       </header>
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
-        <Routes>
-          <Route path="/" element={<Library />} />
-          <Route path="/books/:bookId" element={<Reader />} />
-          <Route path="/search" element={<Search />} />
-          <Route path="/knowledge" element={<Knowledge />} />
-          <Route path="/ask" element={<Advisor />} />
-          <Route path="/history" element={<History />} />
-          <Route path="/profile" element={<Profile />} />
-          <Route path="/insights" element={<Insights />} />
-        </Routes>
+        <Suspense fallback={<Loading />}>
+          <Routes>
+            <Route path="/" element={<Library />} />
+            <Route path="/books/:bookId" element={<Reader />} />
+            <Route path="/search" element={<Search />} />
+            <Route path="/knowledge" element={<Knowledge />} />
+            <Route path="/ask" element={<Advisor />} />
+            <Route path="/history" element={<History />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/insights" element={<Insights />} />
+          </Routes>
+        </Suspense>
       </main>
 
       <footer className="border-t border-paper-200 py-8 text-center">

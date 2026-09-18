@@ -67,7 +67,8 @@ async function fillCustomEndpoint(user: ReturnType<typeof userEvent.setup>) {
 }
 
 async function askAQuestion(user: ReturnType<typeof userEvent.setup>, text = '如何面对挫折') {
-  await user.type(screen.getByPlaceholderText('输入你的问题或困境…'), text)
+  // 页面按路由分包之后，求教页那一块 chunk 是异步到的，得等它出现
+  await user.type(await screen.findByPlaceholderText('输入你的问题或困境…'), text)
   await user.click(screen.getByRole('button', { name: '求教' }))
   await waitFor(() => expect(mockedApi.ask).toHaveBeenCalled())
 }

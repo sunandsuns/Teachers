@@ -23,7 +23,6 @@ from server.services.profile import (
     build_profile_prompt,
     extract,
     parse_traits,
-    pending_count,
 )
 
 
@@ -128,27 +127,6 @@ class TestExtractStamp:
     def test_status_reports_it(self, store):
         store.mark_extracted(now=1234.0)
         assert store.status()["last_extract_ts"] == 1234.0
-
-
-class TestPendingCount:
-    """「还有多少条提问没归纳过」。"""
-
-    @staticmethod
-    def at(ts: float):
-        return SimpleNamespace(question="问", answer="答", created_ts=ts)
-
-    def test_never_extracted_counts_everything(self):
-        assert pending_count([self.at(10.0), self.at(20.0)], 0.0) == 2
-
-    def test_only_newer_than_the_stamp(self):
-        # > 而不是 >=：归纳恰好发生在那条提问的同一秒时，它已经被看过了
-        assert pending_count([self.at(10.0), self.at(20.0)], 10.0) == 1
-
-    def test_nothing_new(self):
-        assert pending_count([self.at(10.0)], 20.0) == 0
-
-    def test_no_records(self):
-        assert pending_count([], 0.0) == 0
 
 
 class TestParseTraits:

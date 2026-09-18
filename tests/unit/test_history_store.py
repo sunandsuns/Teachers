@@ -93,7 +93,9 @@ class TestDatabaseBootstrap:
     def test_unwritable_location_degrades_instead_of_raising(self, tmp_path, monkeypatch):
         """库建不出来时只记原因，不抛异常。"""
 
-        def broken(self):
+        def broken(self, **kwargs):
+            # 替身要认下 connect 的全部签名（它多了一个 check_same_thread），
+            # 否则抛出来的是 TypeError，不是我们要验的那种"库打不开"
             raise sqlite3.OperationalError("attempt to write a readonly database")
 
         monkeypatch.setattr(Database, "connect", broken)
@@ -109,7 +111,7 @@ class TestDatabaseBootstrap:
         """失败结论要缓存：否则每次请求都要白等一次磁盘超时。"""
         calls = []
 
-        def broken(self):
+        def broken(self, **kwargs):
             calls.append(1)
             raise sqlite3.OperationalError("坏了")
 
@@ -125,6 +127,138 @@ class TestDatabaseBootstrap:
         seed(db, "问题", age_days=0)
 
         assert db.size_bytes() > 0
+
+
+class TestConnectionReuse:
+    """连接复用（``Database.session`` 全程只留一条连接）。
+
+    为什么要专门守这几条
+    --------------------------------------------------------------------------
+    在本机实测过：每做一次"新建连接 → 查一条 → 关掉"，稳定要 70ms——那是
+    SQLite 在 Windows 上重建 WAL 共享内存文件的代价，不是查询本身。改成复用
+    之后同样的七次操作从 471ms 掉到 0.1ms。
+
+    但"连接不关"同时带来两个新的失败方式，它们都不会自己出声：
+    未提交的事务会**一直攥着写锁**，之后每一次写都失败；连接被外部干掉之后
+    不会自动恢复。所以这里逐条钉住。
+    """
+
+    def test_sessions_share_one_connection(self, db):
+        """复用是这套改动的全部意义所在：两次 session 必须是同一条连接。"""
+        with db.session() as first:
+            pass
+        with db.session() as second:
+            pass
+
+        assert first is second
+
+    def test_a_failed_transaction_rolls_back_and_leaves_it_usable(self, db):
+        """调用方自己抛异常时也要回滚干净。
+
+        这比以前要紧得多：连接不关之后，漏掉的回滚会留下一个开着的事务，
+        写锁被一直攥着，之后的写全部失败——而且看起来像"库突然坏了"。
+        所以 ``session`` 兜的是 ``BaseException``，不只是 ``sqlite3.Error``。
+        """
+        with pytest.raises(ValueError):
+            with db.session() as connection:
+                connection.execute(
+                    "INSERT INTO history (question, answer, retrieved_count, created_ts) "
+                    "VALUES ('这条不该留下', '答案', 0, 0)"
+                )
+                raise ValueError("调用方自己炸了")
+
+        with db.session() as connection:
+            left = connection.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"]
+        assert left == 0, "未提交的插入必须被回滚"
+
+        # 还能继续写：没有留下攥着写锁的事务
+        seed(db, "之后写的", age_days=0)
+        assert questions(HistoryStore(db)) == ["之后写的"]
+
+    def test_close_then_use_again(self, db):
+        """``close()`` 只关连接、不留后遗症：下次访问自己重新打开。"""
+        seed(db, "关之前", age_days=0)
+
+        db.close()
+
+        assert db.available is True
+        with db.session() as connection:
+            assert connection.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"] == 1
+
+    def test_a_killed_connection_recovers_on_the_next_call(self, db):
+        """连接被外部干掉（文件被删/盘符掉了）时，下一次访问要能自己长回来。
+
+        坏连接只会让**那一次**失败——存储层的每个方法本就不抛异常，
+        所以用户看到的是"这次没记上"，而不是应用崩掉。
+        """
+        store = HistoryStore(db)
+        assert store.save("第一句", "答案") is not None
+
+        db._conn.close()  # 白盒：模拟连接在背后被关掉
+
+        assert store.save("第二句", "答案") is None, "坏掉的那一次应当安静地失败"
+        assert store.save("第三句", "答案") is not None, "下一次应当已经自愈"
+
+    def test_threads_writing_at_once_lose_nothing(self, db):
+        """复用连接是被一把锁守着跨线程用的——并发写不能丢、也不能报 locked。"""
+        import threading
+
+        store = HistoryStore(db)
+        errors: list[BaseException] = []
+
+        def writer(tag: str) -> None:
+            try:
+                for index in range(5):
+                    if store.save(f"{tag}-{index}", "答案") is None:
+                        errors.append(RuntimeError("写入返回了 None"))
+            except BaseException as exc:  # noqa: BLE001 — 线程里的异常要带回主线程断言
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(f"t{k}",)) for k in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        assert store.list()[0] == 20
+
+
+class TestCountSince:
+    """「还有多少条提问没归纳过」——「画像」页据此决定要不要自动归纳一次。
+
+    这条规则原先住在服务层：先把最近 40 条整条读出来，再在 Python 里数时间戳。
+    为得到一个整数搬运几十 KB 的回答正文，实在不划算，于是挪进了 SQL。
+    规则本身没变，所以这里守住的仍是原来那几条边界。
+    """
+
+    def test_never_extracted_counts_everything(self, db):
+        seed(db, "第一句", age_days=0)
+        seed(db, "第二句", age_days=0)
+
+        assert HistoryStore(db).count_since(0.0) == 2
+
+    def test_only_newer_than_the_stamp(self, db):
+        seed(db, "老的", age_days=1)
+        seed(db, "新的", age_days=0)
+
+        # > 而不是 >=：归纳恰好与某条提问落在同一秒时，那条已经被看过了
+        assert HistoryStore(db).count_since(T0 - 0.5 * DAY) == 1
+
+    def test_nothing_new(self, db):
+        seed(db, "老的", age_days=5)
+
+        assert HistoryStore(db).count_since(T0) == 0
+
+    def test_no_records(self, db):
+        assert HistoryStore(db).count_since(0.0) == 0
+
+    def test_window_caps_how_far_back_it_looks(self, db):
+        """窗口外的老记录再多也不改变结论——单次归纳只吃得下这么多素材。"""
+        for index in range(5):
+            seed(db, f"第{index}句", age_days=0)
+
+        assert HistoryStore(db).count_since(0.0, window=3) == 3
 
 
 class TestRetentionConfig:
@@ -275,7 +409,7 @@ class TestUnavailableDatabase:
 
     @pytest.fixture
     def broken(self, tmp_path, monkeypatch) -> HistoryStore:
-        def explode(self):
+        def explode(self, **kwargs):
             raise sqlite3.OperationalError("disk I/O error")
 
         monkeypatch.setattr(Database, "connect", explode)

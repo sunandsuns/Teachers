@@ -398,6 +398,32 @@ class HistoryStore:
         except Exception:  # noqa: BLE001
             return None
 
+    def count_since(self, since: float, *, window: int = MAX_LIMIT) -> int:
+        """最近 ``window`` 条记录里，``since`` 之后的有多少条。
+
+        「画像」页靠它决定要不要自动归纳一次。窗口是刻意留的：单次归纳只吃得下
+        这么多素材，窗口外的老记录再多也不改变"要不要再来一次"。
+
+        用 ``>`` 而不是 ``>=``：归纳恰好与某条提问落在同一秒时，那条已经被看过了。
+
+        **这里刻意不返回记录本身。** 原先的做法是先把最近 40 条整条读出来
+        （含回答全文，一条几 KB），再在 Python 里数时间戳——为得到一个整数
+        搬运几十 KB 的文本。数数就让数据库去数。
+        """
+        window = max(1, min(int(window), MAX_LIMIT))
+        try:
+            with self._db.session() as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*) AS n FROM ("
+                    "  SELECT created_ts FROM history"
+                    "  ORDER BY created_ts DESC, id DESC LIMIT ?"
+                    ") WHERE created_ts > ?",
+                    (window, float(since)),
+                ).fetchone()
+                return int(row["n"])
+        except Exception:  # noqa: BLE001
+            return 0
+
     # ── 保留策略 ────────────────────────────────────────────────────────
 
     def purge(self, *, now: Optional[float] = None, force: bool = False) -> int:

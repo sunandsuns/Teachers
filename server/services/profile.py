@@ -204,15 +204,6 @@ def build_profile_prompt(
     return f"{intro}\n\n{body}\n\n{outro}"
 
 
-def pending_count(records: Sequence[Any], since: float) -> int:
-    """``since`` 之后问过多少条——界面靠它决定"要不要自动归纳一次"。
-
-    只看提问的时间戳，不看回答：归纳的素材就是问句本身。``since`` 为 0
-    （从没归纳过）时全部算新。
-    """
-    return sum(1 for record in records if float(record.created_ts) > since)
-
-
 class ProfileStore:
     """画像的读写。与历史记录同一套约定：**所有方法都不抛异常**。"""
 
