@@ -29,6 +29,9 @@ from .services.history import get_history_store
 from .services.retriever import ensure_retriever, get_retriever
 from .web_ui import mount_frontend
 
+#: 应用版本。发版时改这一处即可——FastAPI 的 OpenAPI 与根路径索引都读它。
+APP_VERSION = "1.3.0"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,7 +58,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="人生导师 API",
     description="中国传统经典智慧知识库与智能问答服务",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -111,7 +114,7 @@ else:
         """根路径：无前端产物时退化为 API 索引（开发态请走 Vite 的 :5173）。"""
         return {
             "name": "人生导师 API",
-            "version": "1.0.0",
+            "version": APP_VERSION,
             "endpoints": {
                 "books": "/api/books",
                 "search": "/api/search?q=关键词",
