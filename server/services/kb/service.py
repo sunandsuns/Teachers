@@ -155,6 +155,21 @@ class KnowledgeBase:
 
     # ── 构建 ────────────────────────────────────────────────────────
 
+    def warm_up(self) -> None:
+        """把建图提前做掉。
+
+        建图本身只要十几毫秒（实测量过），但它是**惰性**的：不预热，用户第一次
+        点开「知识库」就要现等这一下。应用启动时反正已经为建索引等了七秒，
+        顺手把它做掉，用户点进去就是现成的。
+
+        做成公开方法而不是让调用方去碰 ``_ensure_built``：后者是内部实现，
+        改起来不该牵扯到 ``main.py``。失败也不抛——知识库建不出来不该拦住启动。
+        """
+        try:
+            self._ensure_built()
+        except Exception:  # noqa: BLE001 — 预热失败留给首次真实请求去报错
+            pass
+
     def _ensure_built(self) -> None:
         if self._built:
             return

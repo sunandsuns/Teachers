@@ -38,19 +38,125 @@ export * from './types'
 
 const BASE = '/api'
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
-  if (!resp.ok) {
-    const detail = await resp.json().catch(() => null)
-    // 后端给了 detail 就用它（那是更具体的诊断信息），没给才用这句兜底。
-    // 这里在 React 之外，只能读"当前语言"而不是 hook。
-    const message = detail?.detail ?? tCurrent('error.requestFailed', { status: resp.status })
-    throw new Error(message)
+/** GET 缓存：同一路径在 TTL 内只发一次请求。
+ *
+ * 页面是按路由分包的（``App.tsx`` 里的 ``lazy``），**切走再切回会重新挂载**，
+ * 于是每次都重新请求一遍。而其中大部分数据在一次会话里根本不会变——书目、
+ * 章节正文、知识库图谱都是随包发布的静态语料。实测这些接口只要 1~8ms，
+ * 但加上"卸载 → 重挂 → 等往返 → 重新渲染"的整条链路，切页时会明显闪一下白。
+ *
+ * 只缓存 GET，且必须**显式声明**（见 ``cacheFor``）：请求有无副作用、
+ * 数据会不会变，只有接口自己知道，不能按 HTTP 方法一刀切。
+ *
+ * 刻意不做持久化（不落 localStorage）：语料随版本走，把上一版的数据留在
+ * 浏览器里，用户升级后看到的是旧内容，比多等几毫秒糟得多。
+ */
+interface CacheEntry {
+  value: unknown
+  /** 过期时刻（``Date.now()`` 基准） */
+  expires: number
+}
+
+const getCache = new Map<string, CacheEntry>()
+/** 进行中的请求：避免同一路径被并发发两次（切页很快时很容易发生）。 */
+const inflight = new Map<string, Promise<unknown>>()
+
+/** 只缓存读操作且数据不随会话变化的那几个接口。
+ *
+ * 不在这里的路径一律不缓存，其中包括：
+ * - ``/ask`` 与 ``/ask/probe``：有副作用（会落库、会烧 token）；
+ * - ``/profile/extract``、``/profile/figure``：同样是动作，不是查询；
+ * - ``/insight/random``：语义就是"每次给一条别的"；
+ * - ``/history*``：每次求教都会往里加记录，缓存住会让「回响」看不到刚问的那句。
+ */
+const CACHE_TTL: Record<string, number> = {
+  '/books': 5 * 60_000,
+  '/insight/daily': 60_000,
+  '/insight/themes': 5 * 60_000,
+  '/kb/graph': 5 * 60_000,
+  '/profile': 30_000,
+}
+
+/** 前缀匹配的 TTL：带参数的路径（/books/01、/kb/nodes/xxx）走这里。 */
+const CACHE_TTL_PREFIX: [string, number][] = [
+  ['/books/', 5 * 60_000],
+  ['/insight/by-theme/', 5 * 60_000],
+  ['/insight/by-book/', 5 * 60_000],
+  ['/kb/nodes/', 5 * 60_000],
+]
+
+function ttlFor(path: string): number {
+  // 规则只看**路径**，查询串不参与匹配——`/kb/graph?chapters=false` 与
+  // `/kb/graph?chapters=true` 是两份不同的数据（要不要带章节节点），
+  // 但它们的缓存时长是同一个。用整串去查表会一个都匹配不上。
+  const q = path.indexOf('?')
+  const bare = q >= 0 ? path.slice(0, q) : path
+  const exact = CACHE_TTL[bare]
+  if (exact !== undefined) return exact
+  for (const [prefix, ttl] of CACHE_TTL_PREFIX) {
+    if (bare.startsWith(prefix)) return ttl
   }
-  return resp.json() as Promise<T>
+  return 0
+}
+
+/** 清掉全部 GET 缓存。
+ *
+ * 写操作之后调用：删了历史、「清空画像」之后再读，必须看到最新状态，
+ * 而不是 30 秒前的快照。
+ */
+export function clearApiCache(): void {
+  getCache.clear()
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const isGet = method === 'GET'
+  const ttl = isGet ? ttlFor(path) : 0
+
+  if (ttl > 0) {
+    const hit = getCache.get(path)
+    if (hit && hit.expires > Date.now()) {
+      return hit.value as T
+    }
+    // 同一个路径正在请求中：搭个便车，别再发一次
+    const pending = inflight.get(path)
+    if (pending) return pending as Promise<T>
+  }
+
+  const doing = (async () => {
+    const resp = await fetch(`${BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...init,
+    })
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => null)
+      // 后端给了 detail 就用它（那是更具体的诊断信息），没给才用这句兜底。
+      // 这里在 React 之外，只能读"当前语言"而不是 hook。
+      const message = detail?.detail ?? tCurrent('error.requestFailed', { status: resp.status })
+      throw new Error(message)
+    }
+    const value = (await resp.json()) as T
+    if (ttl > 0) {
+      getCache.set(path, { value, expires: Date.now() + ttl })
+    } else if (!isGet) {
+      // 写操作成功后把读缓存整体作废。逐个接口去清容易漏——比如
+      // 「清空画像」要连带清掉 /profile 与 /kb/*，而「归纳画像」「重评人物」
+      // 之后 /profile 也变了。整体作废的代价只是下次读多一次请求（几毫秒），
+      // 换来的是"改了之后一定看得到新值"。
+      clearApiCache()
+    }
+    return value
+  })()
+
+  if (ttl > 0) {
+    inflight.set(path, doing)
+    // 无论成败都要清掉，否则一次失败会让这个路径永远搭到那个 rejected 的便车上
+    doing.then(
+      () => inflight.delete(path),
+      () => inflight.delete(path),
+    )
+  }
+  return doing
 }
 
 /** 求教时随行带的会话信息：追问要接得上文，也要知道自己属于哪个话题。 */

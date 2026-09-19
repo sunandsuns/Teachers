@@ -1,5 +1,6 @@
 """retriever 单元测试：分词、索引、检索排序与降级。"""
 
+from server.services import retriever as retriever_module
 from server.services.retriever import TFIDFRetriever, _tokenize
 
 
@@ -92,3 +93,98 @@ class TestTableOfContents:
         )
         r.build_index()
         assert len(r.documents) == 1
+
+
+class TestSearchConsistency:
+    """检索内层循环改过一轮（平行列表替代生成器 + dict.get）。
+
+    目标是快，**前提是结果一个都不能变**——同分时的先后顺序也一样。
+    所以这里把"分数降序、同分按下标升序"钉死，改动若打破它会立刻红。
+    """
+
+    def test_ties_break_by_document_order(self):
+        """两篇内容完全相同的文档得分必然相同，此时必须按加入顺序返回。"""
+        r = TFIDFRetriever()
+        body = "上善若水，水善利万物而不争，处众人之所恶，故几于道。"
+        r.add_document("01", "甲书", "01", "章", body)
+        r.add_document("02", "乙书", "01", "章", body)
+        r.build_index()
+        results = r.search("上善若水不争", top_k=2)
+        assert len(results) == 2
+        assert results[0].score == results[1].score
+        assert [x.book_id for x in results] == ["01", "02"]
+
+    def test_book_weight_scales_score(self):
+        """``book_weights`` 只影响分数，不该影响"能不能召回"。"""
+        r = build_small_retriever()
+        plain = r.search("上善若水", top_k=3)
+        weighted = r.search("上善若水", top_k=3, book_weights={"08": 0.5})
+        assert [x.book_id for x in plain] == [x.book_id for x in weighted]
+        assert weighted[0].score < plain[0].score
+
+    def test_result_count_never_exceeds_top_k(self):
+        """优化后只构造 top_k 条结果，别在截断这一步写错边界。"""
+        r = build_small_retriever()
+        for k in (1, 2, 3):
+            assert len(r.search("道 水 心 厚", top_k=k)) <= k
+
+
+class TestIndexProgress:
+    """建索引进度：给启动画面的，不能反过来影响构建结果。"""
+
+    def test_progress_starts_at_zero(self):
+        retriever_module._report_progress(0.0, "准备中")
+        snap = retriever_module.index_progress()
+        assert snap["ratio"] == 0.0
+
+    def test_ratio_is_clamped(self):
+        """越界值要被夹回 [0, 1]——进度条宽度直接拿它乘 100，越界会画出格。"""
+        retriever_module._report_progress(3.5, "过了")
+        assert retriever_module.index_progress()["ratio"] == 1.0
+        retriever_module._report_progress(-2.0, "负了")
+        assert retriever_module.index_progress()["ratio"] == 0.0
+
+    def test_progress_does_not_break_build(self):
+        """构建流程照常产出索引——加了进度上报不该改变任何构建语义。"""
+        loader = _StubLoader()
+        retriever_module.reset_retriever()
+        built = retriever_module.build_retriever_from_loader(loader)
+        assert built.documents
+        snap = retriever_module.index_progress()
+        assert snap["ratio"] == 1.0
+        assert snap["stage"] == "就绪"
+
+
+class _StubChapter:
+    def __init__(self, chapter_id, title, content):
+        self.chapter_id = chapter_id
+        self.title = title
+        self.content = content
+
+
+class _StubBook:
+    """最小的书对象：构建流程只用到这几个字段。"""
+
+    def __init__(self, book_id, title, chapters, source_file=None):
+        self.book_id = book_id
+        self.title = title
+        self.chapters = chapters
+        self.source_file = source_file
+
+
+class _StubLoader:
+    def __init__(self):
+        self._books = [
+            _StubBook("08", "道德经", [
+                _StubChapter("01", "第一章", "道可道非常道，名可名非常名。无名天地之始，有名万物之母。"),
+            ]),
+            _StubBook("09", "论语", [
+                _StubChapter("01", "学而", "学而时习之，不亦说乎。有朋自远方来，不亦乐乎。"),
+            ]),
+        ]
+
+    def get_books(self):
+        return list(self._books)
+
+    def get_source_text(self, book_id):
+        return None

@@ -219,14 +219,17 @@ class TFIDFRetriever:
         self._idf_cache.clear()
         for term in self.df:
             self._compute_idf(term)
+        # 取本地引用：字典推导式里若写 ``self._compute_idf(term)``，
+        # 值表达式与 if 条件各调一次，60 万次迭代下差 70ms 左右。
+        idf = self._idf_cache
 
         self._doc_vecs: list[dict[str, float]] = []
         self._doc_norms: list[float] = []
         for tf in self.tf:
             vec = {
-                term: count * self._compute_idf(term)
+                term: count * idf[term]
                 for term, count in tf.items()
-                if self._compute_idf(term) > 0
+                if idf.get(term, 0.0) > 0
             }
             self._doc_vecs.append(vec)
             self._doc_norms.append(math.sqrt(sum(v * v for v in vec.values())))
@@ -271,29 +274,55 @@ class TFIDFRetriever:
             return self._substring_search(query, top_k, kind)
 
         query_norm = math.sqrt(sum(v * v for v in query_vec.values()))
-        results: list[SearchResult] = []
+        if query_norm == 0:
+            return []
+
+        # 把 query 的稀疏非零项拆成两个平行列表。字典推导式里的
+        # ``for term, value in query_vec.items()`` 每篇都要重新解包元组、
+        # 重新取一次迭代器；8914 篇 × 十来个词项，这笔开销比点积本身还大。
+        # 拆开之后内层只剩"取下标 + 乘法 + 加法"。
+        q_terms = list(query_vec)
+        q_vals = [query_vec[term] for term in q_terms]
+        n_terms = len(q_terms)
+
+        doc_vecs = self._doc_vecs
+        doc_norms = self._doc_norms
+        weights = book_weights or {}
+
+        # 只保留 (分数, 下标)：SearchResult 里带正文切片与出处字符串，
+        # 命中上百篇时全部构造出来再丢掉 95%，纯属白做。
+        scored: list[tuple[float, int]] = []
 
         for i, doc in enumerate(self.documents):
             if kind is not None and doc.get("kind", KIND_NOTES) != kind:
                 continue
 
-            doc_vec = self._doc_vecs[i]
-            doc_norm = self._doc_norms[i]
-            if doc_norm == 0 or query_norm == 0:
+            doc_norm = doc_norms[i]
+            if doc_norm == 0:
                 continue
 
             # 余弦相似度：只需遍历 query 的稀疏非零项
-            dot = sum(value * doc_vec.get(term, 0.0) for term, value in query_vec.items())
+            doc_vec = doc_vecs[i]
+            get = doc_vec.get
+            dot = 0.0
+            for k in range(n_terms):
+                hit = get(q_terms[k])
+                if hit:
+                    dot += q_vals[k] * hit
+            if dot <= 0:
+                continue
+
             # 来源权重：让精炼过的笔记略高于原典
             score = dot / (query_norm * doc_norm) * doc.get("weight", 1.0)
-            if book_weights:
-                score *= book_weights.get(doc["book_id"], 1.0)
+            if weights:
+                score *= weights.get(doc["book_id"], 1.0)
 
             if score > 0:
-                results.append(self._to_result(doc, score))
+                scored.append((score, i))
 
-        results.sort(key=lambda r: r.score, reverse=True)
-        return results[:top_k]
+        # 同分时按下标升序，与"先构造再整体稳定排序"的旧行为保持一致
+        scored.sort(key=lambda pair: (-pair[0], pair[1]))
+        return [self._to_result(self.documents[i], score) for score, i in scored[:top_k]]
 
     @staticmethod
     def _to_result(doc: dict, score: float) -> SearchResult:
@@ -341,18 +370,63 @@ def get_retriever() -> TFIDFRetriever:
     return _retriever
 
 
+def reset_retriever() -> None:
+    """丢弃全局单例（测试与热重载用）。"""
+    global _retriever
+    _retriever = None
+
+
+#: 建索引的进度（0.0~1.0）与当前阶段说明，供启动画面显示真实进度。
+#: 建索引要好几秒（实测本机约 7 秒，几乎全花在 jieba 分词上），
+#: 这期间窗口里只有一个转圈的动画，用户不知道是在干活还是卡住了。
+#: 这里把"第几本书 / 共几本"报出去，启动画面就能显示一条真在走的进度条。
+#:
+#: 只放两个只读标量：写的时候加锁，读的时候也加锁——字符串赋值在 CPython
+#: 里是原子的，但两个字段要一起读才有意义，不加锁可能读到"新进度配旧说明"。
+_progress_lock = threading.Lock()
+_progress: dict[str, object] = {"ratio": 0.0, "stage": "准备中"}
+
+
+def _report_progress(ratio: float, stage: str) -> None:
+    """更新进度快照。构建过程中的任何失败都不该因此中断，故整体吞异常。"""
+    try:
+        with _progress_lock:
+            _progress["ratio"] = max(0.0, min(1.0, ratio))
+            _progress["stage"] = stage
+    except Exception:  # noqa: BLE001 — 进度只是观感，绝不能影响正事
+        pass
+
+
+def index_progress() -> dict[str, object]:
+    """当前建索引进度快照，供 ``/api/health`` 与启动画面读取。"""
+    with _progress_lock:
+        return {"ratio": float(_progress["ratio"]), "stage": str(_progress["stage"])}
+
+
 def build_retriever_from_loader(loader, *, include_source: bool = True) -> TFIDFRetriever:
     """从内容加载器构建检索器。
 
     笔记每章入索引；``include_source`` 为真时，体量适中的原典全文也一并入索引，
     这样「寻章」才能真正做到"跨全库"——既找得到解读，也找得到原句。
+
+    构建过程中会持续上报进度（见 :func:`index_progress`），让启动画面上的
+    进度条走的是真实进度而不是一条循环动画。
     """
     global _retriever
     retriever = TFIDFRetriever()
     indexed_source: list[str] = []
     skipped_source: list[str] = []
 
-    for book in loader.get_books():
+    books = list(loader.get_books())
+    # 每本书按"正文一批、原典一批"计两步，总步数用于折算比例。
+    # 原典被跳过的书只有一步，宁可让进度条走得略保守，也不要把比例算虚。
+    total_steps = sum(2 if (include_source and b.source_file) else 1 for b in books) + 1
+
+    def _tick(done: int, stage: str) -> None:
+        _report_progress(done / total_steps if total_steps else 1.0, stage)
+
+    step = 0
+    for book in books:
         for ch in book.chapters:
             retriever.add_document(
                 book_id=book.book_id,
@@ -361,14 +435,19 @@ def build_retriever_from_loader(loader, *, include_source: bool = True) -> TFIDF
                 chapter_title=ch.title,
                 content=ch.content,
             )
+        step += 1
+        _tick(step, "正在读《%s》" % book.title)
 
         if not include_source or not book.source_file:
             continue
         text = loader.get_source_text(book.book_id)
         if not text:
+            step += 1
             continue
         if len(text) > SOURCE_INDEX_MAX_CHARS:
             skipped_source.append(book.title)
+            step += 1
+            _tick(step, "《%s》体量过大，跳过原典" % book.title)
             continue
         retriever.add_document(
             book_id=book.book_id,
@@ -380,20 +459,18 @@ def build_retriever_from_loader(loader, *, include_source: bool = True) -> TFIDF
             weight=SOURCE_WEIGHT * SOURCE_BOOK_WEIGHT.get(book.book_id, 1.0),
         )
         indexed_source.append(book.title)
+        step += 1
+        _tick(step, "正在读《%s》原典" % book.title)
 
+    _tick(step, "正在计算词频权重")
     retriever.build_index()
+    _tick(total_steps, "就绪")
     retriever.source_coverage = {
         "indexed": indexed_source,
         "skipped": skipped_source,
     }
     _retriever = retriever
     return retriever
-
-
-def reset_retriever() -> None:
-    """丢弃全局单例（测试与热重载用）。"""
-    global _retriever
-    _retriever = None
 
 
 #: 惰性构建的互斥锁。首次构建要几秒，并发到来的请求不该各建一份。
