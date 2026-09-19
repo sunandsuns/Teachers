@@ -31,7 +31,7 @@ from .services.retriever import ensure_retriever, get_retriever, index_progress
 from .web_ui import mount_frontend
 
 #: 应用版本。发版时改这一处即可——FastAPI 的 OpenAPI 与根路径索引都读它。
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 
 @asynccontextmanager
