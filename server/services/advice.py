@@ -17,13 +17,22 @@
 主题从哪来
 --------------------------------------------------------------------------
 八主题不是新编的，就是每篇深读笔记末尾「八大主题归纳」那张表里写的
-（``insight.data.VALID_THEMES``）。问题是**书级**的，所以对命中的书整体
-提权，而不是去猜某一章属于哪个主题。
+（``insight.data.VALID_THEMES``）。
+
+但直接用"这本书挂了哪些主题"来做路由是**没有用的**：实测八本有主题表的书，
+每本都把八个主题全挂上了，于是任何问题都命中同一批书，加成等于没做。
+
+真正有区分度的是表里的**单元格**——「主题 × 书」各有一行判断和一句代表原文，
+例如《菜根谭》· 处世 ＝"不责小过、不发阴私、不念旧恶"＋"三者可以养德，亦可以
+远害"。一句话问的是处世，那这几行就是语料里**主题最对得上**的文字。本模块
+把它们称为**主题锚**：拿它单独跑一路检索，再与原问那一路合并，召回的东西才
+真的落在提问的主题上，而不只是"出自一本对口的书"。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from typing import Iterable, Mapping, Optional, Sequence
 
 from .retriever import KIND_NOTES, KIND_SOURCE
@@ -39,6 +48,31 @@ MIN_RESULTS = 2
 MAX_SOURCE_RESULTS = 2
 #: 默认给几段。宁可少而准——提示词明确允许"没找到直接对应的就直说"。
 DEFAULT_TOP_K = 5
+
+#: 合并两路检索时的配比。
+#: 原问那路保证"答的是这件事"（问"朋友借钱不还"就得谈借钱），
+#: 主题锚那路保证"落在主题上"（不然回来的是词面偶然撞上的段落）。
+#: 原问占大头——主题是路标，不是目的地。
+QUESTION_MIX = 0.6
+THEME_MIX = 0.4
+
+#: 一个主题最多取几本书的判断句做锚。
+#: 取多了各家说法互相稀释，检索就变成"八本书的平均数"，谁都不突出。
+ANCHORS_PER_THEME = 3
+ANCHOR_LIMIT = 6
+
+#: 现代白话书。它们写得直白、词面与口语高度重合，检索里天然占优——
+#: 实测问"总是讨好别人"时《人性的弱点》能占掉五席里的四席，可用户来「求教」
+#: 是问经典的。限定席位，把剩下的位置让给古籍；它们仍然能被检索到。
+MODERN_BOOKS: frozenset = frozenset({"04", "05"})
+MAX_MODERN_RESULTS = 2
+
+#: 求教时不参与检索的章节。
+#: - 「八大主题归纳」是**索引**不是内容，已经拿去做检索线索了，再当答案
+#:   喂回去等于让模型复述我们的提问。
+#: - 「导言/导读/说明」讲的是这本书怎么读，不是这本书说了什么。它用词
+#:   普通、篇幅适中，在词面检索里稳定冒头，却答不上任何具体问题。
+_SKIP_CHAPTER_RE = re.compile(r"主题归纳|导言|导读|前言|序言|凡例|阅读提示|^说明")
 
 
 # ── 主题词表 ────────────────────────────────────────────────────────────
@@ -158,26 +192,91 @@ def affinity(book_id: str) -> float:
 # ── 书 → 主题 ───────────────────────────────────────────────────────────
 
 
-def build_book_themes(books: Iterable) -> dict[str, frozenset[str]]:
-    """从各书的深读笔记里读出「八大主题归纳」表，得到 书 → 主题集合。
+@dataclass(frozen=True)
+class ThemeAnchor:
+    """一本书对某个主题的一行判断，连同它的代表原文。
+
+    出自笔记里「八大主题归纳」那张表的一个单元格，是语料中主题最明确、
+    也最凝练的文字——它同时是检索线索（当查询用）和可用的回答材料
+    （引它完全合规：原文照抄自语料，出处就是那本书）。
+    """
+
+    book_id: str
+    book_title: str
+    theme: str
+    judgment: str
+    quote: str
+
+    @property
+    def text(self) -> str:
+        """判断 + 代表句，用作检索查询。"""
+        return f"{self.judgment} {self.quote}".strip()
+
+
+def build_theme_rows(books: Iterable) -> dict[str, dict[str, ThemeAnchor]]:
+    """读出各书「八大主题归纳」表，得到 书 → {主题: 主题锚}。
 
     表里没写的书就没有主题——不猜、不补默认值（与知识库建图同一条规矩）。
-    这样的书在主题路由里拿不到加成，按基础权重参与检索。
+    同一主题在同一本书里出现多次只取第一条：有的书被切成多个文件（如
+    《人性的弱点》上/下篇），表里的内容是重复的，取两次只会让它在查询里
+    占双倍分量。
     """
     from .kb.parse import parse_theme_table  # 局部导入：kb 只在建索引时需要
 
     from .insight.data import VALID_THEMES
 
-    mapping: dict[str, frozenset[str]] = {}
+    mapping: dict[str, dict[str, ThemeAnchor]] = {}
     for book in books:
-        themes: set[str] = set()
+        rows = mapping.setdefault(book.book_id, {})
         for chapter in getattr(book, "chapters", ()) or ():
             for row in parse_theme_table(getattr(chapter, "content", "") or ""):
-                if row.theme in VALID_THEMES:
-                    themes.add(row.theme)
-        if themes:
-            mapping[book.book_id] = frozenset(themes)
+                if row.theme not in VALID_THEMES or row.theme in rows:
+                    continue
+                rows[row.theme] = ThemeAnchor(
+                    book_id=book.book_id,
+                    book_title=getattr(book, "title", "") or "",
+                    theme=row.theme,
+                    judgment=row.judgment,
+                    quote=row.quote,
+                )
+        if not rows:
+            mapping.pop(book.book_id, None)
     return mapping
+
+
+def build_book_themes(books: Iterable) -> dict[str, frozenset[str]]:
+    """书 → 主题集合。由 :func:`build_theme_rows` 派生，避免重复解析。"""
+    return {
+        book_id: frozenset(rows)
+        for book_id, rows in build_theme_rows(books).items()
+    }
+
+
+def theme_anchors(
+    rows: Mapping[str, Mapping[str, ThemeAnchor]],
+    themes: Sequence[str],
+    *,
+    per_theme: int = ANCHORS_PER_THEME,
+    limit: int = ANCHOR_LIMIT,
+) -> list[ThemeAnchor]:
+    """取出这几个主题的主题锚，按对口程度排序、每主题限本数。
+
+    排序先按主题顺序（路由结果本身有序），再按对口系数——同样讲处世，
+    《论语》《菜根谭》的说法比《贞观政要》更值得先拿出来。
+    """
+    picked: list[ThemeAnchor] = []
+    for theme in themes:
+        candidates = [
+            row[theme] for row in rows.values() if theme in row
+        ]
+        candidates.sort(key=lambda a: (-affinity(a.book_id), a.book_id))
+        picked.extend(candidates[:per_theme])
+    return picked[:limit]
+
+
+def anchor_text(anchors: Sequence[ThemeAnchor]) -> str:
+    """把主题锚拼成一路检索的查询。"""
+    return " ".join(anchor.text for anchor in anchors if anchor.text)
 
 
 def advice_weights(
@@ -236,29 +335,55 @@ def cap_source(results: Sequence, *, limit: int = MAX_SOURCE_RESULTS) -> list:
     return kept
 
 
+def cap_modern(
+    results: Sequence,
+    *,
+    limit: int = MAX_MODERN_RESULTS,
+    modern: frozenset = MODERN_BOOKS,
+) -> list:
+    """限制现代白话书的条数，其余位置让给古籍。"""
+    kept: list = []
+    modern_count = 0
+    for result in results:
+        if getattr(result, "book_id", "") in modern:
+            if modern_count >= limit:
+                continue
+            modern_count += 1
+        kept.append(result)
+    return kept
+
+
 # ── 编排 ────────────────────────────────────────────────────────────────
 
-#: 书 → 主题的懒加载缓存。解析 15 张主题表只在首次提问时做一次；
+#: 书 → 主题锚 的懒加载缓存。解析主题表只在首次提问时做一次；
 #: 测试里换加载器时必须 :func:`reset_advice`（与 ``kb.reset_kb`` 同理）。
-_book_themes: Optional[dict[str, frozenset[str]]] = None
+_theme_rows: Optional[dict[str, dict[str, ThemeAnchor]]] = None
 
 
-def get_book_themes(loader=None) -> dict[str, frozenset[str]]:
-    """书 → 主题集合（懒加载）。"""
-    global _book_themes
-    if _book_themes is None:
+def get_theme_rows(loader=None) -> dict[str, dict[str, ThemeAnchor]]:
+    """书 → {主题: 主题锚}（懒加载）。"""
+    global _theme_rows
+    if _theme_rows is None:
         if loader is None:
             from .content_loader import get_loader
 
             loader = get_loader()
-        _book_themes = build_book_themes(loader.get_books())
-    return _book_themes
+        _theme_rows = build_theme_rows(loader.get_books())
+    return _theme_rows
+
+
+def get_book_themes(loader=None) -> dict[str, frozenset[str]]:
+    """书 → 主题集合（懒加载，由主题锚派生）。"""
+    return {
+        book_id: frozenset(rows)
+        for book_id, rows in get_theme_rows(loader).items()
+    }
 
 
 def reset_advice() -> None:
-    """丢弃书 → 主题缓存（测试换加载器时用）。"""
-    global _book_themes
-    _book_themes = None
+    """丢弃主题锚缓存（测试换加载器时用）。"""
+    global _theme_rows
+    _theme_rows = None
 
 
 @dataclass(frozen=True)
@@ -273,6 +398,56 @@ class AdviceHits:
     themes: tuple[str, ...]
 
 
+def _hit_key(result) -> tuple:
+    """一条结果的身份：同一段文字在两路检索里必须是同一条。"""
+    return (
+        getattr(result, "book_id", ""),
+        getattr(result, "chapter_id", ""),
+        getattr(result, "offset", 0),
+        getattr(result, "kind", KIND_NOTES),
+    )
+
+
+def merge_passes(
+    question_hits: Sequence,
+    theme_hits: Sequence,
+    *,
+    question_mix: float = QUESTION_MIX,
+    theme_mix: float = THEME_MIX,
+) -> list:
+    """把"按原问召回"与"按主题召回"两路合成一份排序。
+
+    各自先按本路最高分归一化——两路的查询不同（原问 vs 主题锚），TF-IDF
+    的绝对分值不可比，硬加会让一路压过另一路。归一化后再加权，配比才有意义。
+
+    只在其中一路出现的结果保留它那一路的权重：只在主题那路出现的段落，
+    说明它主题对得上、但没撞上原问的字面——这正是主题路由要捞的东西。
+
+    合并后的分数**写回结果**：下游（门槛、限流、以及任何看分数的地方）
+    都按它排序，留着各路自己的原始分值会出现"排在前面却分数更低"。
+    """
+    merged: dict[tuple, float] = {}
+
+    def absorb(hits: Sequence, share: float) -> None:
+        if not hits:
+            return
+        best = hits[0].score
+        for hit in hits:
+            ratio = (hit.score / best) if best > 0 else 0.0
+            merged[_hit_key(hit)] = merged.get(_hit_key(hit), 0.0) + share * ratio
+
+    absorb(question_hits, question_mix)
+    absorb(theme_hits, theme_mix)
+
+    by_key = {_hit_key(hit): hit for hit in list(question_hits) + list(theme_hits)}
+    ranked = sorted(merged.items(), key=lambda pair: pair[1], reverse=True)
+    return [
+        replace(by_key[key], score=score)
+        for key, score in ranked
+        if key in by_key
+    ]
+
+
 def search_for_advice(
     retriever,
     question: str,
@@ -280,32 +455,84 @@ def search_for_advice(
     top_k: int = DEFAULT_TOP_K,
     loader=None,
 ) -> AdviceHits:
-    """求教场景的检索：主题路由 → 对口加权 → 原典限流 → 相关度门槛。"""
+    """求教场景的检索：主题路由 → 两路召回合并 → 原典限流 → 相关度门槛。
+
+    两路各有分工，缺一路都会退回到"生搬硬套"：
+
+    - **原问那路**：保证答的是这件事。问"朋友借钱不还"就得谈借钱。
+    - **主题锚那路**：保证落在主题上。口语里的"焦虑""创业"在古籍里根本
+      不存在，只有把它换成《论语》说的"内省、克己"才召得到东西。
+
+    主题认不出时退回单路——认不出还要套主题，等于把某个主题硬安上去。
+    """
     themes = route_themes(question)
     book_ids = {doc["book_id"] for doc in retriever.documents}
     weights = advice_weights(book_ids, get_book_themes(loader), themes)
 
     # 多取一些再筛：门槛会砍掉尾部，先多拿才不至于砍完不够数
-    raw = retriever.search(question, top_k=top_k * 4, book_weights=weights)
-    trimmed = trim_by_score(cap_source(raw, limit=MAX_SOURCE_RESULTS))
-    return AdviceHits(results=tuple(trimmed[:top_k]), themes=themes)
+    pool = top_k * 4
+    # 门槛砍在**合并之前**：合并后的分数是两路的归一化加权和，分布与原始
+    # TF-IDF 分值完全不同，拿同一把尺子量会把结果砍到只剩两三条。
+    # 各路按自己的尺度砍自己的尾部，合并时再一起排序。
+    question_hits = trim_by_score(
+        retriever.search(question, top_k=pool, book_weights=weights)
+    )
+
+    anchors = theme_anchors(get_theme_rows(loader), themes) if themes else []
+    theme_hits = (
+        trim_by_score(
+            retriever.search(anchor_text(anchors), top_k=pool, book_weights=weights)
+        )
+        if anchors
+        else []
+    )
+
+    merged = merge_passes(question_hits, theme_hits)
+    # 索引章与导言是"关于这本书的说明"，不是这本书的见解——不当答案
+    # 索引章与导言是"关于这本书的说明"，不是这本书的见解——不当答案
+    merged = [
+        hit for hit in merged if not _SKIP_CHAPTER_RE.search(hit.chapter_title or "")
+    ]
+    # 现代白话书的"原典"就是白话叙述本身，没有可引的文言语料；它在语料里的
+    # 价值是那几篇提炼过的笔记。笔记留着，原典的位置让给古籍。
+    merged = [
+        hit
+        for hit in merged
+        if not (hit.book_id in MODERN_BOOKS and hit.kind == KIND_SOURCE)
+    ]
+
+    kept = cap_modern(cap_source(merged, limit=MAX_SOURCE_RESULTS))
+    return AdviceHits(results=tuple(kept[:top_k]), themes=themes)
 
 
 __all__ = [
+    "ANCHOR_LIMIT",
+    "ANCHORS_PER_THEME",
     "BOOK_AFFINITY",
     "DEFAULT_TOP_K",
+    "MAX_MODERN_RESULTS",
     "MAX_SOURCE_RESULTS",
     "MIN_RESULTS",
+    "MODERN_BOOKS",
     "MIN_SCORE_RATIO",
+    "QUESTION_MIX",
     "THEME_BOOST",
     "THEME_KEYWORDS",
+    "THEME_MIX",
     "AdviceHits",
+    "ThemeAnchor",
     "advice_weights",
     "affinity",
+    "anchor_text",
     "build_book_themes",
+    "build_theme_rows",
+    "cap_modern",
     "cap_source",
+    "get_theme_rows",
+    "merge_passes",
     "reset_advice",
     "route_themes",
     "search_for_advice",
+    "theme_anchors",
     "trim_by_score",
 ]

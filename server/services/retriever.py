@@ -50,6 +50,17 @@ _NOISE_UNIT_RE = re.compile(
     r"本项目创建于|本仓库创建于|最近的一次更新|最后更新时间|Last updated",
 )
 
+#: 目录页。整段都是"卷十""论行幸第三十七"这类篇目名，一个字的内容都没有。
+#: 它们排在检索结果里看着像原文，实际上引不出任何句子——模型拿到只能绕开。
+#: 用密度判定（标记够多、且几乎占满整段）而不是命中即丢，免得误伤正文里
+#: 偶尔出现的"第三章"。
+# 篇目名的写法有两种：「卷十」「第九章」这种带单位的，以及「议征伐第三十五」
+# 这种序号落在末尾的——后者在正史目录里更常见，只认前者会漏掉整页目录。
+_TOC_MARK_RE = re.compile(
+    r"卷[一二三四五六七八九十百\d]+|第[一二三四五六七八九十百\d]{1,4}[章篇节回卷]?"
+)
+_TOC_MIN_MARKS = 6
+
 
 @dataclass
 class SearchResult:
@@ -81,6 +92,20 @@ def _tokenize(text: str) -> list[str]:
                 for w in range(2, min(5, len(seg) - i + 1)):
                     tokens.append(seg[i:i+w])
         return tokens
+
+
+def _is_toc(text: str) -> bool:
+    """整段是不是目录页。
+
+    判定看**去掉篇目名之后还剩多少字**：目录页剩下的只有"议征伐""论行幸"
+    这类三四个字的条目名，正文则剩下一大段。只数标记会误伤连续引用多个
+    章节的正文段落（深解里常出现"第九章……第六十四章"）。
+    """
+    marks = _TOC_MARK_RE.findall(text)
+    if len(marks) < _TOC_MIN_MARKS:
+        return False
+    residual = re.sub(r"\s+", "", _TOC_MARK_RE.sub("", text))
+    return len(residual) <= len(marks) * 6
 
 
 class TFIDFRetriever:
@@ -115,7 +140,7 @@ class TFIDFRetriever:
             cursor += len(para) + 2  # 近似还原段落间的分隔长度
             if len(para.strip()) < 10:
                 continue
-            if _NOISE_UNIT_RE.search(para):
+            if _NOISE_UNIT_RE.search(para) or _is_toc(para):
                 continue
             tokens = _tokenize(para)
             if not tokens:

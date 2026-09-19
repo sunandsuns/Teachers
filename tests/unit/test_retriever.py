@@ -66,3 +66,29 @@ class TestTFIDFRetriever:
         r = TFIDFRetriever()
         r.build_index()
         assert r.search("任何词", top_k=3) == []
+
+
+class TestTableOfContents:
+    """目录页整段都是篇目名，引不出任何句子，不该进索引。"""
+
+    def test_toc_page_is_dropped(self):
+        r = TFIDFRetriever()
+        r.add_document(
+            "15", "贞观政要", "10", "卷十",
+            "议征伐第三十五 　　议安边第三十六 　　卷十 　　论行幸第三十七 "
+            "　　论畋猎第三十八 　　论灾祥第三十九 　　论慎终第四十",
+        )
+        r.build_index()
+        assert r.documents == []
+
+    def test_passage_citing_many_chapters_is_kept(self):
+        """正文里连着引用好几个章节不算目录——去掉标记后还剩一大段。"""
+        r = TFIDFRetriever()
+        r.add_document(
+            "08", "道德经", "01", "深解",
+            "第九章讲功遂身退，第十三章讲宠辱若惊，第三十三章讲自知者明，"
+            "第六十四章讲千里之行始于足下，第六十六章讲善下不争，"
+            "这几章合起来是老子对“退”的完整论证：退不是放弃，而是换一种方式领先。",
+        )
+        r.build_index()
+        assert len(r.documents) == 1
