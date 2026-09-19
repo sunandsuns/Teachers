@@ -37,6 +37,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import server.main as main  # noqa: E402
 from server import paths  # noqa: E402
+from server.services import advice as advice_module  # noqa: E402
 from server.services import content_loader  # noqa: E402
 from server.services import history as history_module  # noqa: E402
 from server.services import kb as kb_module  # noqa: E402
@@ -89,11 +90,14 @@ def loader():
     """全量内容加载器（session 级共享）。"""
     content_loader.reset_loader()
     kb_module.reset_kb()
+    advice_module.reset_advice()
     yield content_loader.get_loader()
     content_loader.reset_loader()
     # 知识库是从加载器派生出来的，加载器换了它就必须跟着换——
-    # 否则下一个用例拿到的图还是上一个加载器装配的
+    # 否则下一个用例拿到的图还是上一个加载器装配的。
+    # 求教的"书 → 主题"缓存同理：它也是从加载器里读出来的。
     kb_module.reset_kb()
+    advice_module.reset_advice()
 
 
 @pytest.fixture(scope="session")

@@ -5,7 +5,7 @@ import re
 import threading
 from collections import Counter
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional
 
 try:
     import jieba
@@ -24,11 +24,31 @@ KIND_SOURCE = "source"
 #: 避免大段古文把精炼的解读挤下去。
 SOURCE_WEIGHT = 0.85
 
+#: 各书原典在 ``SOURCE_WEIGHT`` 之上再乘一次的折减。
+#: 卦爻辞、编年史这类碎片离了语境几乎没有指导意义，却因为篇幅大、文言词
+#: 密集，恰恰是词面检索里最容易冒头的东西——不压住它们，问一句"我最近很
+#: 焦虑"回来的会是《易经》某卦的白话解释。
+SOURCE_BOOK_WEIGHT: Mapping[str, float] = {
+    "01": 0.55,  # 易经：卦爻辞 + 逐句白话，碎片化最严重
+    "03": 0.5,   # 奇门遁甲：术数表格
+    "05": 0.5,   # 毛泽东选集：现代政论
+    "13": 0.7,   # 史记：叙事
+    "14": 0.7,   # 资治通鉴：编年叙事
+}
+
 #: 单本书原典进入索引的字符上限。
 #: 《资治通鉴》321 万字、《史记》60 万字，全量入索引会让建索引耗时与
 #: 内存大幅上升，而且正史叙事对"人生困惑"的召回价值有限——
 #: 这类书仍可全文阅读，检索则以笔记为主。
 SOURCE_INDEX_MAX_CHARS = 250_000
+
+#: 建索引时整段丢弃的噪声单元。
+#: 语料里混着仓库 README 之类自动生成的说明（"本项目创建于……最近的一次
+#: 更新时间为……"），它们讲的不是经典，却因为用词普通、篇幅适中而在词面
+#: 检索里稳定冒头，还常常排在真正有用的段落前面。丢掉它们比留着降权干净。
+_NOISE_UNIT_RE = re.compile(
+    r"本项目创建于|本仓库创建于|最近的一次更新|最后更新时间|Last updated",
+)
 
 
 @dataclass
@@ -94,6 +114,8 @@ class TFIDFRetriever:
             para_start = cursor
             cursor += len(para) + 2  # 近似还原段落间的分隔长度
             if len(para.strip()) < 10:
+                continue
+            if _NOISE_UNIT_RE.search(para):
                 continue
             tokens = _tokenize(para)
             if not tokens:
@@ -185,10 +207,20 @@ class TFIDFRetriever:
             self._doc_norms.append(math.sqrt(sum(v * v for v in vec.values())))
         self._indexed = True
 
-    def search(self, query: str, top_k: int = 5, kind: Optional[str] = None) -> list[SearchResult]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        kind: Optional[str] = None,
+        book_weights: Optional[Mapping[str, float]] = None,
+    ) -> list[SearchResult]:
         """检索与 query 最相关的 top_k 个段落。
 
         ``kind`` 限定来源类型（``notes`` / ``source``），None 表示不限。
+
+        ``book_weights`` 按 ``book_id`` 给结果乘一个系数。**默认不用**——
+        「寻章」要的是全库召回，一碗水端平；只有「求教」才需要它把语料里
+        篇幅最大、却最不对口的那几本压下去（见 ``services/advice.py``）。
         """
         if not self.documents:
             return []
@@ -229,6 +261,8 @@ class TFIDFRetriever:
             dot = sum(value * doc_vec.get(term, 0.0) for term, value in query_vec.items())
             # 来源权重：让精炼过的笔记略高于原典
             score = dot / (query_norm * doc_norm) * doc.get("weight", 1.0)
+            if book_weights:
+                score *= book_weights.get(doc["book_id"], 1.0)
 
             if score > 0:
                 results.append(self._to_result(doc, score))
@@ -318,7 +352,7 @@ def build_retriever_from_loader(loader, *, include_source: bool = True) -> TFIDF
             chapter_title="原典",
             content=text,
             kind=KIND_SOURCE,
-            weight=SOURCE_WEIGHT,
+            weight=SOURCE_WEIGHT * SOURCE_BOOK_WEIGHT.get(book.book_id, 1.0),
         )
         indexed_source.append(book.title)
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
+from .advice import DEFAULT_TOP_K, search_for_advice
 from .history import get_history_store, new_topic_id
 from .llm import EndpointOverride, generate_answer_with_model, llm_status, probe_endpoint
 from .llm import normalize_lang, resolve_session
@@ -58,13 +59,17 @@ class Answer:
 def ask(
     question: str,
     *,
-    top_k: int = 5,
+    top_k: int = DEFAULT_TOP_K,
     override: Optional[EndpointOverride] = None,
     lang: str = "",
     history: Optional[Sequence[tuple[str, str]]] = None,
     conversation_id: Optional[str] = None,
 ) -> Answer:
     """回答一个问题。
+
+    检索走 :func:`advice.search_for_advice` 而不是直接 ``retriever.search``：
+    全库平权时回来的是《毛泽东选集》和《易经》卦爻辞（两者占索引 67%），
+    模型拿不到对口材料，只能硬凑或架空。详见 ``services/advice.py``。
 
     ``override`` 非空时改用请求方填的端点；该端点的可用性不影响默认配置，
     反之亦然（各自的路由器与冷却表相互独立）。
@@ -83,7 +88,8 @@ def ask(
     吞掉失败，这里只如实带上 ``history_id``（没存上就是 None）。
     一次已经成功的求教，不该因为"附带的记账动作"失败而变成失败。
     """
-    results = ensure_retriever().search(question, top_k=top_k)
+    hits = search_for_advice(ensure_retriever(), question, top_k=top_k)
+    results = list(hits.results)
     session = resolve_session(override)
     answer_lang = normalize_lang(lang)
     topic_id = (conversation_id or "").strip() or new_topic_id()
