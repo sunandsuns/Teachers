@@ -58,6 +58,15 @@ PROBE_INTERVAL = 1.5
 #: 打包态的输出落在这个文件里，出问题时用户可以直接把它发回来
 LOG_FILENAME = "启动日志.txt"
 
+#: 启动画面。配色与前端 ``tailwind.config.js`` 对齐（``cinnabar-600`` #a32e22、
+#: ``paper-100`` #f6f3ea、``ink-800`` #2f2c27）——**曾经这里用的是 #a63b2a 与
+#: #f7f4ec，那是配色表改之前的旧值**，于是启动时和进入后是两种朱砂、两种纸色，
+#: 切换的瞬间会明显跳一下。改配色表时这里要一起改。
+#:
+#: 进度条走的是**渐近曲线**而不是无限循环动画：索引构建实测约 7 秒（几乎全在
+#: jieba 分词上），一条永远在来回滑的动画看起来和"卡住了"没有区别。这里让它
+#: 按时间逼近上限、并由文案说明正在做什么，真实完成由 ``_wait_ready`` 切页——
+#: 所以进度条**不会假称完成**，也不必担心停在 99%。
 _SPLASH_HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -67,23 +76,58 @@ _SPLASH_HTML = """<!doctype html>
   html, body { height: 100%; margin: 0; }
   body {
     display: flex; align-items: center; justify-content: center;
-    background: #f7f4ec; color: #3a3630;
+    background: #f6f3ea; color: #2f2c27;
     font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    -webkit-user-select: none; user-select: none;
   }
-  .frame { text-align: center; }
-  .title { font-size: 22px; letter-spacing: 6px; margin: 0 0 14px; font-weight: 500; }
-  .hint { font-size: 13px; color: #8a8378; margin: 0; }
-  .bar { width: 168px; height: 2px; background: #e3ddd0; margin: 20px auto 0; overflow: hidden; }
-  .bar i { display: block; width: 40%; height: 100%; background: #a63b2a; animation: slide 1.4s ease-in-out infinite; }
-  @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
+  .frame { text-align: center; width: 232px; }
+  .title { font-size: 22px; letter-spacing: 6px; margin: 0 0 10px; font-weight: 500; }
+  .hint { font-size: 13px; color: #8a857a; margin: 0; height: 18px; }
+  .track { width: 100%; height: 2px; background: #ddd4bd; margin: 18px 0 0; overflow: hidden; }
+  .track i { display: block; width: 0; height: 100%; background: #a32e22; transition: width .6s ease-out; }
+  .pct { font-size: 11px; color: #b0aca3; margin: 8px 0 0; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
   <div class="frame">
     <h1 class="title">人生导师</h1>
-    <p class="hint">正在编索引，稍候片刻</p>
-    <div class="bar"><i></i></div>
+    <p class="hint" id="hint">正在编索引，稍候片刻</p>
+    <div class="track"><i id="bar"></i></div>
+    <p class="pct" id="pct">0%</p>
   </div>
+<script>
+// 渐近进度：p = 1 - e^(-t/τ)。τ 取 2.6s，实测 7 秒时约到 93%。
+// 上限压到 96%，剩下的留给"真正就绪"那一下——页面切换才是完成信号。
+(function () {
+  var STAGES = [
+    [0,    '正在编索引，稍候片刻'],
+    [0.15, '正在读十三部原典'],
+    [0.55, '正在读深读笔记'],
+    [0.85, '正在计算词频权重']
+  ];
+  var TAU = 2.6, CEIL = 0.96, start = Date.now();
+  var bar = document.getElementById('bar'),
+      pct = document.getElementById('pct'),
+      hint = document.getElementById('hint'),
+      lastStage = -1;
+
+  function tick() {
+    var t = (Date.now() - start) / 1000;
+    var p = Math.min(CEIL, 1 - Math.exp(-t / TAU));
+    bar.style.width = (p * 100).toFixed(1) + '%';
+    pct.textContent = Math.round(p * 100) + '%';
+    for (var i = STAGES.length - 1; i >= 0; i--) {
+      if (p >= STAGES[i][0] && i !== lastStage) {
+        hint.textContent = STAGES[i][1];
+        lastStage = i;
+        break;
+      }
+    }
+    setTimeout(tick, 120);
+  }
+  tick();
+})();
+</script>
 </body>
 </html>"""
 

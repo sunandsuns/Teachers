@@ -3,6 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 与桌面版共用同一套图标（由 packaging/make_icon.py 一并生成）：
+         .ico 给浏览器标签页，PNG 给加到桌面/任务栏的快捷方式。 -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <!-- 移动端浏览器据此把地址栏染成朱砂色，与页面顶栏连成一片 -->
+    <meta name="theme-color" content="#a32e22" />
+    <meta name="description" content="中国传统经典智慧知识库：抛出一个生活困惑，从十三部原典与深读笔记里找出真正对口的那几句。" />
     <title>人生导师 · 经典智慧知识库</title>
   </head>
   <body>
