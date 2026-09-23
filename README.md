@@ -446,10 +446,14 @@ python -m venv <打包环境>
 
 <打包环境>/Scripts/python.exe build_app.py
 
-python build_app.py --skip-frontend   # 复用已有的 web/dist
-python build_app.py --no-selftest     # 只出产物，不自检
-python build_app.py --selftest-only   # 不重新打包，只对已有产物做实机自检
-python build_app.py --zip             # 自检通过后额外压成 zip
+<打包环境>/Scripts/python.exe build_app.py --skip-frontend   # 复用已有的 web/dist
+<打包环境>/Scripts/python.exe build_app.py --no-selftest     # 只出产物，不自检
+<打包环境>/Scripts/python.exe build_app.py --no-ask          # 自检但跳过真实问答（省时间）
+<打包环境>/Scripts/python.exe build_app.py --selftest-only   # 不重新打包，只对已有产物做实机自检
+<打包环境>/Scripts/python.exe build_app.py --zip             # 自检通过后额外压成 zip
+
+# 对外发布（换掉密钥、扫描残留、压成 ASCII 文件名的 zip）
+python packaging/make_release_zip.py
 ```
 
 产物在 `dist/人生导师/`：`人生导师.exe` + `_internal/`（运行时依赖）+ `corpus/`（语料）
@@ -512,9 +516,12 @@ WebView2 的浏览器进程崩溃时（安全软件拦截、运行时损坏）�
 （`_probe_window`），确认内核真的活着；一旦发现是死的，就改用系统浏览器打开同一地址
 并弹框说明。探针只在**次次都失败**时才判死，避免误伤还在渲染的慢机器。
 
-> 内置 `.env` 的取舍：包里放的是**可用的真实密钥**，拿到包的人可以看到并使用它。
-> 若不希望额度被转用，把 `.env` 换成只含占位值的 `.env.example`——此时「求教」
-> 会自动降级为本地检索模式，对方自行填入 Key 即可启用 AI 解读。
+> `.env` 的两副面孔：`build_app.py` 会把仓库里的 `.env`（**含真实密钥**）复制进产物，
+> 这是故意的——不带着真 Key，实机自检里"内置 Key 真的调通了模型"那一条就无从验证。
+> 而对外发布的 zip 里放的是 `.env.example`，对方填自己的 Key 才能启用 AI 解读
+> （不填也能用，检索与阅读照常）。两者之间的那一步由 `packaging/make_release_zip.py`
+> 完成，它**会双向扫描密钥残留**——"以为换掉了其实还留着一份"是这里唯一真正危险的
+> 失败模式，不能只靠"步骤一已经做过了"。
 
 ---
 
