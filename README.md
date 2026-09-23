@@ -8,7 +8,20 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 296 项）+ Vitest（前端 32 项）
+- **测试**：pytest（后端 834 项）+ Vitest（前端 32 项）
+
+---
+
+## 两种用法
+
+| 方式 | 入口 | 模型 |
+| --- | --- | --- |
+| **在线版** | **<https://life-mentor-54743.app.workbuddy.host/>** | WorkBuddy 云模型（30 个，含 `deepseek-v4-pro` / `glm-5.3` / `kimi-k3-1`），免密钥 |
+| **桌面版** | 下面 Releases 里的 zip | `.env` 里的端点，或自己在「模型」设置里填一套 |
+
+两者是同一份代码。差别只在模型通道：云模型**必须**跑在应用的发布域名上（服务端按浏览器的
+`Origin` 精确匹配放行），桌面版的 `Origin` 是 `127.0.0.1`，对不上——所以桌面版上没有这一档，
+选了它也会如实说明原因并回落到内置模型。
 
 ---
 
@@ -33,7 +46,7 @@
 | **书架** | `/` | 浏览 15 部经典，按 7 个类目（哲学 / 处世 / 术数 / 政治 / 兵学 / 纵横 / 历史文献）筛选 |
 | **阅读** | `/books/:id` | 逐章阅读深读笔记；有原典的书可切换「原典全文」标签页（大书分块载入） |
 | **寻章** | `/search` | 跨全库检索**深读笔记 + 原典全文**，可只查其一；结果直接**跳到那一段的所在位置** |
-| **求教** | `/ask` | 描述你的问题或困境，系统检索经典段落并生成结构化回答（上游不可用时自动降级）；模型可**随时切换默认 / 自定义端点** |
+| **求教** | `/ask` | 描述你的问题或困境，系统检索经典段落并生成结构化回答（上游不可用时自动降级）；**先判题型**再作答（选择题 / 求做法 / 求原因 / 求解义 / 倾诉各有要求）；模型可**随时切换默认 / 自定义端点 / WorkBuddy 云模型** |
 | **回响** | `/history` | 求教的记录都自动存下来（SQLite，首次运行自动建库），可回看、删除、清空、**再问一次**；只留最近半个月，每半个月自动清理 |
 | **感悟** | `/insights` | 今日感悟（同一天刷新不变）、随机一则、按 8 个主题浏览金句 |
 
@@ -253,6 +266,37 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 
 省略 `llm`（或三个字段都留空）即用默认模型。
 
+### 6. WorkBuddy 云模型（只有在线版能用）
+
+在线版多一档「**WorkBuddy 云模型**」——免密钥，直接调云端目录里的模型。它和前两档的
+关键差别是**生成发生在浏览器里**：
+
+```
+浏览器 ←─ 页面 ─┐
+    │           │
+    │ ① 求教页把问题发给后端：检索 + 组装提示词（/api/ask/plan）
+    │ ② 后端返回 messages，不生成、不落库
+    │ ③ 浏览器拿这套 messages 调云端模型，流式渲染
+    └ ④ 生成完把整段回答送回后端存档（/api/ask/save）→「回响」
+```
+
+为什么不能在后端调：这条通道用 `publishableKey` 鉴权，服务端校验的是**浏览器 `Origin`
+是否等于应用的发布域名**。Python 后端既没有 `Origin`，也不该代持这份凭据——自建一个
+后端代理去转发是明确禁止的用法。
+
+几条规矩：
+
+- **提示词仍然只有一份**，在后端 `server/services/llm/prompt.py`。前端拿到的是组装好的
+  `messages`，不复制模板——两边各写一份，迟早走偏。
+- **模型选强的，但要能退**。偏好顺序 `deepseek-v4-pro → glm-5.3 → kimi-k3-1`，目录里
+  一个都不中时退回目录标的那一个（再不行取第一条），不会因为偏好落空就调不通。目录每次
+  进页面现拉，不缓存——把一个已下线的模型 id 留在浏览器里，用户只会看到报错。
+- **失败分类后回落**。云端错误按码归成 `auth` / `quota` / `unavailable` / … 几类，界面说清
+  「为什么降级了」，再自动改用内置模型。云模型是更好的一条路，不该变成唯一的一条路。
+- **云端只支持 `stream: true`**，没有非流式，所以流式是唯一写法。
+- 配置（端点 + publishable key）写在 `web/src/lib/cloud.ts`。这两个值标识的是"哪个应用"，
+  不含权限，唯一的约束在服务端那条 `Origin` 匹配上。
+
 ---
 
 ## API
@@ -267,6 +311,8 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | GET | `/api/search?q=关键词&top_k=5&kind=all` | 全文检索，`kind` 取 `all`/`notes`/`source`；结果带出处、相关度、`kind` 与 `offset` |
 | POST | `/api/ask` | 智能问答 `{"question": "...", "top_k": 5}`，响应含 `llm_used`、`model` 与 `history_id`；可选 `llm:{base_url,api_key,model?}` 临时改用自定义端点。**每次问答都会自动存入「回响」** |
 | POST | `/api/ask/probe` | 测试自定义端点：能否连通、暴露了哪些模型、挑得中哪一个 |
+| POST | `/api/ask/plan` | **备料**：只做检索 + 组装 messages，不生成、不落库。给「生成在浏览器里」的云模型通道用 |
+| POST | `/api/ask/save` | 把浏览器生成好的回答补记进「回响」（落库失败也不报错，`history_id` 为 `null`） |
 | GET | `/api/ask/status` | LLM 状态：是否可用、当前模型、候选数、冷却中的模型、最近错误 |
 | GET | `/api/history?limit=20&offset=0` | 「回响」列表，按时间倒序。**数据库不可用时也是 200**，`available:false` + `error` 说明原因 |
 | GET | `/api/history/status` | 存储概况：可用性、库路径、条数、保留天数、上次/下次清理时间、占用字节。**打开「回响」页会调它，顺带触发机会式清理** |
@@ -375,10 +421,13 @@ python smoke.py
 | 单元 | `tests/unit/test_llm.py` | 配置解析（`.env` 优先级、候选排序）、prompt 结构、传输层错误分类 |
 | 单元 | `tests/unit/test_llm_router.py` | 探活、TTL 缓存、冷却分级、失败轮换、**时间预算截断**（全用假 transport，不联网） |
 | 单元 | `tests/unit/test_insight_service.py` | 日期确定性选句、主题索引 |
+| 单元 | `tests/unit/test_intent.py` | 题型识别：选择题选项抽取（"该忍还是该说"）、认不出的问题不加任何指令、中英指令逐条对齐 |
 | 单元 | `tests/unit/test_api.py` | 路由、参数校验、404 语义、原典分页、`/ask/status` |
+| 单元 | `web/src/test/cloud.test.ts` | 云模型目录过滤、偏好落空时的退路、错误码归类 |
 | 集成 | `tests/integration/test_read_flow.py` | 书架 → 章节 → 正文的完整链路一致性 |
 | 集成 | `tests/integration/test_ask_flow.py` | 问答链路、search/ask 共用同一索引 |
 | 集成 | `tests/integration/test_ask_llm_flow.py` | HTTP → router → 失败轮换 → 降级，端到端 |
+| 集成 | `tests/integration/test_ask_cloud.py` | 云通道：`/ask/plan` 备料不落库、`/ask/save` 事后补记、追问带上下文 |
 | 集成 | `tests/integration/test_corpus_flow.py` | 逐本遍历可读性、新语料检索命中、感悟引用无悬空 |
 
 > **性能**：内容层与索引只读，因此测试夹具为 session 级——整套后端测试从 114 秒降到 **7 秒**。
@@ -416,6 +465,30 @@ python build_app.py --zip             # 自检通过后额外压成 zip
   原子重命名换入"之后，失败时旧产物完好，全程也不需要批量删文件。
 - **窗口用 pywebview + 系统自带 WebView2**，不引入 Electron/Tauri——为了一个已经存在的
   Python 后端再拉进一整套 Node 或 Rust 工具链并不划算。
+
+### 发布成在线版
+
+在线版就是同一份后端跑在容器里，发布命令：
+
+```bash
+cd web && npm run build                    # 产出 web/dist
+cd .. && python packaging/prepare_webapp.py   # 复制一份到 webapp/
+# 发布：python，端口 8000，启动 RSDS_WEB_DIST=webapp python -m server.main
+```
+
+三个非显然的点：
+
+- **`web/dist` 不能直接发**。发布工具按目录名排除构建输出，`dist` / `build` 这类名字会被
+  滤掉——直接把 `web/dist` 发上去，线上 `/` 返回的是 API 信息而不是页面。换成不带这些名字的
+  `webapp/` 就绕开了。
+- **`webapp/` 是产物，不进仓库**（见 `.gitignore`）。所以**改了前端要重新发布之前，必须重跑
+  `prepare_webapp.py`**——它的存在就是为了让这一步不会被忘掉（它还会提醒你 `web/dist` 是否
+  比 `web/src` 旧）。
+- **容器里既没有 `HOME` 也没有 `LOCALAPPDATA`**，`Path.home()` 会直接抛异常。`server/paths.py`
+  因此把数据目录兜到临时目录；启动阶段"碰一下历史库"那一步也整体包住了——记账是附加项，
+  不该拥有拖垮整个应用的杀伤力。
+
+另外容器里端口由 `PORT` 环境变量给（`server/main.py` 读它，本地默认 8000）。
 
 ### 实机自检
 

@@ -13,6 +13,8 @@
 """
 
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -154,6 +156,28 @@ class TestResolveDataDir:
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
 
         assert paths.resolve_data_dir() == (tmp_path / "local" / paths.USER_DATA_DIRNAME).resolve()
+
+    def test_survives_a_host_with_no_home_directory(self, tmp_path, monkeypatch):
+        """没有家目录时不能抛异常——那会在启动阶段把整个应用带崩。
+
+        真实事故：Linux 容器里既没有 ``LOCALAPPDATA``，``HOME`` 也没设，
+        ``Path.home()`` 抛异常，于是 lifespan 里"碰一下历史库"那一步失败，
+        服务根本起不来。历史记录只是附加项，不配拥有这种杀伤力。
+        """
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setenv("HOME", "")
+        monkeypatch.setattr(paths, "_ensure_writable", lambda path: False)
+
+        def boom() -> Path:
+            raise RuntimeError("Can't determine home directory")
+
+        monkeypatch.setattr(Path, "home", staticmethod(boom))
+
+        # 走到这里就说明没抛；落点退到临时目录，数据能不能留下另说
+        assert paths._user_data_dir() == Path(tempfile.gettempdir()) / "renshengdaoshi"
+        assert paths.resolve_data_dir() is not None
 
     def test_returns_first_candidate_when_nothing_is_writable(self, tmp_path, monkeypatch):
         """全都写不了也**不抛异常**：返回首选让存储层去报"不可用"，

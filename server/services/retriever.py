@@ -50,6 +50,14 @@ _NOISE_UNIT_RE = re.compile(
     r"本项目创建于|本仓库创建于|最近的一次更新|最后更新时间|Last updated",
 )
 
+#: 只有一个标题、没有正文的检索单元。
+#: 笔记里的三级标题（"### 3. 修心：事来心现，事去心空"）只要前后有空行，
+#: 就会被单独切成一段；它有十几个字，过得了"长度 ≥10"那道闸，于是堂而皇之
+#: 进了索引。检索命中它，返回的是一条**没有内容**的结果：寻章页点开是空的，
+#: 求教时模型也把它当一份材料，只能忽略或硬凑。判定只看一件事——整段是不是
+#: 单独一行标题；标题下面还带着正文的段落不受影响。
+_HEADING_ONLY_RE = re.compile(r"^#{1,6}\s+\S")
+
 #: 目录页。整段都是"卷十""论行幸第三十七"这类篇目名，一个字的内容都没有。
 #: 它们排在检索结果里看着像原文，实际上引不出任何句子——模型拿到只能绕开。
 #: 用密度判定（标记够多、且几乎占满整段）而不是命中即丢，免得误伤正文里
@@ -141,6 +149,8 @@ class TFIDFRetriever:
             if len(para.strip()) < 10:
                 continue
             if _NOISE_UNIT_RE.search(para) or _is_toc(para):
+                continue
+            if _HEADING_ONLY_RE.match(para.strip()) and "\n" not in para.strip():
                 continue
             tokens = _tokenize(para)
             if not tokens:

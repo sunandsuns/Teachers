@@ -11,7 +11,8 @@
    显式 ``LLM_MODEL`` → 显式 ``LLM_MODEL_CANDIDATES`` → 端点 ``/models``
    按偏好排序。前两者优先级更高，方便人工干预。
 2. **探活**：用一次极短的对话验证模型真的能出字，而不是只看它出现在列表里。
-   **并发进行**，理由见 :data:`PROBE_BUDGET_SHARE`。
+   **并发进行**（理由见 :data:`PROBE_BUDGET_SHARE`），多个候选都可用时按
+   :data:`PROBE_GRACE` 取**候选表里排最前的**，不是最先返回的。
 3. **缓存**：选中的模型缓存 ``cache_ttl`` 秒，避免每个请求都重新探一遍。
 4. **轮换**：调用失败的模型进冷却队列，下一次自动跳到下一个候选。
 5. **时间预算**：整段"探活 + 生成"受 ``total_budget`` 约束。上游集体故障时
@@ -50,6 +51,21 @@ DEFAULT_PROBE_LIMIT = 4
 #: 响应快的模型优先。本比例是第二道保险：即使有人把 probe_timeout 配得很大，
 #: 探活也不可能吃掉整个预算。
 PROBE_BUDGET_SHARE = 0.34
+
+#: 拿到第一个可用模型后，最多再等几秒，好让**排在它前面的**候选也有机会报结果。
+#:
+#: 为什么需要它
+#: ------------------------------------------------------------------
+#: 探活是并发的，而"取最先返回的那个"等价于"谁快选谁"。快和质量常常是反的：
+#: 实测同一端点上 ``glm-*-flash`` 4.7s 就回了，``deepseek-v4-flash`` 要 8.5s，
+#: 于是**候选表里排第一的模型永远赢不了**——配置里那张顺序表成了摆设。
+#: 但也不能干脆等满 ``probe_timeout``：万一排在前面的那个是"连得上不回应"，
+#: 每五分钟（``cache_ttl``）一次的冷启动就都要白白多耗十几秒。
+#:
+#: 所以折中为一段**宽限期**：先返回者不至于被拖住，靠前者也能补上来。
+#: 5s 是按实测差值取的（4.7s vs 8.5s 差 3.8s），足以覆盖"好模型慢一点"这种
+#: 常见情况；真挂住的候选仍会被丢下，后台线程自己熬满超时结束。
+PROBE_GRACE = 5.0
 
 #: 探活用的最小请求。16 而非 1：推理模型会先花 token 思考，
 #: 预算太小会导致 content 为空、被误判为不可用。
@@ -275,9 +291,9 @@ class ModelRouter:
         """并发探活一批候选。
 
         Returns:
-            ``(最快可用的模型名或 None, {模型名: 失败原因或 None})``。
-            已经拿到可用模型就立即返回，剩下的探活留在后台自行结束——
-            那些卡住的候选没必要等它们熬满超时。
+            ``(可用的模型名或 None, {模型名: 失败原因或 None})``。
+            多个候选都可用时取**候选表里排最前的那个**，而不是最先返回的那个
+            ——理由见 :data:`PROBE_GRACE`。
 
         调用方必须已持有 ``_lock``：本方法只读配置、只写局部结果，
         不碰任何共享状态。
@@ -296,11 +312,27 @@ class ModelRouter:
             thread.start()
 
         outcomes: dict[str, Optional[transport.LLMTransportError]] = {}
-        winner: Optional[str] = None
+        # 第一个成功者出现后开始计宽限；此前无上限地等，因为一个都没成时
+        # 本来就得等满 timeout 才能判定"全不可用"。
+        grace_deadline: Optional[float] = None
         for _ in range(len(threads)):
-            name, failure = sink.get()
+            if grace_deadline is None:
+                name, failure = sink.get()
+            else:
+                remaining = grace_deadline - self._clock()
+                if remaining <= 0:
+                    break
+                try:
+                    name, failure = sink.get(timeout=remaining)
+                except queue.Empty:
+                    break
             outcomes[name] = failure
-            if failure is None:
+            if failure is None and grace_deadline is None:
+                grace_deadline = self._clock() + PROBE_GRACE
+
+        winner: Optional[str] = None
+        for name in candidates:
+            if outcomes.get(name, object()) is None:
                 winner = name
                 break
         return winner, outcomes

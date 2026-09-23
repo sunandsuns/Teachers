@@ -137,7 +137,12 @@ class LLMConfig:
     #: 一次「探活 + 生成」的总时间预算（秒）。
     #: 上游整体故障时必须尽快降级到本地检索，而不是让用户干等两分钟。
     total_budget: float = 45.0
-    max_tokens: int = 2000
+    #: 单次生成的 token 上限。
+    #: 2000 时会**截断**：实测一份约 950 字的中文回答被拦腰切断在句子中间
+    #: （部分上游对中文按近 2 token/字计，且会先扣掉思维链的开销），
+    #: 用户看到的是一段没有结尾的建议。提示词已要求"700 字以内"，
+    #: 这里放宽到 3000 是给上限留出余量——真正控制篇幅的是提示词，不是这个数。
+    max_tokens: int = 3000
     temperature: float = 0.7
     #: 探活结果缓存秒数：避免每次请求都重新试一遍所有模型
     cache_ttl: float = 300.0
@@ -249,6 +254,6 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> LLMConfig:
         timeout=_as_float(source.get("LLM_TIMEOUT"), 60.0),
         probe_timeout=_as_float(source.get("LLM_PROBE_TIMEOUT"), 12.0),
         total_budget=_as_float(source.get("LLM_TOTAL_BUDGET"), 45.0),
-        max_tokens=_as_int(source.get("LLM_MAX_TOKENS"), 2000),
+        max_tokens=_as_int(source.get("LLM_MAX_TOKENS"), 3000),
         temperature=_as_float(source.get("LLM_TEMPERATURE"), 0.7),
     )

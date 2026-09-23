@@ -11,6 +11,7 @@ import pytest
 
 from server.services.llm import router as router_module
 from server.services.llm import transport
+from server.services.llm.prompt import SYSTEM_PROMPT
 
 MODEL = "test-model"
 CANNED = "## 你的处境\n你正卡在半途。"
@@ -74,6 +75,32 @@ class TestFollowUpContext:
         contents = [m["content"] for m in capture[-1][:-1]]
         assert contents[1:3] == ["第一个问题", "第一个回答"]
         assert contents[3:5] == ["第二个问题", "第二个回答"]
+
+
+class TestQuestionTypeGuidance:
+    """题型要求是"回答不再答非所问"的关键，得确认它真的到了模型那一层。"""
+
+    def test_a_choice_question_tells_the_model_to_pick_one(self, client, capture):
+        client.post("/api/ask", json={"question": "我该忍还是该说？", "top_k": 2})
+        system = capture[-1][0]["content"]
+        assert "明确选一个" in system
+        # 选项要写进指令里，光说"选一个"等于没说
+        assert "忍" in system and "说" in system
+
+    def test_a_howto_question_asks_for_actions(self, client, capture):
+        client.post("/api/ask", json={"question": "我该怎么开口要？", "top_k": 2})
+        assert "具体怎么做" in capture[-1][0]["content"]
+
+    def test_english_gets_the_english_guidance(self, client, capture):
+        client.post("/api/ask", json={"question": "我该忍还是该说？", "lang": "en", "top_k": 2})
+        system = capture[-1][0]["content"]
+        assert "pick one" in system
+        assert "明确选一个" not in system
+
+    def test_unrecognized_question_leaves_the_prompt_untouched(self, client, capture):
+        """认不出题型就不追加指令——替用户改写他的问题比不给指令更糟。"""
+        client.post("/api/ask", json={"question": "今天天气不错", "top_k": 2})
+        assert capture[-1][0]["content"] == SYSTEM_PROMPT
 
 
 class TestAnswerLanguage:

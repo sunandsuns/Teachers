@@ -96,8 +96,17 @@ const ZH = {
   'ask.description': '向人生导师讲述你的问题或困境，它会从经典智慧中寻找答案',
   'ask.modelButton': '模型：{mode}',
   'ask.model.default': '默认',
+  'ask.model.cloud': 'WorkBuddy 云',
   'ask.model.custom': '自定义',
   'ask.model.incomplete': '未填写',
+  // 云模型没走通时的原因。后面会拼上上游给的原文，所以这里只说结论
+  'ask.cloud.auth': '云端模型拒绝了这次调用（多半是不在应用的在线地址上打开），已改用默认模型',
+  'ask.cloud.quota': '云端模型额度用尽或触发限流，已改用默认模型',
+  'ask.cloud.unavailable': '云端模型暂时不可用，已改用默认模型',
+  'ask.cloud.bad_request': '云端模型拒绝了这次请求的参数，已改用默认模型',
+  'ask.cloud.internal': '云端模型内部出错，已改用默认模型',
+  'ask.cloud.unknown': '调用云端模型失败，已改用默认模型',
+  'ask.cloud.empty': '云端模型返回了空回答，已改用默认模型',
   'ask.suggestionsTitle': '说说你的困惑，例如：',
   'ask.suggestionsHint': '示例可以直接点；也可以用自己的话描述处境。',
   'ask.cited': '引用 {count} 段经典',
@@ -365,8 +374,22 @@ const EN: Record<MessageKey, string> = {
     'Describe your problem or dilemma, and it will look for an answer in the wisdom of the classics',
   'ask.modelButton': 'Model: {mode}',
   'ask.model.default': 'built-in',
+  'ask.model.cloud': 'WorkBuddy cloud',
   'ask.model.custom': 'custom',
   'ask.model.incomplete': 'not filled in',
+  'ask.cloud.auth':
+    'The cloud model rejected this call (most likely the app is not opened on its online address) — fell back to the built-in model',
+  'ask.cloud.quota':
+    'The cloud model is out of quota or rate-limited — fell back to the built-in model',
+  'ask.cloud.unavailable':
+    'The cloud model is temporarily unavailable — fell back to the built-in model',
+  'ask.cloud.bad_request':
+    'The cloud model rejected the request parameters — fell back to the built-in model',
+  'ask.cloud.internal': 'The cloud model failed internally — fell back to the built-in model',
+  'ask.cloud.unknown':
+    'The cloud model call failed — fell back to the built-in model',
+  'ask.cloud.empty':
+    'The cloud model returned an empty answer — fell back to the built-in model',
   'ask.suggestionsTitle': 'Tell me what troubles you — for example:',
   'ask.suggestionsHint':
     'The knowledge base is classical Chinese text, so Chinese questions find the best matches. The answer still comes back in English.',

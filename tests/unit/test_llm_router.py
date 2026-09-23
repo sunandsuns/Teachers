@@ -209,8 +209,8 @@ class TestConcurrentProbe:
         # 串行需 4 × 0.5 = 2.0s；并发应接近单次 0.5s
         assert elapsed < 1.6, "探活耗时随候选数线性增长，实测 %.2fs" % elapsed
 
-    def test_returns_first_success_without_waiting_for_hanging_siblings(self, monkeypatch):
-        """已经拿到可用模型就立即返回，不必等卡住的候选熬满超时。"""
+    def test_does_not_wait_out_hanging_siblings_beyond_grace(self, monkeypatch):
+        """拿到可用模型后只再等一段宽限期，不必等卡住的候选熬满超时。"""
 
         class Mixed:
             def __init__(self):
@@ -235,7 +235,38 @@ class TestConcurrentProbe:
         started = time.monotonic()
         assert router.pick() == "fast"
         elapsed = time.monotonic() - started
-        assert elapsed < 0.6, "拿到可用模型后应立即返回，实测 %.2fs" % elapsed
+        # 宽限期 5s > 卡住者的超时 1s，所以实际停在 1s 附近，而不是 5s
+        assert elapsed < 1.6, "拿到可用模型后不该干等满宽限期，实测 %.2fs" % elapsed
+
+    def test_higher_priority_beats_faster_response(self, monkeypatch):
+        """候选表里排在前面的模型即使慢一点也该赢——"谁快选谁"会让顺序表失效。
+
+        真实事故：``glm-*-flash`` 4.7s 就回，``deepseek-v4-flash`` 要 8.5s，
+        于是配置里排第一的模型永远选不上，应用稳定地落在更弱的那个上。
+        """
+
+        class Paced:
+            """第一个候选慢 0.4s，第二个立刻回。"""
+
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def chat(self, config, model, messages, **kwargs):
+                self.calls.append(model)
+                if model == "priority":
+                    time.sleep(0.4)
+                return f"来自 {model} 的回答"
+
+            def list_models(self, config):
+                return ()
+
+        self._install(monkeypatch, Paced())
+        router = ModelRouter(
+            make_config(candidates=("priority", "fast"), probe_timeout=5.0),
+            clock=time.monotonic,
+        )
+
+        assert router.pick() == "priority"
 
 
 # ── 时间预算 ────────────────────────────────────────────────────────────

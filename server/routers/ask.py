@@ -77,6 +77,43 @@ class AskResponse(BaseModel):
     conversation_id: str = Field(..., description="这次问答所属的话题；追问时原样带回")
 
 
+class AskPlanRequest(BaseModel):
+    """只检索、不生成的请求。字段与 :class:`AskRequest` 保持一致，减去 ``llm``。"""
+
+    question: str = Field(..., min_length=1, max_length=500, description="用户问题")
+    top_k: int = Field(5, ge=1, le=10, description="检索结果数")
+    lang: str = Field("", max_length=10, description="作答语言：zh / en")
+    conversation_id: str = Field("", max_length=64, description="话题 id；留空则新开一个")
+    history: list[ConversationTurn] = Field(default_factory=list, max_length=MAX_REQUEST_TURNS)
+
+
+class ChatMessage(BaseModel):
+    """一条对话消息。后端组装好交给浏览器去生成。"""
+
+    role: str = Field(..., description="system / user / assistant")
+    content: str = Field(..., description="消息正文")
+
+
+class AskPlanResponse(BaseModel):
+    """检索结果与组装好的提示词。"""
+
+    question: str
+    messages: list[ChatMessage]
+    lang: str
+    retrieved_count: int
+    conversation_id: str
+
+
+class AskSaveRequest(BaseModel):
+    """浏览器侧生成完，把这一问一答送回来存档。"""
+
+    question: str = Field(..., min_length=1, max_length=500, description="用户问题")
+    answer: str = Field(..., min_length=1, max_length=40_000, description="模型生成的回答")
+    model: str = Field("", max_length=200, description="实际使用的模型名；留空记为云端来源")
+    retrieved_count: int = Field(0, ge=0, le=50, description="这次用了几条检索片段")
+    conversation_id: str = Field("", max_length=64, description="话题 id；留空则新开一个")
+
+
 class AskStatusResponse(BaseModel):
     """问答能力状态（描述内置默认模型，不含用户自填的端点）。"""
     enabled: bool
@@ -124,6 +161,59 @@ def ask(request: AskRequest):
         override=request.llm.to_override() if request.llm else None,
         lang=request.lang,
         history=[(turn.question, turn.answer) for turn in request.history],
+        conversation_id=request.conversation_id,
+    )
+    return AskResponse(
+        question=result.question,
+        answer=result.answer,
+        retrieved_count=result.retrieved,
+        llm_used=result.llm_used,
+        model=result.model,
+        history_id=result.history_id,
+        conversation_id=result.conversation_id or "",
+    )
+
+
+@router.post("/plan", response_model=AskPlanResponse)
+def plan(request: AskPlanRequest):
+    """只做检索与组装提示词，把 messages 交给浏览器去调云模型。
+
+    为什么要有这条：WorkBuddy 的免密钥模型按**浏览器 Origin** 鉴权
+    （``publishableKey`` 只认发布域名），Python 后端既没有 Origin、也不该代持
+    那份凭据。所以生成只能发生在页面里。但提示词、检索、题型判断必须留在
+    后端——两边各写一份模板，改起来一定会走偏。
+
+    与 ``POST /api/ask`` 共用同一段编排，只是不生成、不落库；
+    生成完之后由前端调 ``POST /api/ask/save`` 补记进「回响」。
+    """
+    result = qa.plan(
+        request.question,
+        top_k=request.top_k,
+        lang=request.lang,
+        history=[(turn.question, turn.answer) for turn in request.history],
+        conversation_id=request.conversation_id,
+    )
+    return AskPlanResponse(
+        question=result.question,
+        messages=[ChatMessage(**message) for message in result.messages],
+        lang=result.lang,
+        retrieved_count=result.retrieved,
+        conversation_id=result.conversation_id,
+    )
+
+
+@router.post("/save", response_model=AskResponse)
+def save(request: AskSaveRequest):
+    """把浏览器侧生成好的回答补记进历史记录。
+
+    云模型那条路的回答不经过后端，不送回来的话「回响」里会缺一整段对话。
+    存不进去（库不可用）照样返回 200，只是 ``history_id`` 为 null。
+    """
+    result = qa.save_answer(
+        request.question,
+        request.answer,
+        model=request.model or None,
+        retrieved_count=request.retrieved_count,
         conversation_id=request.conversation_id,
     )
     return AskResponse(

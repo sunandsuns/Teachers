@@ -16,6 +16,7 @@ from server.services.advice import (
     affinity,
     advice_weights,
     build_book_themes,
+    cap_per_chapter,
     cap_source,
     route_themes,
     search_for_advice,
@@ -26,11 +27,19 @@ from server.services.retriever import KIND_NOTES, KIND_SOURCE, SearchResult
 
 
 class _Result:
-    """够用的检索结果替身：只要 score 与 kind。"""
+    """够用的检索结果替身：score / kind / 出处坐标。"""
 
-    def __init__(self, score: float, kind: str = KIND_NOTES) -> None:
+    def __init__(
+        self,
+        score: float,
+        kind: str = KIND_NOTES,
+        book_id: str = "08",
+        chapter_id: str = "01",
+    ) -> None:
         self.score = score
         self.kind = kind
+        self.book_id = book_id
+        self.chapter_id = chapter_id
 
 
 # ── 主题路由 ────────────────────────────────────────────────────────────
@@ -128,6 +137,69 @@ def test_cap_source_limits_source_only():
     kept = cap_source(results, limit=MAX_SOURCE_RESULTS)
     assert sum(1 for r in kept if r.kind == KIND_SOURCE) == MAX_SOURCE_RESULTS
     assert len(kept) == 3
+
+
+def test_cap_per_chapter_spreads_the_slots():
+    """同一章节被切成很多单元时会连中好几条，占满席位，
+    模型手里的"几份材料"其实只有一份。"""
+    results = [
+        _Result(0.9, book_id="10", chapter_id="02"),
+        _Result(0.8, book_id="10", chapter_id="02"),
+        _Result(0.7, book_id="10", chapter_id="02"),
+        _Result(0.6, book_id="09", chapter_id="01"),
+    ]
+    kept = cap_per_chapter(results, limit=2)
+    assert sum(1 for r in kept if r.chapter_id == "02") == 2
+    assert len(kept) == 3
+    # 砍的是同一章里多出来的那些，顺序不变
+    assert [r.score for r in kept] == [0.9, 0.8, 0.6]
+
+
+def test_cap_per_chapter_counts_per_book_not_globally():
+    """同一本书的不同章节讲的是不同的事，不该互相挤。"""
+    results = [
+        _Result(0.9, book_id="10", chapter_id="02"),
+        _Result(0.8, book_id="10", chapter_id="03"),
+        _Result(0.7, book_id="10", chapter_id="04"),
+    ]
+    assert len(cap_per_chapter(results, limit=1)) == 3
+
+
+class _RecordingRetriever:
+    """只记录查询的假检索器：追问到底把什么送进了检索，看这里就知道。"""
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+        self.documents = [{"book_id": "09"}]
+
+    def search(self, query, top_k=5, book_weights=None):
+        self.queries.append(query)
+        return []
+
+
+class _EmptyLoader:
+    """没有主题表的加载器：主题锚那一路会空着，只留原问那一路可查。"""
+
+    def get_books(self):
+        return []
+
+
+def test_follow_up_carries_the_previous_question_into_search():
+    """"那我具体该说什么"里没有主语也没有对象，单独检索几乎召不回东西，
+    于是材料与正在聊的事无关，回答看着就是答非所问。"""
+    retriever = _RecordingRetriever()
+    search_for_advice(
+        retriever, "那我具体该说什么？", context="朋友借钱不还", loader=_EmptyLoader()
+    )
+    assert retriever.queries
+    assert "朋友借钱不还" in retriever.queries[0]
+
+
+def test_first_question_is_not_diluted():
+    """没有上文时查询就是原句，不该凭空多出东西。"""
+    retriever = _RecordingRetriever()
+    search_for_advice(retriever, "朋友借钱不还怎么办", loader=_EmptyLoader())
+    assert retriever.queries[0] == "朋友借钱不还怎么办"
 
 
 # ── 书 → 主题 ───────────────────────────────────────────────────────────

@@ -111,6 +111,7 @@ def generate_answer(
     router: Optional[ModelRouter] = None,
     lang: str = DEFAULT_LANG,
     history: Optional[Sequence[Any]] = None,
+    guidance: str = "",
 ) -> str:
     """生成回答；没有可用模型时降级为本地检索排版，绝不抛异常给调用方。
 
@@ -118,8 +119,18 @@ def generate_answer(
     即可改用另一套端点（见 ``session.py``），无需改动本函数。
 
     ``lang`` 决定作答语言，``history`` 是最近几轮问答（追问时接得上上文）。
+
+    ``guidance`` 是这一轮的题型要求（由 ``services/intent.py`` 从问句里认出来的），
+    追加在系统提示词之后。留空则不加任何额外指令。
     """
-    return _generate(question, search_results, router=router, lang=lang, history=history)[0]
+    return _generate(
+        question,
+        search_results,
+        router=router,
+        lang=lang,
+        history=history,
+        guidance=guidance,
+    )[0]
 
 
 def generate_answer_with_model(
@@ -130,6 +141,7 @@ def generate_answer_with_model(
     key_hint: str = "LLM_API_KEY",
     lang: str = DEFAULT_LANG,
     history: Optional[Sequence[Any]] = None,
+    guidance: str = "",
 ) -> tuple[str, Optional[str]]:
     """:func:`generate_answer` 的变体，额外返回实际使用的模型名（未用 LLM 时为 ``None``）。
 
@@ -143,6 +155,7 @@ def generate_answer_with_model(
         key_hint=key_hint,
         lang=lang,
         history=history,
+        guidance=guidance,
     )
 
 
@@ -154,6 +167,7 @@ def _generate(
     key_hint: str = "LLM_API_KEY",
     lang: str = DEFAULT_LANG,
     history: Optional[Sequence[Any]] = None,
+    guidance: str = "",
 ) -> tuple[str, Optional[str]]:
     """两个公开入口共用的实现：返回 ``(正文, 模型名)``，降级时模型名为 None。
 
@@ -170,7 +184,9 @@ def _generate(
             None,
         )
 
-    messages = build_messages(question, search_results, lang=answer_lang, history=history)
+    messages = build_messages(
+        question, search_results, lang=answer_lang, history=history, guidance=guidance
+    )
     try:
         content, model = target.chat(messages)
     except LLMTransportError as exc:

@@ -130,6 +130,31 @@ class TestBuildMessages:
         assert "天行健" in messages[-1]["content"]
 
 
+class TestGuidance:
+    """题型要求拼在系统提示词末尾；认不出题型时一个字都不该多加。"""
+
+    def test_guidance_is_appended_to_the_system_prompt(self):
+        messages = build_messages("我该忍还是该说？", [make_result()], guidance="必须明确选一个")
+        assert messages[0]["content"].startswith(SYSTEM_PROMPT)
+        assert "必须明确选一个" in messages[0]["content"]
+
+    def test_empty_guidance_leaves_the_prompt_untouched(self):
+        messages = build_messages("如何坚持？", [make_result()], guidance="")
+        assert messages[0]["content"] == SYSTEM_PROMPT
+
+    @pytest.mark.parametrize("value", ["   ", "\n"])
+    def test_blank_guidance_is_ignored(self, value):
+        messages = build_messages("如何坚持？", [make_result()], guidance=value)
+        assert messages[0]["content"] == SYSTEM_PROMPT
+
+    def test_english_gets_the_english_prompt_plus_guidance(self):
+        messages = build_messages(
+            "我该忍还是该说？", [make_result()], lang="en", guidance="Pick one."
+        )
+        assert messages[0]["content"].startswith(SYSTEM_PROMPT_EN)
+        assert messages[0]["content"].endswith("Pick one.")
+
+
 class TestFallbackLanguage:
     def test_english_fallback_has_no_chinese_sections(self):
         answer = local_fallback("How do I persist?", [make_result()], lang="en")

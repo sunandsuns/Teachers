@@ -1,8 +1,14 @@
 import { useCallback, useState } from 'react'
 import type { LLMEndpoint } from '../api/types'
 
-/** 用内置的默认模型，还是用自己填的端点。 */
-export type ModelMode = 'default' | 'custom'
+/**
+ * 用内置的默认模型、自己填的端点，还是 WorkBuddy 云模型（免密钥）。
+ *
+ * `cloud` 只在**发布域名**下才真的走得通：云端按浏览器 Origin 鉴权，
+ * 桌面版（`127.0.0.1`）与本地开发服务器都会被拒。界面允许选它，
+ * 但失败时必须回落到内置模型，不能让用户卡在报错上。
+ */
+export type ModelMode = 'default' | 'custom' | 'cloud'
 
 export interface ModelSettings extends LLMEndpoint {
   mode: ModelMode
@@ -50,7 +56,8 @@ function read(): ModelSettings {
     if (!raw) return EMPTY_SETTINGS
     const parsed = JSON.parse(raw) as Partial<ModelSettings>
     return {
-      mode: parsed.mode === 'custom' ? 'custom' : 'default',
+      mode:
+        parsed.mode === 'custom' ? 'custom' : parsed.mode === 'cloud' ? 'cloud' : 'default',
       base_url: typeof parsed.base_url === 'string' ? parsed.base_url : '',
       api_key: typeof parsed.api_key === 'string' ? parsed.api_key : '',
       model: typeof parsed.model === 'string' ? parsed.model : '',

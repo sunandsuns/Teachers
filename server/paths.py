@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -96,7 +97,10 @@ def resolve_web_dist() -> Optional[Path]:
 
     override = os.environ.get(DIST_ENV_VAR)
     if override:
-        candidates.append(Path(override).expanduser())
+        # 相对路径按项目根解析，不跟着进程的工作目录漂——服务从别处启动时
+        # （线上部署就是）cwd 未必是项目根，写相对路径就成了碰运气。
+        target = Path(override).expanduser()
+        candidates.append(target if target.is_absolute() else resolve_root() / target)
 
     bundle = bundle_dir()
     if bundle is not None:
@@ -111,11 +115,23 @@ def resolve_web_dist() -> Optional[Path]:
 
 
 def _user_data_dir() -> Path:
-    """用户级数据目录：程序目录不可写（如放进 Program Files）时的落点。"""
+    """用户级数据目录：程序目录不可写（如放进 Program Files）时的落点。
+
+    **不许抛异常**：这条路径的解析发生在启动阶段（lifespan 会碰一下历史库），
+    抛一个异常就是整个应用起不来——而历史记录只是个附加项，为它赔上全部功能
+    是本末倒置。``Path.home()`` 在 Linux 容器里就会抛：那里既没有
+    ``LOCALAPPDATA``，``HOME`` 也可能没设，于是"取家目录"直接失败。
+    这正是线上部署第一次启动就崩掉的原因。
+    """
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
     if base:
         return Path(base) / USER_DATA_DIRNAME
-    return Path.home() / "." + "renshengdaoshi"
+    try:
+        return Path.home() / "." + "renshengdaoshi"
+    except (RuntimeError, OSError):
+        # 连家目录都定不了（容器里无 HOME 且取不到 passwd 条目）时退到临时目录：
+        # 那里几乎总是可写，数据能不能留到下次另说，至少应用能起来。
+        return Path(tempfile.gettempdir()) / "renshengdaoshi"
 
 
 def _ensure_writable(path: Path) -> bool:

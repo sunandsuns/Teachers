@@ -46,6 +46,13 @@ MIN_SCORE_RATIO = 0.6
 MIN_RESULTS = 2
 #: 一次求教里原典最多占几条。原典片段缺少语境，占多了会挤掉笔记的深解。
 MAX_SOURCE_RESULTS = 2
+#: 同一章节最多占几条。
+#: 笔记里"核心思想"这类大章被切成几十个检索单元，词面一旦对上就会连中
+#: 好几条——实测问"领导抢我功劳"时五席里有三席出自《菜根谭》· 核心思想。
+#: 那三席讲的其实是同一件事，模型拿到的材料看着有三份，实际只有一份，
+#: 回答自然就绕着它打转，看起来像"翻来覆去就这一句"。宁可少两条，
+#: 把位置让给别的书，让模型有得比较。
+MAX_PER_CHAPTER = 2
 #: 默认给几段。宁可少而准——提示词明确允许"没找到直接对应的就直说"。
 DEFAULT_TOP_K = 5
 
@@ -335,6 +342,23 @@ def cap_source(results: Sequence, *, limit: int = MAX_SOURCE_RESULTS) -> list:
     return kept
 
 
+def cap_per_chapter(results: Sequence, *, limit: int = MAX_PER_CHAPTER) -> list:
+    """限制同一章节的条数，把位置让给别的书。
+
+    按 (书, 章) 计数而不是按书：同一本书的不同章节讲的是不同的事，
+    挤在一起的才是同一个章节里被切碎的那些单元。
+    """
+    counts: dict[tuple[str, str], int] = {}
+    kept: list = []
+    for result in results:
+        key = (getattr(result, "book_id", ""), getattr(result, "chapter_id", ""))
+        if counts.get(key, 0) >= limit:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        kept.append(result)
+    return kept
+
+
 def cap_modern(
     results: Sequence,
     *,
@@ -454,6 +478,7 @@ def search_for_advice(
     *,
     top_k: int = DEFAULT_TOP_K,
     loader=None,
+    context: str = "",
 ) -> AdviceHits:
     """求教场景的检索：主题路由 → 两路召回合并 → 原典限流 → 相关度门槛。
 
@@ -464,7 +489,15 @@ def search_for_advice(
       不存在，只有把它换成《论语》说的"内省、克己"才召得到东西。
 
     主题认不出时退回单路——认不出还要套主题，等于把某个主题硬安上去。
+
+    ``context`` 是上一轮的问句，只在追问时非空。**追问必须带上它**：
+    "那我具体该说什么""可是他不同意呢"这种话里没有主语也没有对象，
+    词面全是指代词，单独拿去检索几乎召不回任何对得上的段落——
+    于是模型拿到的材料与正在聊的事无关，回答看着就是答非所问。
+    把它拼在问句前面，检索才落回那件事上（主题路由仍只看本轮问句，
+    指代词本来也判不出主题）。
     """
+    query = f"{context.strip()} {question.strip()}".strip() if context.strip() else question
     themes = route_themes(question)
     book_ids = {doc["book_id"] for doc in retriever.documents}
     weights = advice_weights(book_ids, get_book_themes(loader), themes)
@@ -475,7 +508,7 @@ def search_for_advice(
     # TF-IDF 分值完全不同，拿同一把尺子量会把结果砍到只剩两三条。
     # 各路按自己的尺度砍自己的尾部，合并时再一起排序。
     question_hits = trim_by_score(
-        retriever.search(question, top_k=pool, book_weights=weights)
+        retriever.search(query, top_k=pool, book_weights=weights)
     )
 
     anchors = theme_anchors(get_theme_rows(loader), themes) if themes else []
@@ -501,7 +534,7 @@ def search_for_advice(
         if not (hit.book_id in MODERN_BOOKS and hit.kind == KIND_SOURCE)
     ]
 
-    kept = cap_modern(cap_source(merged, limit=MAX_SOURCE_RESULTS))
+    kept = cap_per_chapter(cap_modern(cap_source(merged, limit=MAX_SOURCE_RESULTS)))
     return AdviceHits(results=tuple(kept[:top_k]), themes=themes)
 
 
@@ -511,6 +544,7 @@ __all__ = [
     "BOOK_AFFINITY",
     "DEFAULT_TOP_K",
     "MAX_MODERN_RESULTS",
+    "MAX_PER_CHAPTER",
     "MAX_SOURCE_RESULTS",
     "MIN_RESULTS",
     "MODERN_BOOKS",
@@ -527,6 +561,7 @@ __all__ = [
     "build_book_themes",
     "build_theme_rows",
     "cap_modern",
+    "cap_per_chapter",
     "cap_source",
     "get_theme_rows",
     "merge_passes",

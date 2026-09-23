@@ -31,7 +31,7 @@ from .services.retriever import ensure_retriever, get_retriever, index_progress
 from .web_ui import mount_frontend
 
 #: 应用版本。发版时改这一处即可——FastAPI 的 OpenAPI 与根路径索引都读它。
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 
 
 @asynccontextmanager
@@ -53,10 +53,16 @@ async def lifespan(app: FastAPI):
     loader = get_loader()
     ensure_retriever(loader)
     get_kb().warm_up()
-    store = get_history_store()
-    print("[人生导师] 历史记录库：%s（可用：%s）" % (store.db_path, store.available))
-    if not store.available:
-        print("[人生导师] 历史记录暂不可用：%s" % store.error)
+    # 这一下也必须兜住：历史记录是附加项，它要是能在启动时把整个应用拖死，
+    # 就等于让一个记账功能决定了书架、寻章、求教能不能用。真实踩过——
+    # 容器里没有家目录，取数据目录的那一步就抛了异常。
+    try:
+        store = get_history_store()
+        print("[人生导师] 历史记录库：%s（可用：%s）" % (store.db_path, store.available))
+        if not store.available:
+            print("[人生导师] 历史记录暂不可用：%s" % store.error)
+    except Exception as exc:  # noqa: BLE001 — 启动期的附加项，失败只记录
+        print("[人生导师] 历史记录暂不可用：%s" % exc)
     yield
 
 
@@ -143,6 +149,10 @@ else:
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 端口从环境变量取：线上部署只暴露一个由平台注入的端口（``PORT``），
+    # 写死 8000 就起不来。本地不带这个变量时仍是 8000，开发习惯不变。
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000) or 8000))

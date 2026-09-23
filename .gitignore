@@ -16,6 +16,9 @@ env/
 web/node_modules/
 web/dist/
 web/.vite/
+# 发布用的前端副本：web/dist 一份拷贝，由 packaging/prepare_webapp.py 生成。
+# 发布工具会按目录名排除 dist/build，所以不能直接把 web/dist 发上去。
+/webapp/
 # vite 加载 vite.config.ts 时留下的临时副本，每次启动都换一个名字
 web/vite.config.ts.timestamp-*
 npm-debug.log*
@@ -38,6 +41,10 @@ Thumbs.db
 # 打包产物（build_app.py 生成）
 /build/
 /dist/
+
+# 云服务开通时在本机生成的应用清单，内容只有 appId 与本机绝对路径——
+# 换台机器就没意义，也不该把用户名带进公开仓库
+/.wbapp_*.genie
 
 # 本地工具目录：临时脚本、界面截图、命令行代理缓存
 # （.workbuddy/memory 是本地工作笔记，含绝对路径，不入库）

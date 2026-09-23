@@ -69,6 +69,34 @@ class TestTFIDFRetriever:
         assert r.search("任何词", top_k=3) == []
 
 
+class TestHeadingOnlyUnits:
+    """只有一行标题、没有正文的段落不该进索引。
+
+    它命中的时候返回的是一条**空内容**的结果：寻章页点开什么都没有，
+    求教时模型也把它当成一份材料，只能硬凑。
+    """
+
+    def test_lone_heading_is_dropped(self):
+        r = TFIDFRetriever()
+        r.add_document(
+            "10", "菜根谭", "02", "核心思想",
+            "### 3. 修心：事来心现，事去心空",
+        )
+        r.build_index()
+        assert r.documents == []
+
+    def test_heading_with_body_is_kept(self):
+        """标题下面还带着正文的段落是正常材料，别一起误伤。"""
+        r = TFIDFRetriever()
+        r.add_document(
+            "10", "菜根谭", "02", "核心思想",
+            "### 3. 修心\n\n风来疏竹，风过而竹不留声；雁度寒潭，雁去而潭不留影。",
+        )
+        r.build_index()
+        assert len(r.documents) == 1
+        assert "风来疏竹" in r.documents[0]["content"]
+
+
 class TestTableOfContents:
     """目录页整段都是篇目名，引不出任何句子，不该进索引。"""
 

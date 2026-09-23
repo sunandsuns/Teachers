@@ -5,6 +5,7 @@
 
 import { activeLang, tCurrent, type Lang } from '../i18n/messages'
 import type {
+  AskPlan,
   AskResponse,
   AskStatus,
   Avatar,
@@ -212,6 +213,48 @@ export const api = {
         // 空数组就别发这个字段，没必要让请求体白带一段
         ...(context.history?.length ? { history: context.history } : {}),
         ...(llm ? { llm } : {}),
+      }),
+    }),
+
+  /**
+   * 只检索、不生成：拿回材料与组装好的提示词，交给浏览器去调云模型。
+   *
+   * 云模型那条路必须这么走（凭据按浏览器 Origin 鉴权，后端代不了），
+   * 但提示词与检索仍留在后端，避免两边各写一份模板。
+   */
+  planAsk: (
+    question: string,
+    topK = 5,
+    lang: Lang = activeLang(),
+    context: AskContext = {},
+  ) =>
+    request<AskPlan>('/ask/plan', {
+      method: 'POST',
+      body: JSON.stringify({
+        question,
+        top_k: topK,
+        lang,
+        ...(context.conversationId ? { conversation_id: context.conversationId } : {}),
+        ...(context.history?.length ? { history: context.history } : {}),
+      }),
+    }),
+
+  /** 把浏览器侧生成好的回答送回后端存档，否则「回响」里会缺这一问一答。 */
+  saveAsk: (
+    question: string,
+    answer: string,
+    model: string,
+    retrievedCount: number,
+    conversationId: string,
+  ) =>
+    request<AskResponse>('/ask/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        question,
+        answer,
+        model,
+        retrieved_count: retrievedCount,
+        conversation_id: conversationId,
       }),
     }),
 

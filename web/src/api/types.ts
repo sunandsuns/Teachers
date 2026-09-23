@@ -87,6 +87,26 @@ export interface AskResponse {
   conversation_id: string
 }
 
+/** 一条对话消息（后端组装好，交给浏览器去调云模型）。 */
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+/**
+ * 「只检索、不生成」的结果。
+ *
+ * 走云模型时用：后端把材料与提示词准备好，生成发生在浏览器里
+ * （原因见 `lib/cloud.ts`）。生成完再调 `saveAsk` 补记进「回响」。
+ */
+export interface AskPlan {
+  question: string
+  messages: ChatMessage[]
+  lang: string
+  retrieved_count: number
+  conversation_id: string
+}
+
 export interface AskStatus {
   enabled: boolean
   base_url: string

@@ -20,6 +20,7 @@ type Probe =
 
 const MODE_OPTIONS = [
   { value: 'default' as const, label: '默认模型' },
+  { value: 'cloud' as const, label: 'WorkBuddy 云模型' },
   { value: 'custom' as const, label: '自定义模型' },
 ]
 
@@ -89,7 +90,16 @@ export default function ModelSettingsPanel({
         )}
       </div>
 
-      {settings.mode === 'default' ? (
+      {settings.mode === 'cloud' ? (
+        <p className="mt-3 text-sm leading-relaxed text-ink-500">
+          用 WorkBuddy 的云端模型，不需要你自己填 Key。
+          <strong className="font-medium text-ink-700">
+            只有在应用的在线地址上打开时才走得通
+          </strong>
+          ——云端按浏览器来源鉴权，桌面版与本地地址会被拒。
+          走不通时「求教」会自动改回默认模型，并在回答上方说明原因。
+        </p>
+      ) : settings.mode === 'default' ? (
         <p className="mt-3 text-sm leading-relaxed text-ink-500">
           使用应用自带的模型配置，开箱即用。若想接自己的模型
           （例如公司的私有部署、或另一个服务商的 Key），切到「自定义模型」。
