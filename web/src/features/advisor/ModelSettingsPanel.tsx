@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { api } from '../api/client'
-import type { ModelSettings } from '../hooks/useModelSettings'
-import { isComplete, toPayload } from '../hooks/useModelSettings'
-import Button from './ui/Button'
-import Segmented from './ui/Segmented'
+import { api } from '../../api/client'
+import type { ModelSettings } from './useModelSettings'
+import { isComplete, toPayload } from './useModelSettings'
+import Button from '../../components/ui/Button'
+import Segmented from '../../components/ui/Segmented'
 
 /**
  * 求教页的模型来源选择：用内置的默认模型，或填自己的接口地址与 Key。

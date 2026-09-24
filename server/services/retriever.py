@@ -19,6 +19,9 @@ except ImportError:
 #: - SOURCE：原典全文，用于找到经文原句
 KIND_NOTES = "notes"
 KIND_SOURCE = "source"
+#: 用户私人书架里的书。只有元信息与模型生成的导读，没有全书正文——
+#: 它由 :mod:`services.unified_search` 装进一个独立的子索引，不混进公共语料。
+KIND_SHELF = "shelf"
 
 #: 原典条目的得分权重。笔记是提炼过的、更贴问题，故让原典略低于笔记，
 #: 避免大段古文把精炼的解读挤下去。
@@ -351,8 +354,11 @@ class TFIDFRetriever:
     @staticmethod
     def _describe(doc: dict) -> str:
         """出处描述。原典条目直接标"原典"，避免与笔记章节混为一谈。"""
-        if doc.get("kind") == KIND_SOURCE:
+        kind = doc.get("kind")
+        if kind == KIND_SOURCE:
             return f'《{doc["book_title"]}》· 原典'
+        if kind == KIND_SHELF:
+            return f'《{doc["book_title"]}》· 我的书架'
         return f'《{doc["book_title"]}》· {doc["chapter_title"]}'
 
     def _substring_search(self, query: str, top_k: int, kind: Optional[str] = None) -> list[SearchResult]:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type SourceChunk } from '../api/client'
+import { api, type SourceChunk } from '../../api/client'
 
 export interface SourceReader {
   /** 已累加的原典正文 */

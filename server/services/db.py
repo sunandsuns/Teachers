@@ -81,6 +81,110 @@ CREATE TABLE IF NOT EXISTS traits (
 
 -- 按类别取用、按把握排序，这条索引吃得上
 CREATE INDEX IF NOT EXISTS idx_traits_category ON traits (category, confidence DESC);
+
+-- ── 用户体系 ────────────────────────────────────────────────────────
+-- 加入用户之前，这个库只服务一个人；现在同一份库要装下多个用户的书架、
+-- 问答与画像。老数据没有归属，``user_id`` 留 NULL——查询时"NULL 组"就是
+-- 未登录者看到的公共数据，不假装它是谁的。
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 邮箱即账号。COLLATE NOCASE 让 Alice@x.com 与 alice@x.com 算同一个，
+    -- 否则用户换个大小写就能注册出第二个账号来。
+    email         TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    -- 只存派生值，绝不存明文。见 services/auth.py
+    password_hash TEXT    NOT NULL,
+    salt          TEXT    NOT NULL,
+    display_name  TEXT    NOT NULL DEFAULT '',
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    created_ts    REAL    NOT NULL
+);
+
+-- 登录会话。token 本身是自签的（HMAC），这里还存一份是为了能"登出即失效"
+-- 与查看在线情况——纯无状态 token 做不到这两件事。
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_ts REAL    NOT NULL,
+    expires_ts REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+-- 清理过期会话时按它扫
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_ts);
+
+-- 用户的个人书库：他自己想看的书。书从联网检索得来，只有元信息与导读，
+-- 没有全书正文——正文在公共书架的 ``books/`` 里，那是另一回事。
+CREATE TABLE IF NOT EXISTS user_books (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    title       TEXT    NOT NULL,
+    author      TEXT    NOT NULL DEFAULT '',
+    -- 来源方的书目标识（OpenLibrary 的 work key）。用来去重与回查，
+    -- 空串表示这本书没拿到标识（手工录入，或来源方没给）
+    source_key  TEXT    NOT NULL DEFAULT '',
+    source      TEXT    NOT NULL DEFAULT '',
+    year        TEXT    NOT NULL DEFAULT '',
+    cover_url   TEXT    NOT NULL DEFAULT '',
+    summary     TEXT    NOT NULL DEFAULT '',
+    -- 主题，JSON 数组字符串
+    subjects    TEXT    NOT NULL DEFAULT '',
+    -- 大模型基于元信息写的导读。上游不可用时为空串——降级成"只有元信息"，
+    -- 不影响把书加进来
+    guide       TEXT    NOT NULL DEFAULT '',
+    -- 阅读状态：wish（想读）/ reading（在读）/ done（读完）
+    status      TEXT    NOT NULL DEFAULT 'wish',
+    -- 可见性：private（自己看）/ pending（申请公开中）/ public（已进公共书架）
+    -- / rejected（被驳回）
+    visibility  TEXT    NOT NULL DEFAULT 'private',
+    review_note TEXT    NOT NULL DEFAULT '',
+    reviewed_ts REAL,
+    created_ts  REAL    NOT NULL,
+    updated_ts  REAL    NOT NULL
+);
+
+-- 同一个人的同一本书只留一条。带 WHERE 的部分索引：source_key 为空的行
+-- 不参与去重（否则所有手工录入的书会因为"key 都是空串"而互相顶掉）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_books_dedup
+    ON user_books (user_id, source_key) WHERE source_key <> '';
+CREATE INDEX IF NOT EXISTS idx_user_books_user ON user_books (user_id, created_ts DESC);
+-- 后台的审核队列按它取
+CREATE INDEX IF NOT EXISTS idx_user_books_review ON user_books (visibility, created_ts DESC);
+
+-- 公共书架里"由用户贡献"的那部分。内置的 15 本在代码里（BOOK_REGISTRY），
+-- 这里是叠加层：管理员批准之后，书落进这张表，与内置书合并后一起对外。
+CREATE TABLE IF NOT EXISTS public_books (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 对外用的 book_id。前缀 u 与内置的 01..15 天然分开，不会撞号
+    book_id      TEXT    NOT NULL UNIQUE,
+    title        TEXT    NOT NULL,
+    author       TEXT    NOT NULL DEFAULT '',
+    category     TEXT    NOT NULL DEFAULT '其他',
+    summary      TEXT    NOT NULL DEFAULT '',
+    guide        TEXT    NOT NULL DEFAULT '',
+    subjects     TEXT    NOT NULL DEFAULT '',
+    -- 由谁贡献；管理员手动加的书为 NULL
+    from_user_id INTEGER,
+    -- 回指 user_books.id，便于溯源
+    from_book_id INTEGER,
+    created_ts   REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_public_books_created ON public_books (created_ts DESC);
+
+-- 后台操作留痕。直接改数据库这件事本身是必要的（排查、修数据），但"谁在
+-- 什么时候动了哪一行"必须查得到——没有痕迹的运维入口就是个隐患。
+CREATE TABLE IF NOT EXISTS admin_audit (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 操作者。NULL 表示系统动作
+    user_id    INTEGER,
+    action     TEXT    NOT NULL,
+    target     TEXT    NOT NULL DEFAULT '',
+    detail     TEXT    NOT NULL DEFAULT '',
+    created_ts REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit (created_ts DESC);
 """
 
 #: 依赖后加列的语句，**必须等 :data:`MIGRATIONS` 跑完再执行**。
@@ -90,6 +194,8 @@ CREATE INDEX IF NOT EXISTS idx_traits_category ON traits (category, confidence D
 #: 升级用户打开「回响」只会看到一片空白。这条差点被漏掉。
 POST_MIGRATION_DDL = """
 CREATE INDEX IF NOT EXISTS idx_history_conversation ON history (conversation_id, created_ts);
+CREATE INDEX IF NOT EXISTS idx_history_user ON history (user_id, created_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_traits_user ON traits (user_id, category, confidence DESC);
 """
 
 #: 后加的列。``(表名, 列名, 补列语句)``。
@@ -97,6 +203,9 @@ CREATE INDEX IF NOT EXISTS idx_history_conversation ON history (conversation_id,
 #: 里就有这些列了。
 MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("history", "conversation_id", "ALTER TABLE history ADD COLUMN conversation_id TEXT"),
+    # 加用户体系时补的归属列。NULL = 无归属（用户体系之前的数据，以及未登录者）
+    ("history", "user_id", "ALTER TABLE history ADD COLUMN user_id INTEGER"),
+    ("traits", "user_id", "ALTER TABLE traits ADD COLUMN user_id INTEGER"),
 )
 
 

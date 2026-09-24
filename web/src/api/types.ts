@@ -26,7 +26,10 @@ export interface ChapterDetail {
   content: string
 }
 
-export type SearchKind = 'all' | 'notes' | 'source'
+export type SearchKind = 'all' | 'notes' | 'source' | 'shelf'
+
+/** 检索结果的来源类型。 */
+export type SearchResultKind = 'notes' | 'source' | 'shelf'
 
 export interface SearchResultItem {
   book_id: string
@@ -36,8 +39,8 @@ export interface SearchResultItem {
   content: string
   score: number
   source: string
-  /** 来源类型：notes 深读笔记 / source 原典全文 */
-  kind: 'notes' | 'source'
+  /** 来源类型：notes 深读笔记 / source 原典全文 / shelf 我自己的书架 */
+  kind: SearchResultKind
   /** kind 为 source 时，该段在原典全文中的字符位置 */
   offset: number
 }
@@ -376,4 +379,207 @@ export interface KbNodeDetail {
   backlinks: KbLink[]
   theme_rows: KbThemeRow[]
   cross_refs: KbCrossRef[]
+}
+
+// ── 账号 ────────────────────────────────────────────────────────────────
+//
+// 「未登录」是一个**正常状态**，不是错误：整套检索、阅读、求教都对匿名开放。
+// 所以 `me` 返回的是 `{ user: null }` 而不是 401，前端也就不必为它写一层
+// 错误处理——只有真正的失败才会走到 catch。
+
+/** 当前登录的用户。**不含密码哈希与 salt**，后端从不外发那两个字段。 */
+export interface UserInfo {
+  id: number
+  /** 邮箱，同时是登录账号 */
+  email: string
+  /** 昵称；注册时留空则为空串 */
+  display_name: string
+  /** 界面上优先显示的名字：有昵称用昵称，没有就用邮箱 @ 之前那一段 */
+  name: string
+  is_admin: boolean
+  created_at: string
+}
+
+/** `GET /api/auth/me` 的响应。未登录时 `user` 为 null。 */
+export interface MeResponse {
+  user: UserInfo | null
+}
+
+// ── 个人书架 ────────────────────────────────────────────────────────────
+
+/** 阅读状态。与后端 `user_books.STATUSES` 一一对应。 */
+export type ShelfStatus = 'wish' | 'reading' | 'done'
+
+/**
+ * 可见性。
+ *
+ * - `private`  只有自己看得见
+ * - `pending`  已申请公开，在管理员的待审队列里
+ * - `public`   已进公共书架，所有人检索得到
+ * - `rejected` 管理员驳回；`review_note` 里是原因
+ */
+export type ShelfVisibility = 'private' | 'pending' | 'public' | 'rejected'
+
+/**
+ * 联网检索回来的一本书（候选）。
+ *
+ * 前端把用户选中的那条**原样回传**给加书接口，所以这个形状同时是入参。
+ * `source_key` 是数据源里的稳定标识（OpenLibrary 的 work id），
+ * 加书时靠它去补简介、也靠它去重。
+ */
+export interface BookCandidate {
+  title: string
+  author: string
+  year: string
+  cover_url: string
+  source_key: string
+  /** 数据源标识，目前只有 openlibrary */
+  source: string
+  summary: string
+  subjects: string[]
+}
+
+/** 联网检索的结果。`error` 非空表示"这次没搜成"，给人看的原因。 */
+export interface BookSearchResponse {
+  results: BookCandidate[]
+  error: string
+}
+
+/** 书架上的一本书。 */
+export interface ShelfBook {
+  id: number
+  title: string
+  author: string
+  year: string
+  cover_url: string
+  source_key: string
+  summary: string
+  subjects: string[]
+  /** 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 */
+  guide: string
+  /** 导读是否已生成。为 false 时前端值得过几秒再拉一次 */
+  has_guide: boolean
+  status: ShelfStatus
+  visibility: ShelfVisibility
+  /** 驳回原因，只有 `visibility === 'rejected'` 时有内容 */
+  review_note: string
+  created_at: string
+  updated_at: string
+}
+
+/** 我的书架。`counts` 是各状态下的册数，外加一个 `total`。 */
+export interface ShelfResponse {
+  total: number
+  counts: Record<string, number>
+  books: ShelfBook[]
+}
+
+// ── 后台管理 ────────────────────────────────────────────────────────────
+
+/**
+ * 数据总览。
+ *
+ * 前半段是库层面的计数（用户、问答、书架、待审…），后半段是**语料规模**——
+ * 后者由路由层从内容加载器补上，不是数据库里的东西。
+ */
+export interface AdminOverview {
+  users: number
+  admins: number
+  history: number
+  history_today: number
+  traits: number
+  shelf_books: number
+  shelf_books_today: number
+  pending_review: number
+  public_contributions: number
+  sessions: number
+  db_bytes: number
+  tables: number
+  corpus_books: number
+  corpus_chapters: number
+  corpus_categories: string[]
+  db_path: string
+  server_time: string
+}
+
+/** 用户管理列表里的一行。 */
+export interface AdminUserRow {
+  id: number
+  email: string
+  name: string
+  display_name: string
+  is_admin: boolean
+  created_at: string
+  /** 这个人的藏书数 */
+  shelf_books: number
+}
+
+/** 待审队列里的一行：用户申请公开的一本书。 */
+export interface ReviewRow {
+  /** 用户书架里那条记录的 id */
+  id: number
+  user_id: number
+  user_email: string
+  title: string
+  author: string
+  year: string
+  cover_url: string
+  summary: string
+  subjects: string[]
+  guide: string
+  has_guide: boolean
+  visibility: ShelfVisibility
+  review_note: string
+  created_at: string
+}
+
+/** 公共书架里由用户贡献的一本。 */
+export interface PublicBookRow {
+  id: number
+  /** 公共书号，形如 `u01`——`u` 前缀把它与内置的 `01`…`15` 区分开 */
+  book_id: string
+  title: string
+  author: string
+  category: string
+  from_user_id: number | null
+  created_at: string
+}
+
+/** 数据库里的一张表。 */
+export interface DbTable {
+  name: string
+  rows: number
+}
+
+/** 一列的结构。`protected` 为真表示不允许在这个界面直接改（如密码哈希）。 */
+export interface DbColumn {
+  name: string
+  type: string
+  notnull: boolean
+  pk: boolean
+  protected: boolean
+}
+
+/**
+ * 一张表的结构与当前页数据。
+ *
+ * `rows` 里每行都带 `_rowid`——它是改/删时的定位依据。用 rowid 而不是主键，
+ * 是因为有些表（如 `meta`）的主键是 TEXT，而 `public_books` 的 `book_id`
+ * 与自增 id 也不是一回事。
+ */
+export interface DbTableData {
+  table: string
+  columns: DbColumn[]
+  total: number
+  rows: Record<string, unknown>[]
+}
+
+/** 一条后台操作痕迹。 */
+export interface AuditEntry {
+  id: number
+  user_id: number | null
+  action: string
+  target: string
+  detail: string
+  created_at: string
 }

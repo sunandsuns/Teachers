@@ -6,10 +6,12 @@
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from ..deps import current_user
 from ..services import qa
+from ..services.auth import User
 from ..services.llm import EndpointOverride
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
@@ -134,7 +136,7 @@ class ProbeResponse(BaseModel):
 
 
 @router.post("", response_model=AskResponse)
-def ask(request: AskRequest):
+def ask(request: AskRequest, user: Optional[User] = Depends(current_user)):
     """
     智能问答：
     1. 本地 TF-IDF 检索相关经典段落
@@ -162,6 +164,7 @@ def ask(request: AskRequest):
         lang=request.lang,
         history=[(turn.question, turn.answer) for turn in request.history],
         conversation_id=request.conversation_id,
+        user_id=user.id if user else None,
     )
     return AskResponse(
         question=result.question,
@@ -175,7 +178,7 @@ def ask(request: AskRequest):
 
 
 @router.post("/plan", response_model=AskPlanResponse)
-def plan(request: AskPlanRequest):
+def plan(request: AskPlanRequest, user: Optional[User] = Depends(current_user)):
     """只做检索与组装提示词，把 messages 交给浏览器去调云模型。
 
     为什么要有这条：WorkBuddy 的免密钥模型按**浏览器 Origin** 鉴权
@@ -192,6 +195,7 @@ def plan(request: AskPlanRequest):
         lang=request.lang,
         history=[(turn.question, turn.answer) for turn in request.history],
         conversation_id=request.conversation_id,
+        user_id=user.id if user else None,
     )
     return AskPlanResponse(
         question=result.question,
@@ -203,11 +207,14 @@ def plan(request: AskPlanRequest):
 
 
 @router.post("/save", response_model=AskResponse)
-def save(request: AskSaveRequest):
+def save(request: AskSaveRequest, user: Optional[User] = Depends(current_user)):
     """把浏览器侧生成好的回答补记进历史记录。
 
     云模型那条路的回答不经过后端，不送回来的话「回响」里会缺一整段对话。
     存不进去（库不可用）照样返回 200，只是 ``history_id`` 为 null。
+
+    这条记录归**当前登录的人**——不带上用户身份，云模型那条路存下来的问答
+    会落进"匿名那一份"，登录用户在「回响」里就看不到自己刚问过的那段。
     """
     result = qa.save_answer(
         request.question,
@@ -215,6 +222,7 @@ def save(request: AskSaveRequest):
         model=request.model or None,
         retrieved_count=request.retrieved_count,
         conversation_id=request.conversation_id,
+        user_id=user.id if user else None,
     )
     return AskResponse(
         question=result.question,

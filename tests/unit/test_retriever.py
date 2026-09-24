@@ -1,7 +1,26 @@
 """retriever 单元测试：分词、索引、检索排序与降级。"""
 
+import pytest
+
 from server.services import retriever as retriever_module
 from server.services.retriever import TFIDFRetriever, _tokenize
+
+
+@pytest.fixture(autouse=True)
+def restore_retriever_singleton():
+    """用完把**全局**索引恢复原状。
+
+    ``build_retriever_from_loader(_StubLoader())`` 会把一个**只有两本书的桩索引**
+    装进模块级单例。单跑 ``tests/unit`` 时没人察觉；与 ``tests/integration`` 一起跑
+    时就会出事：后者的 ``client`` 夹具确实持有真实索引对象（session 级、早先建好的），
+    但应用内部走的是 ``ensure_retriever()`` 这个单例——于是检索全线召回为空，
+    报出来的症状却是"检索结果里没有片段""召回里没有一本对口古籍"，离病因很远。
+
+    这里**不重建真实索引**（那要花 1.4s，而本文件有十几个用例）：只把单例清掉，
+    让下一次 ``ensure_retriever()`` 自己按需重建。
+    """
+    yield
+    retriever_module.reset_retriever()
 
 
 def build_small_retriever() -> TFIDFRetriever:

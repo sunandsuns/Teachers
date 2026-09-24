@@ -1,15 +1,27 @@
 import type { ReactNode } from 'react'
 import { useI18n } from '../i18n'
+import EmptyPrimitive from './ui/Empty'
+import Spinner from './ui/Spinner'
+
+/**
+ * 三态（载入 / 出错 / 空）的统一出口。
+ *
+ * 这一层是**兼容层**：它把 ui/ 里的原子包成项目里沿用了很久的那套名字
+ * （`Loading` / `ErrorBox` / `Empty`），九个页面都在用。这样重做原子层
+ * 不必同时改九处调用点，也让"要不要换"变成一个可以分页决定的事。
+ *
+ * 新写的页面建议直接用 `components/ui` 里的原子，那里能传图标、提示与出口。
+ */
 
 /** 载入态：转圈 + 文案。原来只有一段 animate-pulse 文字，看不出"在加载"还是"卡住了"。 */
 export function Loading({ text }: { text?: string }) {
   const { t } = useI18n()
   return (
-    <div className="flex flex-col items-center justify-center gap-3 py-20 text-ink-500">
-      <span
-        aria-hidden="true"
-        className="h-5 w-5 animate-spin rounded-full border-2 border-paper-300 border-t-cinnabar-500"
-      />
+    <div
+      role="status"
+      className="flex flex-col items-center justify-center gap-3 py-20 text-ink-500"
+    >
+      <Spinner />
       <span className="text-sm">{text ?? t('status.loading')}</span>
     </div>
   )
@@ -18,7 +30,10 @@ export function Loading({ text }: { text?: string }) {
 /** 错误提示：用浅朱砂底而不是 5% 透明度的实色叠加，后者在宣纸底色上几乎看不出来。 */
 export function ErrorBox({ message }: { message: string }) {
   return (
-    <div className="my-6 flex items-start gap-2.5 rounded-lg border border-cinnabar-200 bg-cinnabar-50 px-4 py-3 animate-fade-in">
+    <div
+      role="alert"
+      className="my-6 flex items-start gap-2.5 rounded-lg border border-cinnabar-200 bg-cinnabar-50 px-4 py-3 animate-fade-in"
+    >
       <svg
         aria-hidden="true"
         viewBox="0 0 20 20"
@@ -36,11 +51,7 @@ export function ErrorBox({ message }: { message: string }) {
   )
 }
 
-/** 空态。 */
+/** 空态。只收一段话的简化版；要图标、提示与出口请直接用 `ui/Empty`。 */
 export function Empty({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <p className="font-serif text-base text-ink-500">{children}</p>
-    </div>
-  )
+  return <EmptyPrimitive title={children} />
 }

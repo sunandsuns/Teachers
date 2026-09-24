@@ -4,7 +4,7 @@
 覆盖：健康检查与语料规模 → 前端页面可编译 → vite 代理转发 →
 寻章检索命中古籍 → 原典分块读取 → 求教（含 LLM 状态）→ 回响（历史记录）→
 画像（形象与归纳）→ 历史人物名录与画像文件 → 阅读页章节链路 → 感悟页筛选 →
-知识库（双链与关系图谱）→ 错误路径。
+知识库（双链与关系图谱）→ 账号 / 我的书架 / 后台管理（含按用户隔离）→ 错误路径。
 
 所有请求都走 vite 代理（``localhost:5173``），即浏览器实际使用的那条链路；
 后端 API 直连只用于 A 段，以便区分"后端故障"与"代理故障"。
@@ -12,7 +12,9 @@
 注意：本机 Vite 绑定 IPv6，且环境 http_proxy 会拦截 127.0.0.1，
 因此浏览器侧一律用 localhost；后端 API 直连用 127.0.0.1。
 """
+import http.cookiejar
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -46,13 +48,92 @@ def wait(url, label, tries=40):
     raise SystemExit("[FAIL] %s 未就绪: %s" % (label, url))
 
 
+def read_env_file():
+    """读项目根目录的 ``.env``（``run.py`` 加载的就是它）。
+
+    只为取管理员凭据。**不 import 后端模块**：那会把整个应用连同索引一起拉起来，
+    而冒烟脚本的定位是"从外面敲门"，它不该对被测进程的内部结构有任何依赖。
+    """
+    values = {}
+    path = Path(__file__).resolve().parent / ".env"
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+class Session:
+    """带 cookie 的会话。
+
+    登录状态靠 httpOnly cookie 传递，而 ``urllib`` 默认**不**保存 cookie——
+    用裸 ``opener`` 发两次请求，第二次就是未登录。这个类把 cookie jar 与
+    "发一次 JSON 请求"这两件事包在一起，各段只关心路径与载荷。
+    """
+
+    def __init__(self):
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPCookieProcessor(self.jar),
+        )
+
+    def call(self, path, method="GET", payload=None, timeout=30):
+        """返回 ``(状态码, 解析后的响应体)``。**HTTP 错误不抛**。
+
+        4xx/5xx 在这个脚本里是**被断言的对象**（匿名 401、非管理员 403、
+        保护表 400），抛异常就没法检查它们了。
+        """
+        data = None if payload is None else json.dumps(payload).encode()
+        request = urllib.request.Request(
+            FRONT + path, data=data, method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with self.opener.open(request, timeout=timeout) as resp:
+                body = resp.read().decode()
+                return resp.status, (json.loads(body) if body else None)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            try:
+                return exc.code, json.loads(body)
+            except ValueError:
+                return exc.code, body
+
+    def clear(self):
+        """丢掉全部 cookie，回到匿名。"""
+        self.jar.clear()
+
+
+def fetch_module(path):
+    """取一个前端模块的**转译结果**，返回 ``(状态码, 正文)``。
+
+    ``Session.call`` 会把响应当 JSON 解析，而 vite 转译出来的是 JS 文本，所以另起一个。
+    这里问的是"浏览器打开这个页面时会不会白屏"：vite 是按需转译的，
+    模块里但凡有个写错的 import 或 JSX 语法问题，这里就会拿到 500。
+    """
+    try:
+        with opener.open(FRONT + path, timeout=30) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
 def main():
     ok = True
+    total = 0
+    failed = 0
 
     def check(label, cond, extra=""):
-        nonlocal ok
+        nonlocal ok, total, failed
+        total += 1
         if not cond:
             ok = False
+            failed += 1
         print("  [%s] %s %s" % ("PASS" if cond else "FAIL", label, extra))
 
     print("=== A. 后端直连 127.0.0.1:8000 ===")
@@ -82,6 +163,26 @@ def main():
     check("含寻章路由 /search", "/search" in app)
     check("含画像路由 /profile", "/profile" in app)
     check("含知识库路由 /knowledge", "/knowledge" in app)
+    check("含我的书架路由 /shelf", "/shelf" in app)
+    check("含后台路由 /admin", "/admin" in app)
+    check("含登录路由 /login", "/login" in app)
+
+    # 路由"已声明"和"页面能打开"是两件事：App.tsx 里写了 lazy(() => import(...))，
+    # 就算被 import 的那个文件编译不过，App.tsx 依然"含 /shelf"。所以这里把新页面
+    # 逐个拉一遍——vite 是按需转译的，能拿到 200 就说明这个模块真的编得过。
+    for module in (
+        "/src/pages/Shelf.tsx",
+        "/src/pages/Admin.tsx",
+        "/src/pages/Login.tsx",
+        "/src/pages/Register.tsx",
+        "/src/features/auth/AuthPage.tsx",
+        "/src/features/shelf/ShelfPage.tsx",
+        "/src/features/shelf/BookFinder.tsx",
+        "/src/features/admin/AdminPage.tsx",
+        "/src/features/admin/DatabasePanel.tsx",
+    ):
+        code, body = fetch_module(module)
+        check("vite 能转译 %s" % module, code == 200, "" if code == 200 else code)
 
     print()
     print("=== C. 经 vite 代理访问后端（前端真实链路）===")
@@ -519,6 +620,206 @@ def main():
           json.loads(get(FRONT + "/api/kb/search"))[0]["degree"] > 0)
 
     print()
+    print("=== L. 账号 / 我的书架 / 后台管理 ===")
+    # 这一段走的是完整的一条业务链：
+    #   注册 → 加书到自己的书架 → 申请公开 → 管理员批准 → 进公共书架 → 检索得到
+    # 全部用**手造的候选**（source_key 为空），所以不依赖 OpenLibrary 此刻是否可达：
+    # 加书只在 source_key 非空时才去补详情。
+    stamp = str(int(time.time()))
+    alice = Session()
+    bob = Session()
+
+    email = "smoke+%s@example.com" % stamp
+    code, created = alice.call(
+        "/api/auth/register", "POST",
+        {"email": email, "password": "smokepass123", "display_name": "冒烟"},
+    )
+    check("注册返回 201", code == 201, code)
+    check("注册即登录（cookie 已种下）",
+          alice.call("/api/auth/me")[1]["user"] is not None)
+    check("响应里没有密码字段",
+          not ({"password", "password_hash", "salt"} & set(created or {})),
+          sorted(created or {}))
+
+    code, dup = alice.call(
+        "/api/auth/register", "POST",
+        {"email": email, "password": "smokepass123"},
+    )
+    check("重复邮箱被拒（400）", code == 400, code)
+
+    code, _ = alice.call(
+        "/api/auth/register", "POST",
+        {"email": "smoke+short@example.com", "password": "123"},
+    )
+    check("密码太短被拒（400）", code == 400, code)
+
+    anon = Session()
+    check("匿名访问 /api/auth/me 得到 null 而非 401",
+          anon.call("/api/auth/me")[1]["user"] is None)
+
+    code, _ = anon.call("/api/shelf")
+    check("匿名读我的书架返回 401", code == 401, code)
+    code, _ = anon.call("/api/admin/overview")
+    check("匿名访问后台返回 401", code == 401, code)
+
+    # 加一本不存在于公共语料里的书，方便后面验证"检索能命中自己的书架"
+    CANDIDATE = {
+        "title": "冒烟测试之书",
+        "author": "冒烟作者",
+        "year": "2026",
+        "cover_url": "",
+        "source_key": "",
+        "source": "openlibrary",
+        "summary": "这本书只为验证链路而存在。",
+        "subjects": ["测试"],
+    }
+    code, book = alice.call("/api/shelf/books", "POST", {**CANDIDATE, "with_guide": False})
+    check("加书返回 201", code == 201, code)
+    check("加书立刻返回（导读不挡路）", isinstance(book, dict) and book.get("id"), book)
+    book_id = (book or {}).get("id")
+
+    shelf = alice.call("/api/shelf")[1]
+    check("我的书架里有这本书",
+          any(b["id"] == book_id for b in shelf["books"]), shelf["total"])
+    check("初始可见性是 private", book.get("visibility") == "private", book.get("visibility"))
+
+    hits = alice.call(
+        "/api/search?q=" + urllib.parse.quote("冒烟测试之书") + "&kind=shelf"
+    )[1]["results"]
+    check("检索能命中自己的书架（kind=shelf）",
+          any(x["kind"] == "shelf" for x in hits), [x["source"] for x in hits])
+
+    mixed = alice.call(
+        "/api/search?q=" + urllib.parse.quote("冒烟测试之书") + "&top_k=10"
+    )[1]["results"]
+    check("不带 kind 时私人书架也在检索范围内",
+          any(x["kind"] == "shelf" for x in mixed), len(mixed))
+
+    other = bob.call(
+        "/api/auth/register", "POST",
+        {"email": "smoke+other+%s@example.com" % stamp, "password": "smokepass123"},
+    )
+    check("第二个账号注册成功", other[0] == 201, other[0])
+    other_shelf = bob.call("/api/shelf")[1]
+    check("别人的书架里看不到我的书", other_shelf["total"] == 0, other_shelf["total"])
+    code, _ = bob.call("/api/shelf/books/%s" % book_id)
+    check("越权读别人的书返回 404（而不是 403，免得泄露存在性）", code == 404, code)
+    code, _ = bob.call("/api/admin/overview")
+    check("普通用户访问后台返回 403", code == 403, code)
+
+    # 历史记录的归属：用 /api/ask/save 直接记账，不必真的调一次模型
+    alice.call("/api/ask/save", "POST", {
+        "question": "冒烟问题：这本书讲了什么？",
+        "answer": "冒烟回答。",
+        "model": "smoke",
+        "retrieved_count": 1,
+    })
+    mine = alice.call("/api/history")[1]
+    check("登录用户的回响里有自己的记录",
+          any("冒烟问题" in i["question"] for i in mine["items"]), mine["total"])
+    # 匿名桶**不是空的**：登录功能上线前留下的问答、以及本次冒烟前面几段匿名求教的
+    # 记录，user_id 都是 NULL，本来就归在匿名那一份里。所以这里不能断言"为空"——
+    # 那是在断言"历史被清空了"，而不是在断言"隔离生效了"。要看的是 alice 那条有没有漏过来。
+    anon_items = anon.call("/api/history")[1]["items"]
+    check("匿名看不到登录用户的记录",
+          not any("冒烟问题" in i["question"] for i in anon_items),
+          "匿名桶 %d 条，均非 alice 的记录" % len(anon_items))
+    # bob 是本次新注册的账号，名下一条记录都没有，这里可以直接断言为空。
+    check("别的用户看不到我的记录",
+          bob.call("/api/history")[1]["items"] == [])
+
+    alice.call("/api/shelf/books/%s/submit" % book_id, "POST")
+    pending = alice.call("/api/shelf/books/%s" % book_id)[1]
+    check("申请公开后可见性为 pending", pending["visibility"] == "pending",
+          pending["visibility"])
+
+    env = read_env_file()
+    admin_email = os.environ.get("RSDS_ADMIN_EMAIL") or env.get(
+        "RSDS_ADMIN_EMAIL", "admin@renshengdaoshi.local")
+    admin_password = os.environ.get("RSDS_ADMIN_PASSWORD") or env.get(
+        "RSDS_ADMIN_PASSWORD", "admin123456")
+    admin = Session()
+    code, _ = admin.call("/api/auth/login", "POST",
+                         {"email": admin_email, "password": admin_password})
+    check("内置管理员能登录", code == 200, "%s / %s" % (code, admin_email))
+
+    if code == 200:
+        overview = admin.call("/api/admin/overview")[1]
+        check("总览含今日计数", isinstance(overview.get("history_today"), int), overview)
+        check("总览含语料规模", overview.get("corpus_books") == 15, overview.get("corpus_books"))
+        check("总览含待审数", isinstance(overview.get("pending_review"), int),
+              overview.get("pending_review"))
+
+        queue = admin.call("/api/admin/review")[1]
+        check("待审队列里有刚提交的那本书",
+              any(r["id"] == book_id for r in queue), len(queue))
+        check("待审项带提交人邮箱",
+              any(r["user_email"] == email for r in queue),
+              [r["user_email"] for r in queue])
+
+        code, reviewed = admin.call(
+            "/api/admin/review/%s" % book_id, "POST",
+            {"approve": True, "note": "", "category": "测试"},
+        )
+        check("批准返回 200", code == 200, code)
+        check("批准后可见性为 public", reviewed.get("visibility") == "public",
+              reviewed.get("visibility"))
+
+        public = admin.call("/api/admin/public")[1]
+        check("公共书架里有这条贡献",
+              any(b["title"] == "冒烟测试之书" for b in public),
+              [b["book_id"] for b in public])
+        check("贡献书号带 u 前缀（不与内置书号撞车）",
+              all(b["book_id"].startswith("u") for b in public if b["title"] == "冒烟测试之书"))
+
+        # 批准之后，**匿名**也应该检索得到——它已经进了公共书架
+        public_hit = anon.call(
+            "/api/search?q=" + urllib.parse.quote("冒烟测试之书") + "&top_k=10"
+        )[1]["results"]
+        check("批准后匿名也能检索到这本书", bool(public_hit), len(public_hit))
+
+        users = admin.call("/api/admin/users")[1]
+        check("用户列表含刚注册的账号",
+              any(u["email"] == email for u in users), len(users))
+        check("用户列表标出管理员",
+              any(u["is_admin"] for u in users), [u["email"] for u in users])
+
+        tables = admin.call("/api/admin/db/tables")[1]
+        names = {t["name"] for t in tables}
+        check("数据库表列表含 users / user_books / public_books",
+              {"users", "user_books", "public_books"} <= names, sorted(names))
+        check("表列表不暴露 sqlite 内部表",
+              not any(n.startswith("sqlite_") for n in names), sorted(names))
+
+        code, users_table = admin.call("/api/admin/db/tables/users?limit=5")
+        check("能读 users 表结构", code == 200 and bool(users_table["columns"]), code)
+        protected = {c["name"] for c in users_table["columns"] if c["protected"]}
+        check("密码哈希与 salt 标为受保护",
+              {"password_hash", "salt"} <= protected, sorted(protected))
+        check("读表不会把密码哈希藏起来（管理员看得到，但不能改）",
+              "password_hash" in {c["name"] for c in users_table["columns"]})
+
+        code, err = admin.call(
+            "/api/admin/db/tables/users/rows", "POST",
+            {"email": "x@example.com", "password_hash": "x", "salt": "y"},
+        )
+        check("不允许从数据库界面直接插入用户", code == 400, code)
+        code, err = admin.call("/api/admin/db/tables/nope", "GET")
+        check("未知表返回 400 而非 500", code == 400, code)
+
+        audit = admin.call("/api/admin/audit")[1]
+        actions = {a["action"] for a in audit}
+        check("审计里有刚才那次批准", "approve_book" in actions, sorted(actions))
+        check("审计记下了操作人", all(a["user_id"] for a in audit), audit[:2])
+
+    code, _ = alice.call("/api/auth/logout", "POST")
+    check("登出返回 200", code == 200, code)
+    check("登出后 /api/auth/me 为 null",
+          alice.call("/api/auth/me")[1]["user"] is None)
+    code, _ = alice.call("/api/shelf")
+    check("登出后读我的书架回到 401", code == 401, code)
+
+    print()
     print("=== K. 错误路径 ===")
     # 未知 id 必须是干净 404；返回 500 或（更糟）回退成前端 HTML 都算故障：
     # 前端 fetch 会拿到一段 HTML 再报 JSON 解析错误，排查起来非常痛苦。
@@ -540,7 +841,10 @@ def main():
     check("未知接口返回 404 而非前端页面", code == 404, code)
 
     print()
-    print("=== 结论 ===", "全部通过" if ok else "存在失败项")
+    # 把项数打出来：README 里写着"API 层 N 项"，那个数字靠人肉维护迟早会飘，
+    # 让它自己报数，对不上了一眼就能看出来。
+    print("=== 结论 ===", "全部通过" if ok else "存在失败项",
+          "（共 %d 项，失败 %d 项）" % (total, failed))
     return 0 if ok else 1
 
 

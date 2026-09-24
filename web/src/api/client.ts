@@ -5,14 +5,21 @@
 
 import { activeLang, tCurrent, type Lang } from '../i18n/messages'
 import type {
+  AdminOverview,
+  AdminUserRow,
   AskPlan,
   AskResponse,
   AskStatus,
+  AuditEntry,
   Avatar,
+  BookCandidate,
+  BookSearchResponse,
   BookSummary,
   ChapterDetail,
   ChapterSummary,
   ChatTurn,
+  DbTable,
+  DbTableData,
   DeleteResult,
   DeleteTargets,
   ExtractResult,
@@ -25,13 +32,20 @@ import type {
   KbNode,
   KbNodeDetail,
   LLMEndpoint,
+  MeResponse,
   ProbeResult,
   ProfileResponse,
+  PublicBookRow,
+  ReviewRow,
   SearchKind,
   SearchResponse,
+  ShelfBook,
+  ShelfResponse,
+  ShelfStatus,
   SourceChunk,
   ThemeListResponse,
   TopicListResponse,
+  UserInfo,
 } from './types'
 
 // 类型从这里一并转出，调用方只认 '../api/client' 这一个入口
@@ -109,6 +123,55 @@ export function clearApiCache(): void {
   getCache.clear()
 }
 
+/**
+ * 接口报错。
+ *
+ * 后端有三种 `detail` 形状，之前只认第一种（字符串），另外两种会被
+ * `String(obj)` 变成 `[object Object]` 直接显示给用户：
+ *
+ * 1. `detail: "文本"`          —— 普通的 `HTTPException(400, "…")`
+ * 2. `detail: {code, message}` —— 带机器可读代号（认证、书架、后台）
+ * 3. `detail: [{loc, msg}]`    —— Pydantic 校验失败（422）
+ *
+ * 把 `code` 单独留出来，是为了让调用方能对**特定**错误分支（比如
+ * `bad_credentials` 时把光标放回密码框），而不是去比中文文案——文案随语言变。
+ */
+export class ApiError extends Error {
+  readonly status: number
+  /** 机器可读的代号；后端没给就是空串 */
+  readonly code: string
+
+  constructor(message: string, status: number, code = '') {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
+/** 把后端返回的 `detail` 收成一句人话。 */
+function errorMessage(detail: unknown, status: number): { message: string; code: string } {
+  const fallback = tCurrent('error.requestFailed', { status })
+  if (typeof detail === 'string' && detail) return { message: detail, code: '' }
+  if (detail && typeof detail === 'object') {
+    if (Array.isArray(detail)) {
+      // Pydantic 的校验错误：取第一条的 msg，它已经是给程序员看的短句
+      const first = detail[0] as { msg?: unknown } | undefined
+      const msg = typeof first?.msg === 'string' ? first.msg : ''
+      return { message: msg || fallback, code: 'validation' }
+    }
+    const boxed = detail as { code?: unknown; message?: unknown; detail?: unknown }
+    const message =
+      (typeof boxed.message === 'string' && boxed.message) ||
+      // FastAPI 的 HTTPException 里再包一层 detail 的写法
+      (typeof boxed.detail === 'string' && boxed.detail) ||
+      ''
+    const code = typeof boxed.code === 'string' ? boxed.code : ''
+    return { message: message || fallback, code }
+  }
+  return { message: fallback, code: '' }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   const isGet = method === 'GET'
@@ -126,15 +189,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const doing = (async () => {
     const resp = await fetch(`${BASE}${path}`, {
+      // cookie 里存着登录凭据。同源下 fetch 的默认值就是 same-origin，
+      // 但写出来更清楚：这个前端**依赖**带上 cookie 才能记住登录状态。
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       ...init,
     })
     if (!resp.ok) {
-      const detail = await resp.json().catch(() => null)
-      // 后端给了 detail 就用它（那是更具体的诊断信息），没给才用这句兜底。
+      const body = await resp.json().catch(() => null)
+      // 后端给了 detail 就用它（那是更具体的诊断信息），没给才用那句兜底。
       // 这里在 React 之外，只能读"当前语言"而不是 hook。
-      const message = detail?.detail ?? tCurrent('error.requestFailed', { status: resp.status })
-      throw new Error(message)
+      const { message, code } = errorMessage(body?.detail, resp.status)
+      throw new ApiError(message, resp.status, code)
     }
     const value = (await resp.json()) as T
     if (ttl > 0) {
@@ -373,4 +439,146 @@ export const api = {
   /** 按名字找节点。空查询返回关联最多的若干节点。 */
   kbSearch: (q = '', limit = 20) =>
     request<KbNode[]>(`/kb/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+
+  // ── 账号 ──────────────────────────────────────────────────────────────
+  //
+  // 「没登录」不是错误：`me` 返回 `{user: null}`，匿名状态照常读、照常搜。
+  // 只有注册/登录这些**动作**失败才会抛错（密码太短、邮箱重复、密码不对…）。
+
+  /** 当前用户。应用启动时调一次，决定顶栏显示"登录"还是用户名。 */
+  me: () => request<MeResponse>('/auth/me'),
+
+  /** 注册并**直接登录**（后端会在响应里种下 cookie）。 */
+  register: (email: string, password: string, displayName = '') =>
+    request<UserInfo>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, display_name: displayName }),
+    }),
+
+  login: (email: string, password: string) =>
+    request<UserInfo>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+
+  logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+
+  /** 改自己的密码。成功后**全部会话失效**，前端要当作已登出处理。 */
+  changePassword: (oldPassword: string, newPassword: string) =>
+    request<{ ok: boolean; message: string }>('/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    }),
+
+  // ── 我的书架 ──────────────────────────────────────────────────────────
+  //
+  // 全部需要登录（未登录会收到 401）。
+
+  /** 联网检索书名/作者，拿回候选列表供用户挑。**只搜不入库。** */
+  searchBooks: (title: string, author = '', limit = 6) =>
+    request<BookSearchResponse>('/shelf/search', {
+      method: 'POST',
+      body: JSON.stringify({ title, author, limit }),
+    }),
+
+  listShelf: (status?: ShelfStatus) =>
+    request<ShelfResponse>(`/shelf${status ? `?status=${status}` : ''}`),
+
+  /**
+   * 把选中的候选加进我的书架。
+   *
+   * 立刻返回——导读是后端**后台**生成的，所以刚加完 `has_guide` 是 false，
+   * 值得过几秒再拉一次列表。
+   */
+  addShelfBook: (candidate: BookCandidate, status: ShelfStatus = 'wish', withGuide = true) =>
+    request<ShelfBook>('/shelf/books', {
+      method: 'POST',
+      body: JSON.stringify({ ...candidate, status, with_guide: withGuide }),
+    }),
+
+  getShelfBook: (id: number) => request<ShelfBook>(`/shelf/books/${id}`),
+
+  updateShelfBook: (id: number, patch: { status?: ShelfStatus; title?: string; author?: string }) =>
+    request<ShelfBook>(`/shelf/books/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  removeShelfBook: (id: number) =>
+    request<{ ok: boolean }>(`/shelf/books/${id}`, { method: 'DELETE' }),
+
+  /** 申请把这本放进公共书架，等管理员审核。 */
+  submitShelfBook: (id: number) =>
+    request<ShelfBook>(`/shelf/books/${id}/submit`, { method: 'POST' }),
+
+  /** 撤回公开申请。 */
+  cancelShelfBook: (id: number) =>
+    request<ShelfBook>(`/shelf/books/${id}/cancel`, { method: 'POST' }),
+
+  // ── 后台管理 ──────────────────────────────────────────────────────────
+  //
+  // 全部需要管理员身份。非管理员调用会收到 403。
+
+  adminOverview: () => request<AdminOverview>('/admin/overview'),
+
+  adminUsers: () => request<AdminUserRow[]>('/admin/users'),
+
+  /** 授予或取消管理员。**不能取消自己**（会把自己锁在门外）。 */
+  adminSetAdmin: (userId: number, isAdmin: boolean) =>
+    request<AdminUserRow>(`/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_admin: isAdmin }),
+    }),
+
+  adminResetPassword: (userId: number, newPassword: string) =>
+    request<{ ok: boolean }>(`/admin/users/${userId}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
+
+  adminDeleteUser: (userId: number) =>
+    request<{ ok: boolean }>(`/admin/users/${userId}`, { method: 'DELETE' }),
+
+  /** 待审队列：用户申请公开的书，先进先出。 */
+  adminReviewQueue: () => request<ReviewRow[]>('/admin/review'),
+
+  /** 批准（写进公共书架）或驳回（记下原因）。 */
+  adminReview: (bookId: number, approve: boolean, note = '', category = '') =>
+    request<ReviewRow>(`/admin/review/${bookId}`, {
+      method: 'POST',
+      body: JSON.stringify({ approve, note, category }),
+    }),
+
+  adminPublicBooks: () => request<PublicBookRow[]>('/admin/public'),
+
+  /** 从公共书架撤下一本贡献书；原作者的可见性退回 private。 */
+  adminRemovePublic: (publicId: number) =>
+    request<{ ok: boolean }>(`/admin/public/${publicId}`, { method: 'DELETE' }),
+
+  adminTables: () => request<DbTable[]>('/admin/db/tables'),
+
+  adminTable: (table: string, limit = 50, offset = 0) =>
+    request<DbTableData>(
+      `/admin/db/tables/${encodeURIComponent(table)}?limit=${limit}&offset=${offset}`,
+    ),
+
+  adminUpdateRow: (table: string, rowid: number, values: Record<string, unknown>) =>
+    request<{ ok: boolean }>(
+      `/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}`,
+      { method: 'PATCH', body: JSON.stringify(values) },
+    ),
+
+  adminInsertRow: (table: string, values: Record<string, unknown>) =>
+    request<{ ok: boolean; rowid: number }>(
+      `/admin/db/tables/${encodeURIComponent(table)}/rows`,
+      { method: 'POST', body: JSON.stringify(values) },
+    ),
+
+  adminDeleteRow: (table: string, rowid: number) =>
+    request<{ ok: boolean }>(
+      `/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}`,
+      { method: 'DELETE' },
+    ),
+
+  adminAudit: (limit = 50) => request<AuditEntry[]>(`/admin/audit?limit=${limit}`),
 }

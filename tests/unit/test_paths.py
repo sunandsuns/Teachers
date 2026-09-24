@@ -187,6 +187,30 @@ class TestResolveDataDir:
 
         assert paths.resolve_data_dir() == (tmp_path / "hopeless").resolve()
 
+    def test_survives_a_host_with_home_but_no_localappdata(self, tmp_path, monkeypatch):
+        """有家目录、但没有 ``LOCALAPPDATA`` 的机器上同样不能抛异常。
+
+        这条比"无家目录"那条更阴，因为它**看起来**一切正常：家目录取得到，
+        不会走那条兜底分支，于是异常落在中间那行上。真实事故是少写了一对
+        括号——``/`` 的优先级高于 ``+``，``Path.home() / "." + "renshengdaoshi"``
+        被解析成 ``(Path.home() / ".") + "renshengdaoshi"``，``Path + str`` 抛
+        ``TypeError``。它不是 ``OSError`` 的子类，逃过了当时的 except。
+
+        后果是线上**所有碰数据库的接口**（回响、画像）整片 500，只有不碰库的
+        页面还活着；而本地永远复现不出来——Windows 上 ``LOCALAPPDATA`` 有值，
+        函数第一行就返回了，那一行根本没被执行过。本用例删掉这两个变量把它
+        逼出来。
+        """
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setattr(paths, "_ensure_writable", lambda path: False)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        # 走到这里就说明没抛；落点是家目录下的隐藏目录
+        assert paths._user_data_dir() == tmp_path / ".renshengdaoshi"
+        assert paths.resolve_data_dir() is not None
+
 
 class TestResolveWebDist:
     def test_explicit_override_wins(self, tmp_path, monkeypatch):

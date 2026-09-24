@@ -184,7 +184,24 @@ class _EmptyLoader:
         return []
 
 
-def test_follow_up_carries_the_previous_question_into_search():
+@pytest.fixture
+def clean_theme_cache():
+    """用完把主题锚缓存清掉。
+
+    ``_EmptyLoader`` 会让 ``get_theme_rows`` 把"空主题表"写进**模块级**缓存，
+    而那个缓存只在 session 级的 ``loader`` fixture 建立时重置一次。一旦被写成
+    空，同一次 pytest 会话里后续所有测试的主题加权就全废了。
+
+    症状很隐蔽：失败的是**另一个文件**里的用例（"召回里没有一本对口古籍"），
+    而且单独跑那个文件又是绿的——只因为 loader fixture 恰好在污染之后才建立。
+    加一个新测试文件改变了 fixture 的建立时机，就会把它翻出来。
+    """
+    advice.reset_advice()
+    yield
+    advice.reset_advice()
+
+
+def test_follow_up_carries_the_previous_question_into_search(clean_theme_cache):
     """"那我具体该说什么"里没有主语也没有对象，单独检索几乎召不回东西，
     于是材料与正在聊的事无关，回答看着就是答非所问。"""
     retriever = _RecordingRetriever()
@@ -195,7 +212,7 @@ def test_follow_up_carries_the_previous_question_into_search():
     assert "朋友借钱不还" in retriever.queries[0]
 
 
-def test_first_question_is_not_diluted():
+def test_first_question_is_not_diluted(clean_theme_cache):
     """没有上文时查询就是原句，不该凭空多出东西。"""
     retriever = _RecordingRetriever()
     search_for_advice(retriever, "朋友借钱不还怎么办", loader=_EmptyLoader())

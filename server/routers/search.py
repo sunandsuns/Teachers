@@ -2,15 +2,17 @@
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from ..services.retriever import ensure_retriever
+from ..deps import current_user
+from ..services.auth import User
+from ..services.unified_search import search_all
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
-#: 来源过滤：不限 / 只看深读笔记 / 只看原典全文
-KindFilter = Literal["all", "notes", "source"]
+#: 来源过滤：不限 / 只看深读笔记 / 只看原典全文 / 只看我的书架
+KindFilter = Literal["all", "notes", "source", "shelf"]
 
 
 class SearchResponseItem(BaseModel):
@@ -37,14 +39,20 @@ class SearchResponse(BaseModel):
 async def search(
     q: str = Query(..., description="搜索关键词", min_length=1),
     top_k: int = Query(5, ge=1, le=20, description="返回结果数"),
-    kind: KindFilter = Query("all", description="来源过滤：all / notes / source"),
+    kind: KindFilter = Query("all", description="来源过滤：all / notes / source / shelf"),
+    user: Optional[User] = Depends(current_user),
 ):
-    """全文检索：在深读笔记与原典全文中搜索关键词。
+    """全文检索：在深读笔记、原典全文，以及**登录用户自己的书架**中搜索。
 
-    ``kind`` 可用于只看解读或只看经文原句。
+    ``kind`` 可用于只看解读、只看经文原句，或只看自己的书架。
+    未登录时行为与从前完全一致——只搜公共语料。
     """
-    retriever = ensure_retriever()
-    results = retriever.search(q, top_k=top_k, kind=None if kind == "all" else kind)
+    results = search_all(
+        q,
+        top_k=top_k,
+        kind=None if kind == "all" else kind,
+        user_id=user.id if user else None,
+    )
     return SearchResponse(
         query=q,
         total=len(results),

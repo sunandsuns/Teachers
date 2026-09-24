@@ -19,15 +19,26 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..deps import current_user
+from ..services.auth import User
 from ..services.history import MAX_LIMIT, get_history_store
 
 #: 一次批量删除最多接受多少个目标。见 :class:`BulkDeleteRequest`。
 MAX_BULK_TARGETS = 500
 
 router = APIRouter(prefix="/api/history", tags=["history"])
+
+
+def _owner(user: Optional[User]) -> Optional[int]:
+    """把"当前是谁"收敛成一个归属 id。
+
+    未登录时返回 ``None``——那是 :mod:`services.history` 里"匿名访客那一份"
+    的约定值（``user_id IS NULL``），不是"不过滤"。
+    """
+    return user.id if user is not None else None
 
 
 class HistoryItem(BaseModel):
@@ -138,14 +149,15 @@ def _to_item(record) -> HistoryItem:
 async def list_history(
     limit: int = Query(20, ge=1, le=MAX_LIMIT, description="本页条数"),
     offset: int = Query(0, ge=0, description="跳过的条数，用于翻页"),
+    user: Optional[User] = Depends(current_user),
 ):
-    """按时间倒序列出全部记录（平铺）。
+    """按时间倒序列出**当前这个人**的记录（平铺）。
 
     写成 ``async`` 是合适的：库就在本机，查询是微秒级的，
     不会像调用外部模型那样长时间占住事件循环。
     """
     store = get_history_store()
-    total, records = store.list(limit=limit, offset=offset)
+    total, records = store.list(user_id=_owner(user), limit=limit, offset=offset)
     return HistoryListResponse(
         available=store.available,
         error=store.error,
@@ -158,10 +170,11 @@ async def list_history(
 async def list_topics(
     limit: int = Query(20, ge=1, le=MAX_LIMIT, description="本页话题数"),
     offset: int = Query(0, ge=0, description="跳过的话题数，用于翻页"),
+    user: Optional[User] = Depends(current_user),
 ):
     """按话题聚合列出，最近活跃的在前。"""
     store = get_history_store()
-    total, topics = store.list_topics(limit=limit, offset=offset)
+    total, topics = store.list_topics(user_id=_owner(user), limit=limit, offset=offset)
     return TopicListResponse(
         available=store.available,
         error=store.error,
@@ -186,10 +199,13 @@ async def list_topic_records(
     topic_id: str,
     limit: int = Query(MAX_LIMIT, ge=1, le=MAX_LIMIT, description="本页条数"),
     offset: int = Query(0, ge=0),
+    user: Optional[User] = Depends(current_user),
 ):
     """一个话题里的全部问答，按时间正序（读起来就是一段对话）。"""
     store = get_history_store()
-    total, records = store.list_by_topic(topic_id, limit=limit, offset=offset)
+    total, records = store.list_by_topic(
+        topic_id, user_id=_owner(user), limit=limit, offset=offset
+    )
     return HistoryListResponse(
         available=store.available,
         error=store.error,
@@ -199,16 +215,18 @@ async def list_topic_records(
 
 
 @router.delete("/topics/{topic_id}", response_model=DeleteResponse)
-async def delete_topic(topic_id: str):
-    """删掉整个话题。"""
-    deleted = get_history_store().delete_topic(topic_id)
+async def delete_topic(topic_id: str, user: Optional[User] = Depends(current_user)):
+    """删掉整个话题。**只删自己的**——别人的话题在这里表现为"不存在"。"""
+    deleted = get_history_store().delete_topic(topic_id, user_id=_owner(user))
     if not deleted:
         raise HTTPException(status_code=404, detail=f"话题不存在: {topic_id}")
     return DeleteResponse(deleted=deleted)
 
 
 @router.post("/delete", response_model=DeleteResponse)
-async def delete_selected(request: BulkDeleteRequest):
+async def delete_selected(
+    request: BulkDeleteRequest, user: Optional[User] = Depends(current_user)
+):
     """按记录与话题**混合**删一批——界面上勾选删除走的就是这里。
 
     为什么是 ``POST`` 而不是 ``DELETE``：要删的东西是一份清单（记录 id 与话题 id
@@ -219,25 +237,27 @@ async def delete_selected(request: BulkDeleteRequest):
     整批失败。返回 200 与真实删掉的条数，由界面去说明结果。
     """
     return DeleteResponse(
-        deleted=get_history_store().delete_many(ids=request.ids, topics=request.topics)
+        deleted=get_history_store().delete_many(
+            ids=request.ids, topics=request.topics, user_id=_owner(user)
+        )
     )
 
 
 @router.get("/status", response_model=HistoryStatusResponse)
-async def history_status():
+async def history_status(user: Optional[User] = Depends(current_user)):
     """存储概况。**打开「回响」页时会调它，顺带触发机会式清理。**"""
-    return HistoryStatusResponse(**get_history_store().status())
+    return HistoryStatusResponse(**get_history_store().status(user_id=_owner(user)))
 
 
 @router.delete("/{record_id}", response_model=DeleteResponse)
-async def delete_history(record_id: int):
-    """删掉一条。"""
-    if not get_history_store().delete(record_id):
+async def delete_history(record_id: int, user: Optional[User] = Depends(current_user)):
+    """删掉一条。**只删自己的**。"""
+    if not get_history_store().delete(record_id, user_id=_owner(user)):
         raise HTTPException(status_code=404, detail=f"记录不存在: id={record_id}")
     return DeleteResponse(deleted=1)
 
 
 @router.delete("", response_model=DeleteResponse)
-async def clear_history():
-    """清空全部记录。"""
-    return DeleteResponse(deleted=get_history_store().clear())
+async def clear_history(user: Optional[User] = Depends(current_user)):
+    """清空**当前这个人**的记录。匿名访客清的是"无归属"的那一份。"""
+    return DeleteResponse(deleted=get_history_store().clear(user_id=_owner(user)))

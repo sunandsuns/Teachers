@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import type { LLMEndpoint } from '../api/types'
+import type { LLMEndpoint } from '../../api/types'
 
 /**
  * 用内置的默认模型、自己填的端点，还是 WorkBuddy 云模型（免密钥）。

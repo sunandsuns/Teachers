@@ -364,12 +364,16 @@ def choose_figure(
     gender: str,
     lang: str = "zh",
     router=None,
+    user_id: Optional[int] = None,
     now: Optional[float] = None,
 ) -> SelectionResult:
     """让模型从名录里挑出最像用户的那一位，并记进画像里。
 
     ``profile`` 是 :class:`~server.services.profile.ProfileStore`。传进来而不是
     在这里 get 单例，是为了让测试塞一个临时的库就能跑。
+
+    ``user_id`` 决定这份"选出来的人"记在谁名下——它和 ``traits`` 必须来自同一个人，
+    否则会把 A 的画像与 B 的选人混在一起。
     """
     pool = by_gender(gender)
     if not pool:
@@ -412,6 +416,7 @@ def choose_figure(
             "sig": traits_signature(traits),
             "ts": float(now) if now is not None else time.time(),
         },
+        user_id=user_id,
     )
     return SelectionResult(figure.id, True)
 

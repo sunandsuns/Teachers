@@ -38,11 +38,14 @@ from fastapi.testclient import TestClient  # noqa: E402
 import server.main as main  # noqa: E402
 from server import paths  # noqa: E402
 from server.services import advice as advice_module  # noqa: E402
+from server.services import admin as admin_module  # noqa: E402
+from server.services import auth as auth_module  # noqa: E402
 from server.services import content_loader  # noqa: E402
 from server.services import history as history_module  # noqa: E402
 from server.services import kb as kb_module  # noqa: E402
 from server.services import profile as profile_module  # noqa: E402
 from server.services import retriever as retriever_module  # noqa: E402
+from server.services import user_books as user_books_module  # noqa: E402
 from server.services.llm import router as llm_router_module  # noqa: E402
 from server.services.llm import session as llm_session_module  # noqa: E402
 
@@ -66,6 +69,29 @@ def isolate_history(tmp_path, monkeypatch):
     yield
     history_module.reset_history_store()
     profile_module.reset_profile_store()
+
+
+@pytest.fixture(autouse=True)
+def isolate_auth(monkeypatch):
+    """隔离认证。
+
+    认证与历史记录共用同一个库文件，``isolate_history`` 已经把数据目录指向
+    ``tmp_path``；这里只需把认证单例重置掉——它在构造时就把当时的路径记下来了。
+
+    密钥与管理员凭据都固定成常量：否则每个用例都会往 meta 表写一个新随机密钥，
+    调试时想手工造一个 token 会很别扭；管理员凭据固定下来，用例才能断言
+    "内置管理员能登录"。
+    """
+    monkeypatch.setenv("RSDS_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("RSDS_ADMIN_EMAIL", "admin@test.local")
+    monkeypatch.setenv("RSDS_ADMIN_PASSWORD", "admin-test-pw")
+    auth_module.reset_auth_store()
+    user_books_module.reset_user_book_store()
+    admin_module.reset_admin_store()
+    yield
+    auth_module.reset_auth_store()
+    user_books_module.reset_user_book_store()
+    admin_module.reset_admin_store()
 
 
 @pytest.fixture(autouse=True)

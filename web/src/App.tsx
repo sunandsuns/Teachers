@@ -1,8 +1,8 @@
 import { lazy, Suspense } from 'react'
-import { Route, Routes, NavLink } from 'react-router-dom'
-import LangToggle from './components/LangToggle'
+import { Route, Routes } from 'react-router-dom'
+import AppShell from './components/layout/AppShell'
+import PageStage from './components/layout/PageStage'
 import { Loading } from './components/Status'
-import { useI18n, type MessageKey } from './i18n'
 
 // 页面按路由**分包**：进哪一页才下载哪一页的代码。
 //
@@ -21,62 +21,27 @@ const Knowledge = lazy(() => import('./pages/Knowledge'))
 const Profile = lazy(() => import('./pages/Profile'))
 const Insights = lazy(() => import('./pages/Insights'))
 const Search = lazy(() => import('./pages/Search'))
+// 「我的书架」与「后台」也按路由分包：多数会话根本不会打开后台，
+// 让它跟着首屏一起下载（连带数据库浏览那一大坨）是白花的。
+const Shelf = lazy(() => import('./pages/Shelf'))
+const Admin = lazy(() => import('./pages/Admin'))
+const Login = lazy(() => import('./pages/Login'))
+const Register = lazy(() => import('./pages/Register'))
 
-const NAV_ITEMS: { to: string; key: MessageKey; end?: boolean }[] = [
-  { to: '/', key: 'nav.library', end: true },
-  { to: '/search', key: 'nav.search' },
-  { to: '/ask', key: 'nav.ask' },
-  // 「回响」紧跟「求教」：它存的就是求教留下的记录，两块内容是一体的
-  { to: '/history', key: 'nav.history' },
-  // 「画像」接着「回响」：它归纳的也正是那些记录，是同一批素材的另一种看法
-  { to: '/profile', key: 'nav.profile' },
-  { to: '/insights', key: 'nav.insights' },
-]
-
+/**
+ * 路由表。
+ *
+ * 这里**只该有路由**。顶栏、页脚、导航数据、布局宽度都已经搬去
+ * `components/layout/`——所以这个文件现在小到可以一眼看完，
+ * 加一页就是在下面加一行。
+ *
+ * `Suspense` 在 `PageStage` **里面**：分包还没下载完时，兜底要出现在那个
+ * 正在滑入的框里，而不是把整个舞台换成兜底——后者会把转场动画一起冲掉。
+ */
 export default function App() {
-  const { t } = useI18n()
-
   return (
-    <div className="flex min-h-screen flex-col bg-paper-100">
-      <header className="sticky top-0 z-20 border-b border-paper-200 bg-paper-100/90 backdrop-blur-md">
-        {/* 允许换行：窄屏下"品牌 + 五个导航项 + 语言开关"必然放不下一行，
-            宁可在顶栏内折成两行，也不要把导航项挤成半个字 */}
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
-          <NavLink to="/" className="flex items-baseline gap-2">
-            {/* 产品名保持中文原样：它是这方"书卷"的题字，
-                不随界面语言变——就像不会把"微信"在英文界面上写成 WeChat */}
-            <span className="font-serif text-xl font-bold tracking-tight text-ink-900">
-              人生导师
-            </span>
-            <span className="hidden text-sm text-ink-400 sm:inline">{t('app.subtitle')}</span>
-          </NavLink>
-
-          <div className="flex items-center gap-2">
-            <nav className="flex flex-wrap items-center gap-0.5" aria-label={t('nav.label')}>
-              {NAV_ITEMS.map(item => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.end}
-                  className={({ isActive }) =>
-                    `rounded-lg px-2.5 py-1.5 text-sm font-medium transition-colors sm:px-3 ${
-                      isActive
-                        ? 'bg-cinnabar-500 text-paper-50 shadow-card'
-                        : 'text-ink-600 hover:bg-paper-200 hover:text-ink-900'
-                    }`
-                  }
-                >
-                  {t(item.key)}
-                </NavLink>
-              ))}
-            </nav>
-            <span aria-hidden="true" className="h-5 w-px bg-paper-300" />
-            <LangToggle />
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
+    <AppShell>
+      <PageStage>
         <Suspense fallback={<Loading />}>
           <Routes>
             <Route path="/" element={<Library />} />
@@ -87,13 +52,16 @@ export default function App() {
             <Route path="/history" element={<History />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/insights" element={<Insights />} />
+            {/* 账号与个人数据。权限判断在各页内部——`/shelf` 要登录，
+                `/admin` 要管理员。放在路由层做守卫，会让"为什么被弹走"
+                变成一件用户猜不到的事。 */}
+            <Route path="/shelf" element={<Shelf />} />
+            <Route path="/admin" element={<Admin />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
           </Routes>
         </Suspense>
-      </main>
-
-      <footer className="border-t border-paper-200 py-8 text-center">
-        <p className="font-serif text-sm text-ink-400">{t('app.footer')}</p>
-      </footer>
-    </div>
+      </PageStage>
+    </AppShell>
   )
 }

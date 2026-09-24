@@ -119,19 +119,37 @@ def _user_data_dir() -> Path:
 
     **不许抛异常**：这条路径的解析发生在启动阶段（lifespan 会碰一下历史库），
     抛一个异常就是整个应用起不来——而历史记录只是个附加项，为它赔上全部功能
-    是本末倒置。``Path.home()`` 在 Linux 容器里就会抛：那里既没有
-    ``LOCALAPPDATA``，``HOME`` 也可能没设，于是"取家目录"直接失败。
-    这正是线上部署第一次启动就崩掉的原因。
+    是本末倒置。
+
+    这里兜的是 ``Exception`` 而不是某几种具体异常，因为已经栽过两次，两次都
+    不是同一类：
+
+    1. 容器里没有 ``HOME``，``Path.home()`` 抛 ``RuntimeError``；
+    2. 容器里**有** ``HOME`` 的时候——下面那行少写了括号，``/`` 的优先级高于
+       ``+``，表达式成了 ``(Path.home() / ".") + "renshengdaoshi"``，
+       ``Path + str`` 抛 ``TypeError``。它既不是 ``RuntimeError`` 也不是
+       ``OSError``，原先的 except 接不住，异常一路穿到接口层——线上凡是碰
+       数据库的接口（回响、画像）**整片 500**，只有不碰库的页面还活着。
+       本地开发永远看不到：Windows 上 ``LOCALAPPDATA`` 有值，函数在第一行
+       就返回了，那一行根本没被执行过。
+
+    教训是"想清楚会抛哪几种"这件事本身就不牢靠，而这个函数的失败代价是
+    整个功能不可用，所以一律兜住。
     """
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-    if base:
-        return Path(base) / USER_DATA_DIRNAME
     try:
-        return Path.home() / "." + "renshengdaoshi"
-    except (RuntimeError, OSError):
-        # 连家目录都定不了（容器里无 HOME 且取不到 passwd 条目）时退到临时目录：
-        # 那里几乎总是可写，数据能不能留到下次另说，至少应用能起来。
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / USER_DATA_DIRNAME
+        # 括号不能省，见上面第 2 次事故
+        return Path.home() / ("." + "renshengdaoshi")
+    except Exception:  # noqa: BLE001 — 本函数的契约就是"不许抛异常"
+        pass
+    # 退到临时目录：那里几乎总是可写，数据能不能留到下次另说，至少应用能起来。
+    try:
         return Path(tempfile.gettempdir()) / "renshengdaoshi"
+    except Exception:  # noqa: BLE001
+        # 最后一道：连临时目录都问不出来时给个相对路径，交给调用方去 resolve。
+        return Path(".") / "renshengdaoshi"
 
 
 def _ensure_writable(path: Path) -> bool:

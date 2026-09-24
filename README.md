@@ -45,10 +45,28 @@
 | --- | --- | --- |
 | **书架** | `/` | 浏览 15 部经典，按 7 个类目（哲学 / 处世 / 术数 / 政治 / 兵学 / 纵横 / 历史文献）筛选 |
 | **阅读** | `/books/:id` | 逐章阅读深读笔记；有原典的书可切换「原典全文」标签页（大书分块载入） |
-| **寻章** | `/search` | 跨全库检索**深读笔记 + 原典全文**，可只查其一；结果直接**跳到那一段的所在位置** |
+| **寻章** | `/search` | 跨全库检索**深读笔记 + 原典全文 + 我的书架**，可只查其一；结果直接**跳到那一段的所在位置** |
+| **知识库** | `/knowledge` | 经典 / 主题 / 章节的**关系图谱**（15 部 · 8 主题 · 上百条互参边）；点节点看它的出链与反链，可展开到章节 |
 | **求教** | `/ask` | 描述你的问题或困境，系统检索经典段落并生成结构化回答（上游不可用时自动降级）；**先判题型**再作答（选择题 / 求做法 / 求原因 / 求解义 / 倾诉各有要求）；模型可**随时切换默认 / 自定义端点 / WorkBuddy 云模型** |
 | **回响** | `/history` | 求教的记录都自动存下来（SQLite，首次运行自动建库），可回看、删除、清空、**再问一次**；只留最近半个月，每半个月自动清理 |
+| **画像** | `/profile` | 只从你自己问过的话里归纳"你是谁"——**没有依据的一律不写，也从不替你猜**；可换形象 |
 | **感悟** | `/insights` | 今日感悟（同一天刷新不变）、随机一则、按 8 个主题浏览金句 |
+
+账号与个人数据（**上面八页不登录也能用**）：
+
+| 页面 | 路径 | 能力 |
+| --- | --- | --- |
+| **登录 / 注册** | `/login` · `/register` | 邮箱 + 密码。注册即登录，密码加盐哈希后入库，会话走 httpOnly cookie |
+| **我的书架** | `/shelf` | 输入书名/作者 → **联网检索**（OpenLibrary）挑一本加进来，落到**自己独属**的书库；标「想读 / 在读 / 读过」，可生成**导读**、申请公开到公共书架 |
+| **后台管理** | `/admin` | 仅管理员：数据总览（今日问答/新增/待审）、**新书审核**（决定用户提交的书进不进公共书架）、用户管理、**直接读写数据库**（改哪些表、改了什么都记审计） |
+
+> **登录是可选的**，这不是省事，是刻意的：这套东西的价值在"打开就能读经典"。
+> 把阅读、寻章、求教锁在登录后面，等于给第一次来的人先摆一道门。
+>
+> 登录换来的是"你的记录归你"——「回响」与「画像」在登录后按账号分开存，
+> 匿名那一份单独归在 `user_id IS NULL` 里，两者互不可见。
+> 注意 `user_id IS NULL` 的含义是**"匿名那一份"**，不是"不过滤"：
+> 若把 `None` 当成"全部"，任何一次匿名读取都会把所有人的问答端出来。
 
 ---
 
@@ -58,11 +76,14 @@
                 ┌──────────────────────────────────────────┐
                 │  React 前端 (web/)                        │
                 │  书架 · 阅读 · 寻章 · 求教 · 回响 · 感悟    │
+                │  我的书架 · 登录注册 · 后台管理             │
                 └───────────────┬──────────────────────────┘
                                 │ /api  (vite dev proxy → :8000)
                 ┌───────────────▼──────────────────────────┐
                 │  FastAPI 后端 (server/)                    │
-                │  routers/ books search ask insight history │
+                │  routers/ books search ask insight         │
+                │           history profile auth             │
+                │           shelf admin                      │
                 └───────────────┬──────────────────────────┘
                                 │
         ┌───────────────┬───────┴────────┬───────────────┐
@@ -76,8 +97,17 @@
         │  语料层                    数据层             │
         │  books/ · 理解笔记/ ·      data/history.db   │
         │  MaoZeDongAnthology/ ·     （SQLite，首次运行  │
-        │  WangYangMing/              自动创建）        │
+        │  WangYangMing/              自动创建 8 张表）  │
         └────────────────────────────────────────────┘
+```
+
+检索的输入有三个来源，融合后才是给模型的「经典怎么说」：
+
+```
+  深读笔记 ─┐
+  原典全文 ─┼─→ TF-IDF 打分 ─→ RRF 融合 ─→ top_k ─→ 提示词
+  公共书架 ─┤   各源独立排序，按名次相加（1/(K+rank)），不拿分数直接比
+  我的书架 ─┘   融合后再归一化——RRF 原始分在 0.01 量级，直接展示会被读成"匹配度 1%"
 ```
 
 ### 目录结构
@@ -95,29 +125,78 @@
 │   ├── web_ui.py              # 同源托管前端产物 + SPA 回退
 │   ├── routers/               # 薄 HTTP 层：只做参数校验与响应建模
 │   │   ├── books.py           #   /api/books（原典分块读取）
-│   │   ├── search.py          #   /api/search（kind 过滤）
+│   │   ├── search.py          #   /api/search（kind 过滤，含书架）
+│   │   ├── kb.py              #   /api/kb（关系图谱、双链）
 │   │   ├── ask.py             #   /api/ask（含 /status 与 /probe）
 │   │   ├── history.py         #   /api/history（「回响」）
-│   │   └── insight.py         #   /api/insight
+│   │   ├── profile.py         #   /api/profile（「画像」）
+│   │   ├── insight.py         #   /api/insight
+│   │   ├── auth.py            #   /api/auth（注册/登录/登出/改密）
+│   │   ├── shelf.py           #   /api/shelf（联网检索、加书、提交公开）
+│   │   └── admin.py           #   /api/admin（总览/审核/用户/数据库/审计）
 │   └── services/              # 业务层：不依赖 FastAPI，可独立单测
 │       ├── content_loader.py  #   注册表 + 加载策略
 │       ├── retriever.py       #   TF-IDF 检索（笔记 + 原典双源）
+│       ├── unified_search.py  #   多源融合：笔记/原典/公共书架/我的书架
 │       ├── qa.py              #   问答编排：检索 → 提示词 → 生成 → 落库
+│       ├── advice.py          #   离线降级时的排版
+│       ├── intent.py          #   题型识别
 │       ├── db.py              #   SQLite 存储：建库建表、连接、失败降级
 │       ├── history.py         #   「回响」的存取与半个月保留策略
+│       ├── profile.py         #   「画像」：特征归纳与存取（按用户隔离）
+│       ├── figures.py         #   画像用的历史人物形象
+│       ├── auth.py            #   密码加盐哈希、会话 token、内置管理员
+│       ├── user_books.py      #   个人书架与公共书架的存取
+│       ├── book_search.py     #   OpenLibrary 联网检索客户端
+│       ├── guide.py           #   用大模型给新加的书生成导读
+│       ├── admin.py           #   后台：白名单表读写、审计、受保护列
 │       ├── llm/               #   模型自动切换
 │       │   ├── config.py      #     配置与环境变量、端点派生
 │       │   ├── transport.py   #     OpenAI 兼容协议的 HTTP 细节
 │       │   ├── router.py      #     模型发现/探活/缓存/失败轮换
 │       │   ├── session.py     #     默认端点与自定义端点的选择与隔离
 │       │   └── prompt.py      #     提示词与离线降级排版
+│       ├── kb/                #   知识库：data（图）→ service（双链与局部图）
 │       └── insight/           #   data（金句）→ service（选择算法）
-├── data/                      # 运行期数据（历史记录数据库），自动创建、已 gitignore
+├── data/                      # 运行期数据（SQLite），自动创建、已 gitignore
 ├── tests/                     # pytest：unit / integration 两层
 ├── run.py                     # 一键启动（端口自动避让）
 ├── smoke.py                   # 联调冒烟：走真实 HTTP + vite 代理
-└── web/                       # React 前端（src/pages 下 6 个页面）
+├── ui_check.py                # 界面检查：CDP 驱动真实 Chrome，截图存 .workbuddy/shots/
+└── web/                       # React 前端（src/pages 下 12 个页面，见「前端架构」）
 ```
+
+### 前端架构
+
+六层单向依赖，**上层只依赖下层，不跨层**：
+
+```
+  tokens        web/tailwind.config.js        颜色 / 时长 / 缓动 / 阴影
+    ↓
+  base          web/src/index.css  @layer base        元素默认值 + 无障碍守卫
+    ↓
+  components    web/src/index.css  @layer components  跨页复用的表面与排版
+    ↓
+  primitives    web/src/components/ui/*.tsx           原子组件（只吃令牌，不吃业务）
+    ↓
+  layout        web/src/components/layout/            应用外壳、导航、顶栏
+    ↓
+  features      web/src/features/<domain>/            业务（只吃原子，不写死样式）
+    ↓
+  pages         web/src/pages/*.tsx                   路由薄壳（一行 re-export）
+```
+
+两条规则撑着这个形状：
+
+- **样式只有一处源头。** `index.css` 里只放"多个页面都要用的表面与排版"，
+  一旦某个类只有一页在用，它就属于那一页，该搬进 `features/`。
+- **`pages/` 是壳，不是层。** 每个文件只做 `export { default } from '../features/x/XPage'`。
+  路由表因此能一眼读完，而页面逻辑待在它自己的领域目录里。
+
+`src/features/` 下按领域分（`library` / `reader` / `search` / `knowledge` /
+`advisor` / `history` / `profile` / `insights` / `auth` / `shelf` / `admin`），
+每个领域自带 `constants.ts`、数据钩子与呈现组件。加一个功能 = 加一个目录 + 在
+`App.tsx` 挂一条懒加载路由，不用动别的领域。
 
 ---
 
@@ -308,7 +387,7 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | GET | `/api/books/{book_id}/chapters` | 章节目录 |
 | GET | `/api/books/{book_id}/chapters/{chapter_id}` | 章节正文 |
 | GET | `/api/books/{book_id}/source?offset=0` | 原典全文，**按 20000 字分块**返回（`has_more` 指示是否还有）；无原典返回 404 |
-| GET | `/api/search?q=关键词&top_k=5&kind=all` | 全文检索，`kind` 取 `all`/`notes`/`source`；结果带出处、相关度、`kind` 与 `offset` |
+| GET | `/api/search?q=关键词&top_k=5&kind=all` | 全文检索，`kind` 取 `all`/`notes`/`source`/`shelf`；结果带出处、相关度、`kind` 与 `offset` |
 | POST | `/api/ask` | 智能问答 `{"question": "...", "top_k": 5}`，响应含 `llm_used`、`model` 与 `history_id`；可选 `llm:{base_url,api_key,model?}` 临时改用自定义端点。**每次问答都会自动存入「回响」** |
 | POST | `/api/ask/probe` | 测试自定义端点：能否连通、暴露了哪些模型、挑得中哪一个 |
 | POST | `/api/ask/plan` | **备料**：只做检索 + 组装 messages，不生成、不落库。给「生成在浏览器里」的云模型通道用 |
@@ -318,6 +397,15 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | GET | `/api/history/status` | 存储概况：可用性、库路径、条数、保留天数、上次/下次清理时间、占用字节。**打开「回响」页会调它，顺带触发机会式清理** |
 | DELETE | `/api/history/{id}` | 删掉一条（不存在返回 404） |
 | DELETE | `/api/history` | 清空全部 |
+| GET | `/api/profile` | 「画像」：特征列表、形象、上次归纳时间 |
+| POST | `/api/profile/extract` | 从最近的问答里归纳特征（有最短间隔限制，`count_since` 按**用户**算窗口） |
+| PUT | `/api/profile/avatar` | 换形象 |
+| POST | `/api/profile/figure` | 评估并挑选历史人物形象 |
+| DELETE | `/api/profile/traits/{id}` · `/api/profile` | 删一条特征 / 清空画像 |
+| GET | `/api/kb/graph?scope=` | 知识库全图（节点 + 边） |
+| GET | `/api/kb/nodes/{node_id}` | 单个节点的出链与反链（双链） |
+| GET | `/api/kb/nodes/{node_id}/local` | 只留与焦点相连的局部图 |
+| GET | `/api/kb/search?q=` | 按名字找节点 |
 | GET | `/api/insight/daily?day=YYYY-MM-DD` | 今日感悟（同一天结果稳定） |
 | GET | `/api/insight/random` | 随机感悟 |
 | GET | `/api/insight/themes` | 主题列表与各自数量 |
@@ -325,11 +413,64 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | GET | `/api/insight/by-book/{book_id}` | 按书目取金句 |
 | GET | `/api/health` | 健康检查（书目数 / 章节数 / 索引段落数 / 有原典的书数 / 跳过大书 / 分类） |
 
+账号（`/api/auth`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/auth/register` | 注册 `{email, password, name?}`，**成功即登录**（种 httpOnly cookie）。邮箱重复 400，密码短于 8 位 400 |
+| POST | `/api/auth/login` | 登录。凭据不对返回 401 + 可读文案（前端原样显示） |
+| POST | `/api/auth/logout` | 登出（清 cookie） |
+| GET | `/api/auth/me` | 当前账号。**匿名返回 200 + `user: null`**，不是 401 |
+| POST | `/api/auth/password` | 改密 `{old_password, new_password}` |
+
+> `/me` 为什么匿名也给 200：前端每次启动都要问一次"我是谁"。把它做成 401，
+> 匿名访客的每一次首页加载都会在控制台留一条红字错误，而"未登录"根本不是错误。
+> 反过来，真正需要登录的接口（`/api/shelf`、`/api/admin/*`）**必须**给 401——
+> 那里 401 是准确答案，前端靠它决定是弹登录门还是报权限不足。
+
+我的书架（`/api/shelf`，全部需要登录）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/shelf/search` | 联网检索候选 `{title, author?, limit?}`，**只搜不入库**；上游失败时 `results` 为空且 `error` 有话说 |
+| GET | `/api/shelf?status=` | 我的书架（含各状态计数） |
+| POST | `/api/shelf/books` | 加书 `{...候选, status?, with_guide?}`。导读是**异步**生成的，所以接口**立刻返回**；`has_guide:false` 时前端隔几秒再拉一次 |
+| GET · PATCH · DELETE | `/api/shelf/books/{id}` | 读 / 改（状态、可见性）/ 移出书架 |
+| POST | `/api/shelf/books/{id}/submit` | 申请公开到公共书架（可见性转 `pending`） |
+| POST | `/api/shelf/books/{id}/cancel` | 撤回申请 |
+
+> 越权读别人的书返回 **404 而不是 403**——403 等于告诉对方"这本书存在，只是不给你看"。
+
+后台（`/api/admin`，**整个路由组挂了 `require_admin`**，普通用户一律 403）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/admin/overview` | 总览：今日问答 / 今日新增 / 待审 / 用户数 / 藏书数 / 库大小 / 语料规模 |
+| GET | `/api/admin/review` | 待审队列（含提交人邮箱） |
+| POST | `/api/admin/review/{book_id}` | 批准或驳回 `{approve, note?, category?}`。批准后进公共书架，书号加 `u` 前缀（`u01`…），**不与内置的 `01`–`15` 撞车** |
+| GET | `/api/admin/users` | 用户列表（含各自藏书数） |
+| PATCH | `/api/admin/users/{id}` | 授予/取消管理员。**不能操作自己**，400 |
+| POST | `/api/admin/users/{id}/password` | 重置他人密码 |
+| DELETE | `/api/admin/users/{id}` | 删用户。**不能删自己**，400 |
+| GET · DELETE | `/api/admin/public` · `/api/admin/public/{id}` | 公共书架列表 / 从公共书架撤下 |
+| GET | `/api/admin/db/tables` | 可操作的表。**不暴露 `sqlite_*` 内部表** |
+| GET | `/api/admin/db/tables/{table}` | 表结构 + 分页数据；`password_hash` / `salt` 标为 `protected` |
+| POST · PATCH · DELETE | `/api/admin/db/tables/{table}/rows[/{rowid}]` | 增 / 改 / 删行。**表名与列名都要过白名单**，未知表 400 而非 500 |
+| GET | `/api/admin/audit` | 审计日志：谁、什么时候、动了哪张表的哪一行 |
+
+> 数据库直操作的三道闸：**表名列名白名单**（挡住拼 SQL）、**受保护列只读**
+> （密码哈希与 salt 只能走「重置密码」，不能手改）、**每次写入记审计**。
+> 前端还会把"改自己"的按钮渲染成禁用态——但那是 UX，安全由后端的 400 兜底。
+
 ---
 
 ## 语料
 
-**15 部经典**，共 **352 章**、**8852 个检索单元**（1962 条深读笔记 + 6890 条原典段落）：
+**15 部经典**，共 **352 章**、**8534 个检索单元**（4707 条深读笔记 + 3827 条原典段落）：
+
+> 这三个数由 `/api/health` 直接给出（`total_chapters` / `total_passages`），
+> 分项可以这样数：`ensure_retriever().documents` 里按 `kind` 分组。
+> 语料一改就要跟着改，别凭记忆写。
 
 | ID | 书名 | 类目 | 章节 | 原典 | 原典字数 |
 | --- | --- | --- | --- | --- | --- |
@@ -367,15 +508,24 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 
 ## 运行期数据
 
-「回响」的问答记录存在 **SQLite** 里，库文件与表结构**首次运行时自动创建**，
+账号、书架、问答记录、画像都存在**同一个 SQLite 库**里，库文件与表结构**首次运行时自动创建**，
 不需要装数据库、不需要初始化脚本：
+
+| 表 | 存什么 |
+| --- | --- |
+| `history` | 「回响」的问答记录。`user_id IS NULL` = 匿名那一份 |
+| `traits` · `meta` | 「画像」的特征与其它键值（形象、上次归纳时间） |
+| `users` · `sessions` | 账号（`password_hash` + `salt`）与登录会话 |
+| `user_books` | 个人书架。`visibility` 走 `private → pending → public/rejected` |
+| `public_books` | 审核通过的公共书架，书号 `u01`… |
+| `admin_audit` | 后台的每一次写入：谁、什么时候、动了哪一行 |
 
 | | |
 | --- | --- |
 | 位置 | 源码态 `data/history.db`；打包态 `程序目录/data/history.db`；程序目录不可写则退到 `%LOCALAPPDATA%\人生导师\` |
-| 保留 | 最近 **15 天**。每半个月自动清理一次（机会式：打开「回响」或发生一次求教时检查），界面上会写明下次清理时间 |
-| 手动 | 「回响」右上角「清空」；或直接删掉 `data/` 文件夹（下次启动自动重建） |
-| 迁移 | 整个文件夹拷走即可，记录跟着走 |
+| 保留 | `history` 留最近 **15 天**。每半个月自动清理一次（机会式：打开「回响」或发生一次求教时检查），界面上会写明下次清理时间 |
+| 手动 | 「回响」右上角「清空」；或直接删掉 `data/` 文件夹（下次启动自动重建，**账号也会一起没**） |
+| 迁移 | 整个文件夹拷走即可，账号与记录跟着走 |
 
 相关环境变量（一般不用改，见 `.env.example`）：
 
@@ -383,6 +533,11 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | --- | --- | --- |
 | `RSDS_DATA_DIR` | 程序目录下的 `data/` | 指定数据库位置（测试用它指向临时目录） |
 | `RSDS_HISTORY_RETENTION_DAYS` | `15` | 保留天数，设 `0` 即不留存 |
+| `RSDS_ADMIN_EMAIL` | `admin@renshengdaoshi.local` | 内置管理员邮箱，**仅首次启动建号时生效** |
+| `RSDS_ADMIN_PASSWORD` | `admin123456` | 内置管理员初始密码。默认值是公开的，只适合本机开发 |
+
+> 改 `RSDS_ADMIN_PASSWORD` **不会**改掉已存在的账号——密码要在后台「用户」页点
+> 「重置密码」。这条容易误会，所以启动时会往日志里打一行提示。
 
 ---
 
@@ -402,35 +557,72 @@ cd web && npm test
 这条真实链路，先 `python run.py` 起服务，再另开一个终端：
 
 ```bash
-python smoke.py
+python smoke.py        # API 层：184 项，走真实 HTTP + vite 代理
+python ui_check.py     # 界面层：50 项，CDP 驱动真实 Chrome
 ```
 
-它会逐项检查：后端书目/章节/检索单元数与原典索引规模、前端页面可编译、vite 代理转发、
+> 两个脚本跑完都会在自己的结论行报项数（"共 N 项，失败 M 项"）。
+> 上面这两个数字是照它报的抄的——**别手改**。数字对不上就说明有检查被删掉了，
+> 而这是最容易悄悄发生的事：断言少一条，测试照样全绿。
+
+`smoke.py` 逐项检查：后端书目/章节/检索单元数与原典索引规模、前端页面可编译、vite 代理转发、
 寻章检索（含 `kind` 过滤与命中偏移定位）、原典分块与按偏移跳读、求教在时间预算内返回、
-感悟当日稳定性。全部通过退出码为 0。
+感悟当日稳定性，以及**账号 → 加书 → 申请公开 → 管理员审核 → 进公共书架 → 匿名可检索到**
+这整条新链路（含越权与权限边界）。全部通过退出码为 0。
+
+`ui_check.py` 打开真实 Chrome，等数据落定后截图，并断言页面**看得见**：
+15 张书卡都入场了、未登录时我的书架是登录门、错误密码会报错、后台四个分页逐个切得动、
+书架卡片的状态药丸与可见性标识齐全、检索后给的是候选列表或一句可读的错误（而不是
+"没有找到"），以及**四个分页的入场动画真的生效**（总览 `rise`、数据库 `fade-up`——
+读的是渲染出来的 `animationName`，不是元素上的类名）。
+
+**换模块的转场**单独量一遍真实曲线，而不是只看类名挂没挂对：点一下导航后按 ~45ms
+一档采 `transform` / `opacity`，确认起点透明且带横向位移、终点归零不留包含块、方向
+与导航次序一致（`forward` / `back` / `depth`）。截图用**负 `animation-delay` +
+`paused`** 把动画钉在时间轴的固定位置——不是"放慢再等一会儿再拍"，那样拍到哪一帧
+取决于机器快慢。每张定格都当场量一次自己被钉在了哪（`translateX` 实测 `+24.4` /
+`-24.4`，两个方向互为镜像），免得定格没生效时截出一张"看起来成功"的假证据。
+横向那 34px 的溢出也**只在动画途中**才存在，所以"没有横向滚动条"这条断言是在定格
+状态下量的。
+
+顺带订阅控制台与网络，全程不该有任何报错。截图落在 `.workbuddy/shots/`（已 gitignore）。
 
 > 「求教」那一步会**实测耗时**并要求 90 秒内返回。上游不可用时，这一步验证的正是
 > "快速降级到本地检索"这条路径——它不该 FAIL，而该在 20 余秒内给出本地检索结果。
 
+> **别用 `chrome --headless --screenshot` 判断界面。** 开 `--virtual-time-budget`
+> 能等到数据，但虚拟时间不产生渲染机会、`IntersectionObserver` 回调会被吞掉，
+> 于是"滚到才入场"的卡片全部停在 `opacity-0`，拍出一张空白页——一个完全正常的页面
+> 看起来像坏了。`ui_check.py` 走 CDP，先轮询"数据到了没"再截。
+
 | 层 | 位置 | 覆盖内容 |
 | --- | --- | --- |
-| 单元 | `tests/unit/test_content_loader.py` | 章节拆分、幂等加载、章节往返读取 |
-| 单元 | `tests/unit/test_loader_strategies.py` | 三种加载策略的行为与容错（用临时目录构造迷你仓库） |
-| 单元 | `tests/unit/test_book_registry.py` | 注册表不变量：id 唯一、**每本登记的书都必须真有章节**、原典声明必须存在 |
-| 单元 | `tests/unit/test_retriever.py` | 分词、余弦排序、降级子串匹配、笔记/原典双源与 offset |
-| 单元 | `tests/unit/test_llm.py` | 配置解析（`.env` 优先级、候选排序）、prompt 结构、传输层错误分类 |
-| 单元 | `tests/unit/test_llm_router.py` | 探活、TTL 缓存、冷却分级、失败轮换、**时间预算截断**（全用假 transport，不联网） |
-| 单元 | `tests/unit/test_insight_service.py` | 日期确定性选句、主题索引 |
-| 单元 | `tests/unit/test_intent.py` | 题型识别：选择题选项抽取（"该忍还是该说"）、认不出的问题不加任何指令、中英指令逐条对齐 |
-| 单元 | `tests/unit/test_api.py` | 路由、参数校验、404 语义、原典分页、`/ask/status` |
-| 单元 | `web/src/test/cloud.test.ts` | 云模型目录过滤、偏好落空时的退路、错误码归类 |
-| 集成 | `tests/integration/test_read_flow.py` | 书架 → 章节 → 正文的完整链路一致性 |
-| 集成 | `tests/integration/test_ask_flow.py` | 问答链路、search/ask 共用同一索引 |
-| 集成 | `tests/integration/test_ask_llm_flow.py` | HTTP → router → 失败轮换 → 降级，端到端 |
-| 集成 | `tests/integration/test_ask_cloud.py` | 云通道：`/ask/plan` 备料不落库、`/ask/save` 事后补记、追问带上下文 |
-| 集成 | `tests/integration/test_corpus_flow.py` | 逐本遍历可读性、新语料检索命中、感悟引用无悬空 |
+| 单元 | `test_content_loader.py` · `test_loader_strategies.py` · `test_book_registry.py` | 语料层：章节拆分、幂等加载、三种加载策略的容错、注册表不变量（id 唯一、**每本登记的书都必须真有章节**、原典声明必须存在） |
+| 单元 | `test_retriever.py` | 分词、索引、余弦排序、降级子串匹配、笔记/原典双源与 offset |
+| 单元 | `test_llm.py` · `test_llm_router.py` · `test_llm_session.py` | 配置解析（`.env` 优先级、候选排序）、探活、TTL 缓存、冷却分级、失败轮换、**时间预算截断**、端点会话隔离（全用假 transport，不联网） |
+| 单元 | `test_intent.py` · `test_prompt_conversation.py` | 题型识别（选择题选项抽取、认不出的问题不加任何指令）、追问的对话编排与作答语言 |
+| 单元 | `test_advice.py` · `test_advice_theme.py` | 检索策略：主题路由、对口权重、门槛；主题锚必须落在提问的那个主题上 |
+| 单元 | `test_kb_parse.py` · `test_kb_service.py` | 知识库：互参"链接是怎么被认出来的"、双链与局部图 |
+| 单元 | `test_history_store.py` · `test_history_topics.py` | 「回响」的存取、保留策略，以及把追问聚成一张卡片的话题维度 |
+| 单元 | `test_profile_store.py` · `test_figures.py` | 「画像」的存储规则与归纳解析；历史人物候选池、画像指纹、周判定 |
+| 单元 | `test_auth.py` · `test_shelf.py` · `test_admin.py` | 账号（注册/登录/会话/内置管理员）、个人书架状态机、后台权限边界与直接操作数据库 |
+| 单元 | **`test_isolation.py`** | **按用户隔离**：store 层与 HTTP 层各测一遍，覆盖历史与画像的读、写、删、越权 |
+| 单元 | `test_api.py` · `test_frontend_mount.py` · `test_paths.py` · `test_desktop.py` | 路由与参数校验、404 语义、原典分页；前端同源托管与 SPA 回退的接入契约；路径解析；桌面窗口入口 |
+| 前端 | `web/src/test/*.test.tsx` · `*.test.ts` | 页面级渲染与交互（jsdom）：书架、阅读、寻章、知识库、求教、回响、画像、感悟、认证、我的书架、后台；另含云模型目录过滤、关系图算法，以及**换模块的转场方向**（导航次序 → `forward`/`back`/`depth`，含"只变查询串不重演"） |
+| 集成 | `test_read_flow.py` · `test_corpus_flow.py` | 书架 → 章节 → 正文的完整链路；逐本遍历可读性、新语料检索命中、感悟引用无悬空 |
+| 集成 | `test_ask_flow.py` · `test_ask_llm_flow.py` · `test_ask_custom_model.py` | 问答链路、search/ask 共用同一索引、HTTP → router → 失败轮换 → 降级、自定义端点通道 |
+| 集成 | `test_ask_cloud.py` · `test_ask_context.py` | 云通道：`/ask/plan` 备料不落库、`/ask/save` 事后补记；追问的上下文与作答语言真的走到了模型那一步 |
+| 集成 | `test_history_api.py` · `test_history_topics_api.py` · `test_profile_api.py` · `test_kb_api.py` | 回响、画像、知识库在 HTTP 上的边界（走真实语料） |
 
-> **性能**：内容层与索引只读，因此测试夹具为 session 级——整套后端测试从 114 秒降到 **7 秒**。
+> **性能**：内容层与索引只读，所以测试夹具是 **session 级**——整套后端测试（982 项）不到 1 分钟。
+> 把夹具改回函数级会退化到几分钟，这一步很容易在重构时被无意改掉。
+
+> **夹具里别写死"离现在很近"的时间。** 书架卡片上「导读生成中」的判定是
+> `Date.now() - created_at < 60s`，而夹具原本把 `created_at` 写成当天的某个时刻——
+> 在时间走到那一刻之前，差值是**负数**、小于 60s 成立，用例一直是绿的；
+> 一过那一刻就永久变红，失败信息还长得很像业务代码坏了（"找不到『导读生成中…』"），
+> 排查方向会被带偏。要"刚加进来"的用例请在**用例里**用 `new Date().toISOString()`
+> 现算——写在模块顶层同样不行，整套测试并行跑会超过那 60 秒。
 
 ---
 
@@ -573,6 +765,47 @@ LLM 层拆成 `config`（读配置与候选排序）/ `transport`（HTTP 细节�
 用户下次打开应用时库就已经被收拾干净了。代价是清理有滞后（一条记录最多活到两个
 半个月），换来的是随时可中断、随时可重启、不写任何额外状态。
 
+**7. 登录可选，但"归属"必须显式（`history.py` + `profile.py`）**
+加用户系统最容易犯的错，是把 `user_id IS NULL` 当成"不过滤"。它不是——它是
+**匿名访客那一份**。若把 `None` 读成"全部"，任何一次未登录的读取都会把所有人的
+问答端出来，而这正是加用户系统要防的事。所以"这份记录属于谁"被写成一个显式的
+WHERE 片段，并**与外层条件用 `AND` 拼在同一条 SQL 里**：
+
+```python
+def _scope(user_id: Optional[int]) -> tuple[str, tuple]:
+    if user_id is None:
+        return "user_id IS NULL", ()      # 匿名那一份，不是"全部"
+    return "user_id = ?", (int(user_id),)
+```
+
+两个容易漏的细节：`delete_many` 的 id 列表来自用户，归属必须和删除条件同一条语句，
+否则"传别人的 id"就能删掉；话题统计的 `WHERE` 必须在 `GROUP BY` **之前**，
+否则 `COUNT(*)` 会把别人的行数算进你的主题里。
+
+登录本身是**可选**的：阅读、寻章、求教、感悟都不要求登录——这套东西的价值在
+"打开就能读经典"，把入口锁在登录后面等于给第一次来的人先摆一道门。
+
+**8. 换模块的转场方向由导航次序算出来，不是随便挑的（`PageStage.tsx` + `nav.ts`）**
+换页面时新内容会滑进来，**往哪边滑**不是写死的效果，而是从顶栏从左到右的排布
+推出来的：从「书架」去「求教」是往右走，内容就从右侧进来；往回走就从左侧进来。
+方向一旦和导航的排布一致，转场就不再是一层特效，而是**位置的移动**——
+这是它看起来"对"的全部原因。两端不在导航上（登录、注册），或两端是同一个
+导航项（`/books/01` → `/books/02`），横向没有可比的位置，降级成"自下浮起"
+的纵深转场；后者还顺带符合"翻到下一章"的直觉。
+
+只做入场，不做退场。退场看着更完整，但要付三样东西：旧页面得继续挂在 DOM 里
+（页面里有两处 `sticky`，两套滚动上下文会打架）；要裁掉溢出就得给舞台加
+`overflow: hidden`，而它**会让舞台变成滚动容器**，`sticky bottom-4` 的输入栏
+会改粘在舞台底部；旧页面还得从"用户当时看的位置"淡出，于是又要把 `scrollY`
+量下来补偿。而入场的收益占了九成——方向感、位移、层次全在入场里。
+
+舞台只加 `overflow-x: clip` 挡住横向那 34px 的溢出，用 `clip` 而不是 `hidden`：
+`clip` **不建立滚动容器**。旋转写在 `transform` 里的 `perspective()`，**不是**
+给父元素加 `perspective` 属性——后者会让祖先永久成为绝对/固定定位的包含块，
+也会多出一个层叠上下文，牵连页面里所有定位元素；写成变换函数只作用于这一层，
+而且末帧是 `transform: none`，动画结束后不留痕迹。时长 320ms 与顶栏的滑动
+指示器刻意对齐，两边同起同落，整屏看起来是一个动作。
+
 ---
 
 ## 已知问题与后续方向
@@ -588,3 +821,11 @@ LLM 层拆成 `config`（读配置与候选排序）/ `transport`（HTTP 细节�
   `05-毛泽东选集-第2部分-084至091.md` 区间重叠，疑似早期的重复产物，
   建议确认后合并或删除一份（毛选走 mdbook 策略，暂不影响接口输出）。
 - **感悟池偏小**：47 条金句，覆盖 8 个主题，可继续扩充。
+- **「我的书架」的联网检索依赖 OpenLibrary**：它是公开服务，可能限流或连不上
+  （实测有环境会撞到 `Tunnel connection failed: 502`）。目前只做到"如实告诉用户
+  连不上"——不会假装成"世上没这本书"。可行方向：加备用书目源、把检索结果本地缓存一份。
+- **导读生成依赖上游大模型**：加书时导读是异步补的，上游不通就一直是"这本书还没有导读"，
+  前端轮询 8 次后停下。书本身不受影响，可以先用。
+- **个人书架一本只进一条文档**：书架索引按用户建（带指纹缓存，书变了就重建），
+  但**一本书只投一条**——有导读就用导读，没有就用书名/作者/摘要。所以它能回答
+  "我架上哪本书讲这个"，不能回答"这本书的第三章讲了什么"。书多了以后可能需要按章节切。

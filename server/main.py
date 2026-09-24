@@ -17,13 +17,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .paths import resolve_web_dist, should_serve_frontend
+from .routers.admin import router as admin_router
 from .routers.ask import router as ask_router
+from .routers.auth import router as auth_router
 from .routers.books import router as books_router
 from .routers.history import router as history_router
 from .routers.insight import router as insight_router
 from .routers.kb import router as kb_router
 from .routers.profile import router as profile_router
 from .routers.search import router as search_router
+from .routers.shelf import router as shelf_router
+from .services.auth import admin_credentials, get_auth_store
 from .services.content_loader import get_loader
 from .services.history import get_history_store
 from .services.kb import get_kb
@@ -63,6 +67,21 @@ async def lifespan(app: FastAPI):
             print("[人生导师] 历史记录暂不可用：%s" % store.error)
     except Exception as exc:  # noqa: BLE001 — 启动期的附加项，失败只记录
         print("[人生导师] 历史记录暂不可用：%s" % exc)
+
+    # 内置管理员：首次启动写进库。之后每次启动只做一次存在性检查——
+    # 已存在就什么都不做，**绝不重置密码**（否则管理员自己改过的密码
+    # 会被每次重启悄悄改回默认值）。
+    try:
+        created = get_auth_store().ensure_admin()
+        email, _ = admin_credentials()
+        if created is not None:
+            print("[人生导师] 已创建内置管理员：%s" % email)
+            print("[人生导师] 初始密码取 RSDS_ADMIN_PASSWORD，默认值仅供本机使用；"
+                  "上线前请务必用环境变量覆盖。")
+        else:
+            print("[人生导师] 管理员账号：%s" % email)
+    except Exception as exc:  # noqa: BLE001 — 同上，启动期的附加项
+        print("[人生导师] 管理员初始化失败：%s" % exc)
     yield
 
 
@@ -83,12 +102,15 @@ app.add_middleware(
 )
 
 app.include_router(books_router)
+app.include_router(auth_router)
 app.include_router(search_router)
 app.include_router(ask_router)
 app.include_router(insight_router)
 app.include_router(history_router)
 app.include_router(profile_router)
 app.include_router(kb_router)
+app.include_router(shelf_router)
+app.include_router(admin_router)
 
 
 @app.get("/api/health")

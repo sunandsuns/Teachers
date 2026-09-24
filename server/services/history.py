@@ -154,6 +154,19 @@ def _topic_condition(topic_id: str) -> tuple[Optional[str], tuple]:
     return "conversation_id = ?", (cleaned,)
 
 
+def _scope(user_id: Optional[int]) -> tuple[str, tuple]:
+    """把"这份记录属于谁"变成一个 WHERE 片段。
+
+    ``None`` 是**匿名访客**那一份，不是"不过滤"。没有登录的人看到的是
+    ``user_id IS NULL`` 的记录——也就是登录功能上线之前留下的那些，以及
+    匿名状态下新产生的那些。若把 ``None`` 当成"全部"，任何一次匿名读取都会
+    把所有人的问答端出来，那正是加用户系统要防的事。
+    """
+    if user_id is None:
+        return "user_id IS NULL", ()
+    return "user_id = ?", (int(user_id),)
+
+
 def _clean_ids(values: Any) -> list[int]:
     """把外部传来的 id 列表收拾成一串正整数，认不出的直接丢掉。
 
@@ -173,7 +186,9 @@ def _clean_ids(values: Any) -> list[int]:
     return sorted(cleaned)
 
 
-#: 按话题聚合。``?`` 依次是 solo 前缀、limit、offset。
+#: 按话题聚合。``{where}`` 由 :func:`_scope` 填（归属过滤必须在 GROUP BY 之前，
+#: 否则会把别人的记录也聚进同一个话题里，``COUNT(*)`` 跟着一起错）。
+#: 占位符 ``?`` 依次是 solo 前缀、limit、offset。
 #:
 #: 取首尾记录用 ``MIN(id)/MAX(id)`` 而不是时间：同一次会话里几条记录的时间戳
 #: 可能落在同一秒，而 id 是严格递增的，谁先谁后不会含糊。
@@ -186,6 +201,7 @@ SELECT
     MIN(created_ts) AS first_ts,
     MAX(created_ts) AS last_ts
 FROM history
+WHERE {where}
 GROUP BY topic_id
 ORDER BY last_ts DESC, last_id DESC
 LIMIT ? OFFSET ?
@@ -258,11 +274,13 @@ class HistoryStore:
         model: Optional[str] = None,
         retrieved_count: int = 0,
         conversation_id: Optional[str] = None,
+        user_id: Optional[int] = None,
         now: Optional[float] = None,
     ) -> Optional[int]:
         """存一条。返回新记录的 id；存不进去返回 None（调用方照常返回答案）。
 
         ``conversation_id`` 由调用方给（追问时沿用上一轮的话题 id），也可以不给。
+        ``user_id`` 是这条记录的归属；``None`` 表示匿名访客（见 :func:`_scope`）。
         """
         timestamp = time.time() if now is None else now
         try:
@@ -270,39 +288,54 @@ class HistoryStore:
             with self._db.session() as connection:
                 cursor = connection.execute(
                     "INSERT INTO history "
-                    "(question, answer, model, retrieved_count, conversation_id, created_ts) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (question, answer, model, int(retrieved_count), conversation_id, timestamp),
+                    "(question, answer, model, retrieved_count, conversation_id, "
+                    " user_id, created_ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        question, answer, model, int(retrieved_count),
+                        conversation_id, user_id, timestamp,
+                    ),
                 )
                 return int(cursor.lastrowid)
         except Exception:  # noqa: BLE001 — 库不可用或写入失败，都按"这次没记上"处理
             return None
 
-    def delete(self, record_id: int) -> bool:
-        """删一条。不存在返回 False。"""
+    def delete(self, record_id: int, *, user_id: Optional[int] = None) -> bool:
+        """删一条。不存在、或不属于这个人，返回 False。"""
+        where, params = _scope(user_id)
         try:
             with self._db.session() as connection:
-                cursor = connection.execute("DELETE FROM history WHERE id = ?", (record_id,))
+                cursor = connection.execute(
+                    f"DELETE FROM history WHERE id = ? AND ({where})",
+                    (record_id, *params),
+                )
                 return cursor.rowcount > 0
         except Exception:  # noqa: BLE001
             return False
 
-    def delete_topic(self, topic_id: str) -> int:
+    def delete_topic(self, topic_id: str, *, user_id: Optional[int] = None) -> int:
         """删掉整个话题，返回删掉的条数（认不出的 id 或失败为 0）。"""
         where, params = _topic_condition(topic_id)
         if where is None:
             return 0
+        scope, scope_params = _scope(user_id)
         try:
             with self._db.session() as connection:
-                return connection.execute(f"DELETE FROM history WHERE {where}", params).rowcount
+                return connection.execute(
+                    f"DELETE FROM history WHERE ({where}) AND ({scope})",
+                    (*params, *scope_params),
+                ).rowcount
         except Exception:  # noqa: BLE001
             return 0
 
-    def clear(self) -> int:
-        """清空全部。返回删掉的条数（失败为 0）。"""
+    def clear(self, *, user_id: Optional[int] = None) -> int:
+        """清空**这个人**的全部记录。返回删掉的条数（失败为 0）。"""
+        scope, params = _scope(user_id)
         try:
             with self._db.session() as connection:
-                return connection.execute("DELETE FROM history").rowcount
+                return connection.execute(
+                    f"DELETE FROM history WHERE {scope}", params
+                ).rowcount
         except Exception:  # noqa: BLE001
             return 0
 
@@ -311,18 +344,22 @@ class HistoryStore:
         *,
         ids: Any = (),
         topics: Any = (),
+        user_id: Optional[int] = None,
     ) -> int:
         """按记录 id 与话题 id **混合**删一批，返回实际删掉的条数。
 
         界面上勾选删除就是走这里：用户可能同时勾了几条单独的问答和几段完整对话，
         分两次请求既慢又会出现"删了一半"的中间态。
 
-        两条刻意的取舍：
+        三条刻意的取舍：
 
         - **不存在的目标跳过，不报错**。用户勾了一堆，其中一条恰好刚被过期清理
           掉（保留期到了），不该因此让整批都失败——那才是真的让人恼火。
         - **一个都没认出就什么都不做**。空手去拼 ``DELETE ... WHERE`` 会把整库
           删掉，这里必须挡住。
+        - **归属条件与外层是 AND**。勾选清单来自这个人自己的列表，理论上不会
+          越界；但 id 是可以随手编的，不把归属绑死在同一条 SQL 里，就等于开了一个
+          "传别人的 id 就能删别人的记录"的口子。
         """
         clauses: list[tuple[str, tuple]] = []
         numbers = _clean_ids(ids)
@@ -337,52 +374,74 @@ class HistoryStore:
             return 0
 
         combined = " OR ".join(f"({where})" for where, _ in clauses)
+        scope, scope_params = _scope(user_id)
         params = tuple(value for _, values in clauses for value in values)
         try:
             with self._db.session() as connection:
                 return connection.execute(
-                    f"DELETE FROM history WHERE {combined}", params
+                    f"DELETE FROM history WHERE ({scope}) AND ({combined})",
+                    (*scope_params, *params),
                 ).rowcount
         except Exception:  # noqa: BLE001
             return 0
 
     # ── 读 ──────────────────────────────────────────────────────────────
 
-    def list(self, *, limit: int = DEFAULT_LIMIT, offset: int = 0) -> tuple[int, list[Record]]:
+    def list(
+        self,
+        *,
+        user_id: Optional[int] = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[int, list[Record]]:
         """按时间倒序列出。返回 ``(总数, 本页记录)``——总数用于界面上"还有更多"。"""
         limit = max(1, min(int(limit), MAX_LIMIT))
         offset = max(0, int(offset))
+        scope, params = _scope(user_id)
         try:
             with self._db.session() as connection:
-                total = int(connection.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"])
+                total = int(
+                    connection.execute(
+                        f"SELECT COUNT(*) AS n FROM history WHERE {scope}", params
+                    ).fetchone()["n"]
+                )
                 rows = connection.execute(
-                    "SELECT * FROM history ORDER BY created_ts DESC, id DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
+                    f"SELECT * FROM history WHERE {scope} "
+                    "ORDER BY created_ts DESC, id DESC LIMIT ? OFFSET ?",
+                    (*params, limit, offset),
                 ).fetchall()
                 return total, [_row_to_record(row) for row in rows]
         except Exception:  # noqa: BLE001
             return 0, []
 
     def list_topics(
-        self, *, limit: int = DEFAULT_LIMIT, offset: int = 0
+        self,
+        *,
+        user_id: Optional[int] = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
     ) -> tuple[int, list[Topic]]:
         """按话题聚合列出，最近活跃的在前。返回 ``(话题总数, 本页话题)``。"""
         limit = max(1, min(int(limit), MAX_LIMIT))
         offset = max(0, int(offset))
+        scope, params = _scope(user_id)
         try:
             with self._db.session() as connection:
                 total = int(
                     connection.execute(
                         "SELECT COUNT(*) AS n FROM ("
                         "  SELECT COALESCE(conversation_id, ? || id) AS t"
-                        "  FROM history GROUP BY t"
+                        f"  FROM history WHERE {scope} GROUP BY t"
                         ")",
-                        (SOLO_PREFIX,),
+                        (SOLO_PREFIX, *params),
                     ).fetchone()["n"]
                 )
                 if total == 0:
                     return 0, []
-                rows = connection.execute(_TOPIC_ROWS_SQL, (SOLO_PREFIX, limit, offset)).fetchall()
+                rows = connection.execute(
+                    _TOPIC_ROWS_SQL.format(where=scope),
+                    (SOLO_PREFIX, *params, limit, offset),
+                ).fetchall()
                 return total, self._build_topics(connection, rows)
         except Exception:  # noqa: BLE001
             return 0, []
@@ -423,7 +482,12 @@ class HistoryStore:
         return topics
 
     def list_by_topic(
-        self, topic_id: str, *, limit: int = MAX_LIMIT, offset: int = 0
+        self,
+        topic_id: str,
+        *,
+        user_id: Optional[int] = None,
+        limit: int = MAX_LIMIT,
+        offset: int = 0,
     ) -> tuple[int, list[Record]]:
         """一个话题里的全部问答，按时间**正序**（先问的在前面，读起来才是对话）。"""
         where, params = _topic_condition(topic_id)
@@ -431,33 +495,43 @@ class HistoryStore:
             return 0, []
         limit = max(1, min(int(limit), MAX_LIMIT))
         offset = max(0, int(offset))
+        scope, scope_params = _scope(user_id)
         try:
             with self._db.session() as connection:
                 total = int(
                     connection.execute(
-                        f"SELECT COUNT(*) AS n FROM history WHERE {where}", params
+                        f"SELECT COUNT(*) AS n FROM history WHERE ({where}) AND ({scope})",
+                        (*params, *scope_params),
                     ).fetchone()["n"]
                 )
                 rows = connection.execute(
-                    f"SELECT * FROM history WHERE {where} "
+                    f"SELECT * FROM history WHERE ({where}) AND ({scope}) "
                     "ORDER BY created_ts ASC, id ASC LIMIT ? OFFSET ?",
-                    (*params, limit, offset),
+                    (*params, *scope_params, limit, offset),
                 ).fetchall()
                 return total, [_row_to_record(row) for row in rows]
         except Exception:  # noqa: BLE001
             return 0, []
 
-    def get(self, record_id: int) -> Optional[Record]:
+    def get(self, record_id: int, *, user_id: Optional[int] = None) -> Optional[Record]:
+        scope, params = _scope(user_id)
         try:
             with self._db.session() as connection:
                 row = connection.execute(
-                    "SELECT * FROM history WHERE id = ?", (record_id,)
+                    f"SELECT * FROM history WHERE id = ? AND ({scope})",
+                    (record_id, *params),
                 ).fetchone()
                 return _row_to_record(row) if row is not None else None
         except Exception:  # noqa: BLE001
             return None
 
-    def count_since(self, since: float, *, window: int = MAX_LIMIT) -> int:
+    def count_since(
+        self,
+        since: float,
+        *,
+        user_id: Optional[int] = None,
+        window: int = MAX_LIMIT,
+    ) -> int:
         """最近 ``window`` 条记录里，``since`` 之后的有多少条。
 
         「画像」页靠它决定要不要自动归纳一次。窗口是刻意留的：单次归纳只吃得下
@@ -468,16 +542,21 @@ class HistoryStore:
         **这里刻意不返回记录本身。** 原先的做法是先把最近 40 条整条读出来
         （含回答全文，一条几 KB），再在 Python 里数时间戳——为得到一个整数
         搬运几十 KB 的文本。数数就让数据库去数。
+
+        ``window`` 取的是**这个人自己**的最近 N 条，不是全库的——否则别人的提问
+        会把窗口占满，这个人自己的新记录反而被挤到窗口外，画像永远不刷新。
         """
         window = max(1, min(int(window), MAX_LIMIT))
+        scope, params = _scope(user_id)
         try:
             with self._db.session() as connection:
                 row = connection.execute(
                     "SELECT COUNT(*) AS n FROM ("
                     "  SELECT created_ts FROM history"
+                    f"  WHERE {scope}"
                     "  ORDER BY created_ts DESC, id DESC LIMIT ?"
                     ") WHERE created_ts > ?",
-                    (window, float(since)),
+                    (*params, window, float(since)),
                 ).fetchone()
                 return int(row["n"])
         except Exception:  # noqa: BLE001
@@ -521,19 +600,29 @@ class HistoryStore:
 
     # ── 概览 ────────────────────────────────────────────────────────────
 
-    def status(self, *, now: Optional[float] = None) -> dict[str, Any]:
-        """给界面看的概览：可用与否、有多少条、什么时候会再清理。"""
+    def status(
+        self, *, user_id: Optional[int] = None, now: Optional[float] = None
+    ) -> dict[str, Any]:
+        """给界面看的概览：可用与否、有多少条、什么时候会再清理。
+
+        ``total`` 是**这个人**的记录数——「回响」页顶上那句"共 N 条"必须与下面
+        列表里的条数对得上。``db_path`` / ``size_bytes`` 是整库的（一个进程只有
+        一个库文件），它们描述的是"存储本身"，不是"我的记录"。
+        """
         timestamp = time.time() if now is None else now
         available = self._db.available
         total = 0
         last_purge: Optional[float] = None
+        scope, params = _scope(user_id)
         if available:
             # 界面每次打开都会问一次状态，正好借这个时机做机会式清理
             self._maybe_purge(now=timestamp)
             try:
                 with self._db.session() as connection:
                     total = int(
-                        connection.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"]
+                        connection.execute(
+                            f"SELECT COUNT(*) AS n FROM history WHERE {scope}", params
+                        ).fetchone()["n"]
                     )
                     last_purge = _read_meta(connection, META_LAST_PURGE)
             except Exception:  # noqa: BLE001

@@ -24,7 +24,8 @@ from .intent import guidance as intent_guidance
 from .intent import parse_intent
 from .llm import EndpointOverride, generate_answer_with_model, llm_status, probe_endpoint
 from .llm import build_messages, normalize_lang, resolve_session
-from .retriever import ensure_retriever
+from .retriever import SearchResult, ensure_retriever
+from .unified_search import CANDIDATE_FACTOR, rrf_fuse, shelf_index
 
 #: 走自定义端点时，降级文案要指向用户真正能改的地方——
 #: 让他去配一个自己没听说过的环境变量，等于没说。
@@ -66,6 +67,46 @@ class Answer:
         return self.model is not None
 
 
+def _retrieve(
+    question: str,
+    *,
+    top_k: int,
+    history: Optional[Sequence[tuple[str, str]]],
+    user_id: Optional[int],
+) -> list[SearchResult]:
+    """求教用的检索：公共语料 + 登录用户自己的书架。
+
+    公共那一路走 :func:`advice.search_for_advice` 而不是直接 ``retriever.search``：
+    全库平权时回来的是《毛泽东选集》和《易经》卦爻辞（两者占索引 67%），
+    模型拿不到对口材料，只能硬凑或架空。详见 ``services/advice.py``。
+
+    私人书架那一路独立检索，两路再用 RRF 融合。为什么不把用户的书直接并进
+    公共检索：两边 IDF 基准差着一个数量级，分数不可直接比较——理由写在
+    ``services/unified_search.py`` 的模块注释里。
+
+    追问时把上一轮的问句一起送进检索：光靠"那我具体该说什么"这种句子，
+    检索召回的是一堆与正在聊的事无关的段落，回答看着就是答非所问。
+    """
+    past_questions = _past_questions(history)
+    hits = search_for_advice(
+        ensure_retriever(),
+        question,
+        top_k=top_k,
+        context=past_questions[-1] if past_questions else "",
+    )
+    results = list(hits.results)
+
+    if user_id is None:
+        return results
+    index = shelf_index(user_id)
+    if index is None:
+        return results
+    shelf_hits = index.search(question, top_k=top_k * CANDIDATE_FACTOR)
+    if not shelf_hits:
+        return results
+    return rrf_fuse([results, shelf_hits], top_k=top_k)
+
+
 def ask(
     question: str,
     *,
@@ -74,6 +115,7 @@ def ask(
     lang: str = "",
     history: Optional[Sequence[tuple[str, str]]] = None,
     conversation_id: Optional[str] = None,
+    user_id: Optional[int] = None,
 ) -> Answer:
     """回答一个问题。
 
@@ -107,14 +149,7 @@ def ask(
     """
     # 追问时把上一轮的问句一起送进检索：光靠"那我具体该说什么"这种句子，
     # 检索召回的是一堆与正在聊的事无关的段落，回答看着就是答非所问。
-    past_questions = _past_questions(history)
-    hits = search_for_advice(
-        ensure_retriever(),
-        question,
-        top_k=top_k,
-        context=past_questions[-1] if past_questions else "",
-    )
-    results = list(hits.results)
+    results = _retrieve(question, top_k=top_k, history=history, user_id=user_id)
     session = resolve_session(override)
     answer_lang = normalize_lang(lang)
     topic_id = (conversation_id or "").strip() or new_topic_id()
@@ -139,6 +174,7 @@ def ask(
         model=model,
         retrieved_count=len(results),
         conversation_id=topic_id,
+        user_id=user_id,
     )
     return Answer(
         question=question,
@@ -173,24 +209,19 @@ def plan(
     lang: str = "",
     history: Optional[Sequence[tuple[str, str]]] = None,
     conversation_id: Optional[str] = None,
+    user_id: Optional[int] = None,
 ) -> AskPlan:
     """只做检索与组装提示词，不调模型——生成交给浏览器。
 
     与 :func:`ask` 共用同一段检索与题型判断，保证"内置模型"和"云模型"
     两条路拿到的材料与要求完全一致；差别只在谁去生成。
     """
-    past_questions = _past_questions(history)
-    hits = search_for_advice(
-        ensure_retriever(),
-        question,
-        top_k=top_k,
-        context=past_questions[-1] if past_questions else "",
-    )
+    results = _retrieve(question, top_k=top_k, history=history, user_id=user_id)
     answer_lang = normalize_lang(lang)
     topic_id = (conversation_id or "").strip() or new_topic_id()
     messages = build_messages(
         question,
-        list(hits.results),
+        results,
         lang=answer_lang,
         history=history,
         guidance=intent_guidance(parse_intent(question), lang=answer_lang),
@@ -199,7 +230,7 @@ def plan(
         question=question,
         messages=messages,
         lang=answer_lang,
-        retrieved=len(hits.results),
+        retrieved=len(results),
         conversation_id=topic_id,
     )
 
@@ -211,6 +242,7 @@ def save_answer(
     model: Optional[str] = None,
     retrieved_count: int = 0,
     conversation_id: Optional[str] = None,
+    user_id: Optional[int] = None,
 ) -> Answer:
     """把浏览器侧生成好的回答补记进历史。
 
@@ -225,6 +257,7 @@ def save_answer(
         model=model or CLOUD_MODEL_TAG,
         retrieved_count=retrieved_count,
         conversation_id=topic_id,
+        user_id=user_id,
     )
     return Answer(
         question=question,

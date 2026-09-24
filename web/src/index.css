@@ -2,16 +2,43 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ══════════════════════════════════════════════════════════════════════
+   样式分层（自下而上，上层只依赖下层）
+
+     tokens     tailwind.config.js 里的颜色 / 时长 / 缓动 / 阴影
+       ↓
+     base       本文件的 @layer base —— 元素默认值与无障碍守卫
+       ↓
+     components 本文件的 @layer components —— 跨页复用的表面与排版
+       ↓
+     primitives src/components/ui/*.tsx —— 原子组件（只吃令牌，不吃业务）
+       ↓
+     features   src/features/* —— 业务（只吃原子，不写死样式）
+       ↓
+     pages      src/pages/* —— 路由薄壳
+
+   所以：这里只放"多个页面都要用的表面与排版"，一旦某个类只有一页在用，
+   它就属于那一页，该搬到 feature 里去。
+   ══════════════════════════════════════════════════════════════════════ */
+
 /* ── 基础层 ──────────────────────────────────────────────────────────── */
 @layer base {
   html {
     -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
   }
 
   /* 界面默认无衬线（导航 / 按钮 / 标签这类小字），
      内容区再按需指定衬线或楷体——见 .markdown-body 与各页面的 font-serif。 */
   body {
     @apply bg-paper-100 font-sans text-ink-900 antialiased;
+    /* 环境光：两团极淡的色晕压在纸面上，让大片留白不至于"平"。
+       朱砂在右上、青瓷在左下，正好呼应主次两个强调色。
+       透明度压到 0.5 以下——它是氛围，不是图案，看久了不该注意到它。 */
+    background-image:
+      radial-gradient(58rem 34rem at 88% -8%, rgba(192, 57, 43, 0.045), transparent 62%),
+      radial-gradient(48rem 30rem at 4% 104%, rgba(74, 107, 93, 0.05), transparent 60%);
+    background-attachment: fixed;
   }
 
   ::selection {
@@ -42,21 +69,115 @@
   ::-webkit-scrollbar-thumb:hover {
     background-color: #c9bc9d;
   }
+
+  /* ── 无障碍：减弱动效 ─────────────────────────────────────────────
+     这是**必须**的守卫，不是可选项。前庭功能障碍者会因为位移与缩放
+     产生眩晕；系统里开了"减弱动态效果"的人，我们要**整片**停掉动画，
+     而不是只调慢一点。
+
+     做法：把所有动画与过渡压到 0.01ms（而不是 none）——保留 transitionend
+     事件仍然触发，那些"等动画结束再做下一步"的逻辑不会卡死。
+     `both`/`forwards` 填充的入场动画仍会立刻落到终态，内容不会消失。 */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
 /* ── 组件层 ──────────────────────────────────────────────────────────── */
 @layer components {
-  /* 表面：卡片 / 面板 / 结果条目共用的底层样式。
+  /* ── 表面阶梯 ─────────────────────────────────────────────────────
+     surface-1 静置（卡片、面板）
+     surface-2 抬起（悬停中的卡片、被强调的条目）
      页面底色是 paper-100，表面抬到 paper-50 并加一层极轻的阴影，
      形成"纸叠纸"的层次；原来是反的（卡片比页面更深），所以卡片看起来是陷进去的。 */
   .card {
-    @apply rounded-xl border border-paper-200 bg-paper-50 shadow-card transition-all duration-200;
+    @apply rounded-xl border border-paper-200 bg-paper-50 shadow-card transition-[background-color,border-color,box-shadow,transform] duration-quick ease-swift;
+  }
+
+  /* 可点卡片：悬停时抬一档、描边转朱砂、阴影加深，并且"往上挪半格"。
+     位移只有 2px——足够被眼睛捕捉到"它活了"，又不会让整行卡片跟着抖。
+     用 spring 曲线：起手快、收尾缓，松手时像被吸住。 */
+  .card-interactive {
+    @apply card hover:-translate-y-0.5 hover:border-cinnabar-300 hover:shadow-lift;
+  }
+
+  /* 大面板：比卡片更"沉"，用浅一档的底与更柔的描边，
+     让嵌在里面的卡片能重新形成层次，而不是面板套卡片一片糊。 */
+  .panel {
+    @apply rounded-2xl border border-paper-200/80 bg-paper-50/80 p-5 shadow-card backdrop-blur-sm;
+  }
+
+  /* 顶栏玻璃：滚动时内容从下面穿过，靠模糊 + 半透明留住层次。
+     底部描边单独用渐变画，避免 1px 实线在模糊层上显得生硬。 */
+  .topbar {
+    @apply sticky top-0 z-30 border-b border-paper-200/70 bg-paper-100/80 backdrop-blur-xl;
   }
 
   /* 输入框：默认边框、悬停加深、聚焦转为朱砂描边。
      焦点环由 base 层的 :focus-visible 统一提供。 */
   .field {
-    @apply w-full rounded-lg border border-paper-300 bg-paper-50 px-4 py-2.5 text-ink-900 transition-colors placeholder:text-ink-400 hover:border-paper-400 focus:border-cinnabar-400;
+    @apply w-full rounded-lg border border-paper-300 bg-paper-50 px-4 py-2.5 text-ink-900 transition-colors duration-quick placeholder:text-ink-400 hover:border-paper-400 focus:border-cinnabar-400;
+  }
+
+  /* 骨架屏：底色 + 一道横扫的高光。比 animate-pulse 更明确地表达"内容在路上"，
+     而不是"这个元素坏掉了"。 */
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-paper-200/80;
+  }
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(251, 250, 246, 0.9) 45%,
+      rgba(251, 250, 246, 0.9) 55%,
+      transparent 100%
+    );
+    transform: translateX(-100%);
+    animation: rsds-shimmer 1.7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  /* 展开：从 0 高度长到内容高度。
+     高度是**算不出来**的（内容多少由数据决定），所以不能用 transition 写死数值。
+     现代做法是拿 `grid-template-rows: 0fr → 1fr` 当高度开关——浏览器会
+     自己插值出真实高度，既不用测 scrollHeight，也不用写 max-height 猜一个上限
+     （猜小了内容被切，猜大了动画后半段是空的）。
+
+     只在挂载时演一遍：退出时元素直接卸载。做双向动画要给卸载"等一会儿"，
+     在 React 里要额外状态机，收益不抵复杂度——展开比收起更值得被看见。 */
+  .unfold {
+    display: grid;
+    grid-template-rows: 1fr;
+    animation: rsds-unfold 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .unfold > * {
+    overflow: hidden;
+  }
+
+  /* 发丝分隔线。用 background 而不是 border，方便做"两端渐隐"的效果——
+     实线在圆角容器里会和圆角打架。 */
+  .hairline {
+    @apply h-px w-full bg-gradient-to-r from-transparent via-paper-300 to-transparent;
+  }
+
+  /* 横向滚动条隐藏：导航在窄屏下横向滚动，但不该露出滚动条 */
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 
   /* 正文排版。
@@ -146,5 +267,27 @@
 
   .markdown-body hr {
     @apply my-8 border-paper-300;
+  }
+}
+
+/* 骨架屏的高光横扫。定义在层外：Tailwind 只会为"用到的"工具类生成
+   keyframes，而这个动画挂在 .skeleton::after 上，工具类扫描不到它。 */
+@keyframes rsds-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes rsds-unfold {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
   }
 }
