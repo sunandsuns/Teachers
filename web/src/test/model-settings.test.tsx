@@ -10,9 +10,11 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
 import { api } from '../api/client'
+import { AuthProvider } from '../features/auth/AuthProvider'
 
 vi.mock('../api/client', () => ({
   api: {
+    me: vi.fn(),
     listBooks: vi.fn(),
     getBook: vi.fn(),
     listChapters: vi.fn(),
@@ -36,6 +38,16 @@ vi.mock('../api/client', () => ({
 
 const mockedApi = vi.mocked(api)
 
+/** 已登录的普通用户。见 `renderAskPage` 里的说明：门禁要它才放得过。 */
+const VIEWER = {
+  id: 2,
+  email: 'alice@example.com',
+  display_name: '小艾',
+  name: '小艾',
+  is_admin: false,
+  created_at: '2026-01-01T00:00:00+00:00',
+}
+
 const ANSWER = {
   question: '如何面对挫折',
   answer: '天行健，君子以自强不息。',
@@ -48,9 +60,13 @@ const ANSWER = {
 
 function renderAskPage() {
   window.history.replaceState({}, '', '/ask')
+  // 求教页在 `RequireAuth` 那一组里：不套 `AuthProvider` 并让 `me` 返回用户，
+  // 这里渲染出来的是登录门，后面所有"模型面板"的断言都在对着门说话。
   return render(
     <MemoryRouter initialEntries={['/ask']}>
-      <App />
+      <AuthProvider>
+        <App />
+      </AuthProvider>
     </MemoryRouter>,
   )
 }
@@ -76,6 +92,7 @@ async function askAQuestion(user: ReturnType<typeof userEvent.setup>, text = '�
 describe('求教的模型来源', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedApi.me.mockResolvedValue({ user: VIEWER })
     mockedApi.ask.mockResolvedValue(ANSWER)
   })
 

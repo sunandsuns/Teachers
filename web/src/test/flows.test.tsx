@@ -4,9 +4,11 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import App from '../App'
 import { api } from '../api/client'
+import { AuthProvider } from '../features/auth/AuthProvider'
 
 vi.mock('../api/client', () => ({
   api: {
+    me: vi.fn(),
     listBooks: vi.fn(),
     getBook: vi.fn(),
     listChapters: vi.fn(),
@@ -34,10 +36,41 @@ vi.mock('../api/client', () => ({
 
 const mockedApi = vi.mocked(api)
 
+/** 已登录的普通用户。
+ *
+ * 这些用例走的是**整个应用**（`<App />`），而 `App` 里的路由表把除书架与
+ * 阅读页之外的路由都圈进了 `RequireAuth`。所以不套 `AuthProvider`、或者
+ * `me` 返回 null 的话，点「寻章」「求教」「回响」看到的会是登录门，
+ * 断言的不是页面而是门——那种"通过"毫无意义。
+ */
+const VIEWER = {
+  id: 2,
+  email: 'alice@example.com',
+  display_name: '小艾',
+  name: '小艾',
+  is_admin: false,
+  created_at: '2026-01-01T00:00:00+00:00',
+}
+
+/** 挂上真实的 Provider 栈再渲染整个应用。
+ *
+ * `AuthProvider` 必须在 `MemoryRouter` 里面——和 `main.tsx` 的嵌套顺序一致，
+ * 将来它要是用上路由钩子，这里才不会莫名其妙地炸。 */
+function renderApp(entries: string[] = ['/']) {
+  return render(
+    <MemoryRouter initialEntries={entries}>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </MemoryRouter>,
+  )
+}
+
 /** 集成测试：从书架点进书 → 选章节 → 看到 Markdown 内容。 */
 describe('阅读流程', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedApi.me.mockResolvedValue({ user: VIEWER })
     mockedApi.listBooks.mockResolvedValue([
       { book_id: '02', title: '厚黑学', author: '李宗吾', category: '处世', chapter_count: 2, has_source: false },
     ])
@@ -56,7 +89,7 @@ describe('阅读流程', () => {
   })
 
   it('书架 → 书页 → 章节', async () => {
-    render(<MemoryRouter><App /></MemoryRouter>)
+    renderApp()
     const user = userEvent.setup()
 
     await user.click(await screen.findByText('厚黑学'))
@@ -73,6 +106,7 @@ describe('阅读流程', () => {
 describe('问答流程', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedApi.me.mockResolvedValue({ user: VIEWER })
     mockedApi.ask.mockResolvedValue({
       question: '如何面对挫折',
       answer: '天行健，君子以自强不息。逆境是蓄力期。',
@@ -86,11 +120,7 @@ describe('问答流程', () => {
   })
 
   it('提问后展示回答', async () => {
-    render(
-      <MemoryRouter initialEntries={['/ask']}>
-        <App />
-      </MemoryRouter>,
-    )
+    renderApp(['/ask'])
     const user = userEvent.setup()
 
     const input = await screen.findByPlaceholderText('输入你的问题或困境…')
@@ -107,11 +137,7 @@ describe('问答流程', () => {
   })
 
   it('带 q 参数进来时预填问题（「回响」的再问一次）', async () => {
-    render(
-      <MemoryRouter initialEntries={['/ask?q=迷茫时该怎么办']}>
-        <App />
-      </MemoryRouter>,
-    )
+    renderApp(['/ask?q=迷茫时该怎么办'])
 
     const input = (await screen.findByPlaceholderText(
       '输入你的问题或困境…',
@@ -124,6 +150,7 @@ describe('问答流程', () => {
 describe('导航', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedApi.me.mockResolvedValue({ user: VIEWER })
     mockedApi.listBooks.mockResolvedValue([])
     mockedApi.listHistory.mockResolvedValue({ available: true, error: '', total: 0, items: [] })
     mockedApi.listTopics.mockResolvedValue({ available: true, error: '', total: 0, items: [] })
@@ -149,7 +176,7 @@ describe('导航', () => {
   })
 
   it('寻章、求教、回响与感悟入口渲染对应页面', async () => {
-    render(<MemoryRouter><App /></MemoryRouter>)
+    renderApp()
     const user = userEvent.setup()
 
     await user.click(screen.getByText('寻章'))
@@ -177,6 +204,7 @@ describe('回响的勾选删除（整个应用里）', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedApi.me.mockResolvedValue({ user: VIEWER })
     mockedApi.listBooks.mockResolvedValue([])
     mockedApi.listTopics.mockResolvedValue({
       available: true,
@@ -209,11 +237,7 @@ describe('回响的勾选删除（整个应用里）', () => {
   })
 
   it('从导航进回响，勾一段再删掉', async () => {
-    render(
-      <MemoryRouter>
-        <App />
-      </MemoryRouter>,
-    )
+    renderApp()
     const user = userEvent.setup()
 
     await user.click(screen.getByText('回响'))

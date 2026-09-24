@@ -20,7 +20,8 @@ interface BookFinderProps {
  * 把选择权交回去，多一次点击，少一次返工。
  *
  * 检索是**需要登录**的：加书是写操作，而搜索本身也贴着用户身份（将来要按
- * 用户的书架去重）。未登录时这个组件根本不会渲染——外层有 LoginGate。
+ * 用户的书架去重）。未登录时这个组件根本不会渲染——「我的书架」整条路由
+ * 都在 `RequireAuth` 那一组里，进不去就轮不到它出场。
  */
 export default function BookFinder({ onShelf, onAdd }: BookFinderProps) {
   const { t } = useI18n()

@@ -65,9 +65,9 @@ function Field({
  * API 调用。拆成两份文件的结果一定是"改了一边忘了另一边"——比如某天要给
  * 密码框加上显示/隐藏，就得记得改两处。
  *
- * 一个刻意的取舍：**登录页不把"不登录也能用"藏起来**。这套产品的检索、阅读、
- * 求教本来就对所有人开放，登录只决定"哪些数据归你"；把这句话说出来，比让
- * 用户以为必须先注册才能进门要诚实得多。
+ * 一个刻意的取舍：**登录页不把"不登录也能用"藏起来**。书架与阅读页确实对
+ * 所有人开放，登录决定的是"其余功能进不进得去"；把这句话说出来，比让用户
+ * 以为整个站都得先注册要诚实得多——他至少知道门外还留着一块地方。
  */
 export default function AuthPage({ mode }: { mode: AuthMode }) {
   const { t } = useI18n()
@@ -85,10 +85,15 @@ export default function AuthPage({ mode }: { mode: AuthMode }) {
 
   /** 登录成功之后去哪。
    *
-   * 从「我的书架」被弹过来的用户，`location.state.from` 记着原地址——登完直接
-   * 送回去，而不是丢到首页让他再点一次。
+   * 从「寻章」这类页面被拦下来的用户，`location.state.from` 记着原地址——
+   * 登完直接送回去，而不是丢到首页让他再点一次。
+   *
+   * 只认**站内路径**：`//evil.com` 这种协议相对地址在浏览器里等于外站，
+   * 万一哪天 `state` 能被外部写进来，这里就是现成的开放重定向。
+   * 校验放在取值这一处，比在每个 `navigate` 调用点各防一次可靠。
    */
-  const from = (location.state as { from?: string } | null)?.from ?? '/shelf'
+  const requested = (location.state as { from?: string } | null)?.from
+  const from = requested?.startsWith('/') && !requested.startsWith('//') ? requested : '/shelf'
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
@@ -179,8 +184,12 @@ export default function AuthPage({ mode }: { mode: AuthMode }) {
         </Button>
       </form>
 
+      {/* `state` 要跟着一起走：从「寻章」被拦下来的人，点「还没有账号？去注册」
+          之后仍然得记得回「寻章」。不带过去的话，`from` 在这一次跳转上就断了，
+          注册完只会落到默认那一页——用户刚点过的入口被悄悄忘掉。 */}
       <Link
         to={isLogin ? '/register' : '/login'}
+        state={location.state ?? undefined}
         className="mt-4 block text-center text-sm text-ink-500 transition-colors duration-quick hover:text-cinnabar-600"
       >
         {isLogin ? t('auth.toRegister') : t('auth.toLogin')}

@@ -335,9 +335,11 @@ const ZH = {
   'auth.menu': '账号菜单',
   'auth.optional': '不登录也能用',
   'auth.optionalHint':
-    '书架、寻章、知识库、求教都对所有人开放。登录只是让"我的书架""回响""画像"这三处有你自己的那一份。',
+    '不登录也能翻书架、读正文。登录之后，寻章、知识库、求教、回响、画像、感悟才对你开放。',
   'auth.needLogin': '需要先登录',
-  'auth.needLoginHint': '这一页是你自己的数据，登录之后才看得到。',
+  'auth.needLoginHint': '这一页要登录之后才能看。不登录也能先翻书架、读正文。',
+  // 带功能名的版本。功能名从导航表里取，所以门禁不必自己维护一份路径对照。
+  'auth.needLoginFor': '「{name}」要登录之后才能用。不登录也能先翻书架、读正文。',
   'auth.goLogin': '去登录',
   'auth.signedInAs': '已登录 · {name}',
   'auth.passwordChanged': '密码已修改，请重新登录。',
@@ -766,9 +768,12 @@ const EN: Record<MessageKey, string> = {
   'auth.menu': 'Account menu',
   'auth.optional': 'Usable without signing in',
   'auth.optionalHint':
-    'The shelf, search, knowledge base and Ask are open to everyone. Signing in only gives “My shelf”, “Echoes” and “Profile” a copy of your own.',
+    'Without an account you can browse the shelf and read. Signing in unlocks search, the knowledge base, Ask, Echoes, Profile and Insights.',
   'auth.needLogin': 'Please sign in first',
-  'auth.needLoginHint': 'This page shows your own data, so it needs a signed-in account.',
+  'auth.needLoginHint':
+    'This page needs a signed-in account. You can still browse the shelf and read without one.',
+  'auth.needLoginFor':
+    '“{name}” needs a signed-in account. You can still browse the shelf and read without one.',
   'auth.goLogin': 'Go to sign in',
   'auth.signedInAs': 'Signed in · {name}',
   'auth.passwordChanged': 'Password changed. Please sign in again.',

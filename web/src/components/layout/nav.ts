@@ -92,6 +92,17 @@ export function pageOrder(pathname: string): number {
   return SPATIAL_ORDER.findIndex(item => isNavItemActive(pathname, item))
 }
 
+/**
+ * 当前路径**归属**的那个导航项；不在导航上（登录、注册）时返回 `null`。
+ *
+ * 与 `pageOrder` 同源，都用 `isNavItemActive` 判断归属——"这一页叫什么"
+ * 只有一处答案。登录门禁拿它来点名（「寻章」要登录之后才能用），
+ * 而不是再维护一张 路径 → 功能名 的表。
+ */
+export function navItemFor(pathname: string): NavItem | null {
+  return SPATIAL_ORDER.find(item => isNavItemActive(pathname, item)) ?? null
+}
+
 /** 转场方向。 */
 export type TransitionDirection = 'forward' | 'back' | 'depth'
 

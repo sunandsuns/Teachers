@@ -319,7 +319,34 @@ def main() -> int:
         cdp.shot("ui-02-shelf-gate.png")
 
         print()
-        print("=== 3. 登录页：错误凭据要报错，正确凭据要进得去 ===")
+        print("=== 2b. 权限边界：匿名只看得见书架与阅读页 ===")
+        # 门禁是**路由表**上那条 `RequireAuth` 分组，不是各页自己的判断。所以这段
+        # 的职责是守住那张清单：哪天把某条路由挪出分组（或加了一条却忘了放进去），
+        # 这里就会红——那种错误不会报错，只会安静地对匿名开放。
+        GATED = ("/shelf", "/search", "/knowledge", "/ask", "/history",
+                 "/profile", "/insights", "/admin")
+        for path in GATED:
+            cdp.goto(path)
+            check("匿名进 %s 看到登录门" % path,
+                  cdp.wait_for(
+                      "document.body.innerText.indexOf('需要先登录') >= 0",
+                      timeout=8))
+            check("  %s 的门给了去登录的出口" % path,
+                  bool(cdp.evaluate(
+                      "!!Array.from(document.querySelectorAll('button'))"
+                      ".find(e => e.textContent.indexOf('去登录') >= 0)")))
+        # 反面：这两条必须放行。断言里带上"这一页真的渲染了"，是因为
+        # 单看"没有登录门"证明不了任何事——整页挂了时同样没有门。
+        for path, marker in (("/", "a[href^='/books/']"), ("/books/01", "h1")):
+            cdp.goto(path)
+            rendered = cdp.wait_for(
+                "!!document.querySelector(%s)" % json.dumps(marker), timeout=10)
+            check("匿名进 %s 不被拦，且这一页真的渲染了" % path,
+                  rendered and cdp.evaluate(
+                      "document.body.innerText.indexOf('需要先登录') < 0"))
+
+        print()
+        print("=== 3. 登录页：错误凭据要报错 ===")
         cdp.goto("/login")
         check("登录页有邮箱与密码输入框",
               cdp.wait_for("!!document.querySelector('input[type=email]') && "
@@ -339,9 +366,27 @@ def main() -> int:
         admin_password = os.environ.get("RSDS_ADMIN_PASSWORD") or env.get(
             "RSDS_ADMIN_PASSWORD", "admin123456")
 
+        print()
+        print("=== 3b. 从登录门进去：登完回到被拦下那一页 ===")
+        # "登录完成后转跳"最容易断在两处：门没把来路带上，或者登录页跳注册页时
+        # 把 `state` 丢了。这里端到端走一遍，断言的是**浏览器地址栏**——
+        # 不是"页面上出现了某个词"：后者会被顶栏里恰好也写着「求教」的链接蒙过去。
+        cdp.goto("/search")
+        cdp.wait_for("document.body.innerText.indexOf('需要先登录') >= 0", timeout=8)
+        cdp.evaluate(
+            "(function(){var b=Array.from(document.querySelectorAll('button'))"
+            ".find(e => e.textContent.indexOf('去登录') >= 0); if(b) b.click();})()")
+        check("点去登录进了登录页",
+              cdp.wait_for("location.pathname === '/login'", timeout=8),
+              cdp.evaluate("location.pathname"))
+
+        cdp.wait_for("!!document.querySelector('input[type=email]')")
         cdp.evaluate(SET_VALUE % ("'input[type=email]'", json.dumps(admin_email)))
         cdp.evaluate(SET_VALUE % ("'input[type=password]'", json.dumps(admin_password)))
         cdp.evaluate("document.querySelector('form').requestSubmit()")
+        check("登录完回到被拦下那一页",
+              cdp.wait_for("location.pathname === '/search'", timeout=15),
+              cdp.evaluate("location.pathname"))
         check("管理员登录成功（导航出现「后台」）",
               cdp.wait_for("document.body.innerText.indexOf('后台') >= 0"))
         cdp.pump(0.6)

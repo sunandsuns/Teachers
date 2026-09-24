@@ -18,13 +18,15 @@ import { ADMIN_TABS, TAB_KEY, type AdminTab } from './constants'
  * 的判断和同一批数据（总览里的用户数、待审数在别的面板里改完就要跟着变），
  * 拆成四条路由反而要把这些状态提到更外面。
  *
- * 权限判断放在**页面里**而不是路由层：非管理员访问 `/admin` 会看到一句
- * "这一页只对管理员开放"，而不是被无声地重定向到首页——后者会让人以为
- * 链接坏了。真正的拦截在后端（`require_admin` → 403），这里只管说明。
+ * 权限判断分两层：**要不要登录**由路由表决定（`/admin` 在 `RequireAuth` 那一组里，
+ * 未登录时根本走不到这里）；**是不是管理员**留在本页——"未登录"和"已登录但
+ * 不是管理员"该看到的话不一样，前者是"你去登录"，后者是"你没这个权限"，
+ * 那句区别只有这里说得清。真正的拦截在后端（`require_admin` → 403），
+ * 界面这层只管说明。
  */
 export default function AdminPage() {
   const { t } = useI18n()
-  const { user, loading: authLoading } = useAuth()
+  const { user } = useAuth()
   const [tab, setTab] = useState<AdminTab>('overview')
 
   // 三个面板的数据都在这里拿：切页签不该重新请求一遍。
@@ -40,8 +42,9 @@ export default function AdminPage() {
     [isAdmin],
   )
 
-  if (authLoading) return <Loading />
-  if (!user) return <Empty title={t('auth.needLogin')} hint={t('auth.needLoginHint')} />
+  // 外层 `RequireAuth` 保证到了这里一定有 user，这行只为把类型收窄成非空。
+  // 不写 `return <Loading />`：万一真有路径漏过门禁，转圈比说清"要登录"更糟。
+  if (!user) return null
   if (!user.is_admin) return <Empty title={t('admin.denied')} hint={t('admin.deniedHint')} />
 
   /** 任何一个面板改动了数据，总览里的计数就可能过时。一并刷新，代价是三次本地查询。 */
