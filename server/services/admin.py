@@ -25,6 +25,8 @@ from datetime import datetime, time as dtime
 from typing import Any, Optional, Sequence
 
 from .db import Database, DatabaseUnavailable
+from .errors import DomainError
+from .store import StoreBase
 
 #: 单次最多返回的行数。直接操作数据库的界面是给人看的，不是给程序导出的。
 MAX_ROWS = 200
@@ -39,12 +41,10 @@ PROTECTED_COLUMNS: frozenset[tuple[str, str]] = frozenset({
 AUDIT_LIMIT = 100
 
 
-class AdminError(ValueError):
+class AdminError(DomainError):
     """可预期的管理操作错误（表不存在、列不存在、动了保护列）。"""
 
-    def __init__(self, message: str, code: str = "admin_error") -> None:
-        super().__init__(message)
-        self.code = code
+    default_code = "admin_error"
 
 
 def _today_start() -> float:
@@ -53,23 +53,11 @@ def _today_start() -> float:
     return datetime.combine(now.date(), dtime.min).timestamp()
 
 
-class AdminStore:
+class AdminStore(StoreBase):
     """后台用的数据访问。**所有方法都假定调用方已经验过管理员身份。**"""
 
     def __init__(self, db: Optional[Database] = None) -> None:
-        self._db = db if db is not None else Database()
-
-    @property
-    def available(self) -> bool:
-        return self._db.available
-
-    @property
-    def error(self) -> str:
-        return self._db.error
-
-    @property
-    def db_path(self) -> str:
-        return str(self._db.path)
+        super().__init__(db)
 
     # ── 总览 ────────────────────────────────────────────────────────
 

@@ -26,8 +26,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-FRONT = "http://localhost:5173"
-BACK = "http://127.0.0.1:8000"
+# 端口与 run.py 的默认值一致。**但 run.py 在端口被占时会自动避让**（并且会把
+# 后端地址通过 VITE_API_TARGET 传给 vite），那时这个脚本会悄悄打到另一个服务上
+# ——可能是旧版本，于是"全部通过"就成了谎话。留两个环境变量兜住这种情况：
+#     SMOKE_BACK_PORT=8001 SMOKE_FRONT_PORT=5174 python smoke.py
+FRONT = "http://localhost:%s" % os.environ.get("SMOKE_FRONT_PORT", "5173")
+BACK = "http://127.0.0.1:%s" % os.environ.get("SMOKE_BACK_PORT", "8000")
 
 # 一次求教最多会花掉后端的 LLM_TOTAL_BUDGET（默认 45s），再加上检索与落库的时间。
 # 套接字超时必须比它宽——**比预算还短的超时会以"卡死"收场**，而真实原因只是

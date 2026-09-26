@@ -7,9 +7,21 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
 
-from ..deps import current_user, require_user
+from ..deps import require_user
+from ..errors import DB_BACKED
+from ..schemas.ask import (
+    AskPlanRequest,
+    AskPlanResponse,
+    AskRequest,
+    AskResponse,
+    AskSaveRequest,
+    AskStatusResponse,
+    ChatMessage,
+    ConversationTurn,
+    LLMEndpoint,
+    ProbeResponse,
+)
 from ..services import qa
 from ..services.auth import User
 from ..services.llm import EndpointOverride
@@ -17,129 +29,26 @@ from ..services.llm import EndpointOverride
 # 「求教」要登录：它把问答写进「回响」，而回响是按账号隔离的——
 # 匿名提问会落到谁都看不见的 `user_id IS NULL` 那一份里，等于白问。
 # 理由与做法见 `deps.py`。
-router = APIRouter(prefix="/api/ask", tags=["ask"], dependencies=[Depends(require_user)])
-
-#: 请求体里最多接受几轮历史。真实上限比这严（``prompt.MAX_HISTORY_TURNS``），
-#: 这里放宽只是不想因为前端多带两轮就让整次提问 422——截断是服务层的事。
-MAX_REQUEST_TURNS = 20
+router = APIRouter(
+    prefix="/api/ask", tags=["ask"], dependencies=[Depends(require_user)], responses=DB_BACKED
+)
 
 
-class LLMEndpoint(BaseModel):
-    """用户自填的模型端点。
+def _to_override(payload: Optional[LLMEndpoint]) -> Optional[EndpointOverride]:
+    """入参 → 服务层要的端点覆盖。
 
-    三个字段全空即"用内置的默认模型"。只填一半（有地址没 Key）视同全空——
-    见 :meth:`EndpointOverride.from_payload`，拿半截配置去试探只会换来一次
-    注定失败的请求。
+    转换放在 router 而不是模型上（原先挂在 ``LLMEndpoint.to_override``）：
+    ``schemas/`` 是纯数据，让模型去 import 服务层的类型，等于让契约层反过来
+    依赖实现层。凡是"模型 → 服务层对象"的转换都留在这一侧。
+
+    走 ``from_payload`` 而不是直接构造：它负责"只填一半视同没填"那条规则，
+    绕过去就会拿着半截配置去发一个注定失败的请求。
     """
-
-    base_url: str = Field("", max_length=500, description="接口地址，如 https://api.example.com/v1")
-    api_key: str = Field("", max_length=500, description="API Key")
-    model: str = Field("", max_length=200, description="模型名；留空则由应用自动挑选")
-
-    def to_override(self) -> Optional[EndpointOverride]:
-        return EndpointOverride.from_payload(self.model_dump())
-
-
-class ConversationTurn(BaseModel):
-    """一轮旧问答。追问时随请求带上来，模型才知道刚才聊到哪。"""
-
-    question: str = Field("", max_length=500, description="当时的提问")
-    answer: str = Field("", max_length=40000, description="当时得到的回答")
-
-
-class AskRequest(BaseModel):
-    """问答请求。"""
-    question: str = Field(..., min_length=1, max_length=500, description="用户问题")
-    top_k: int = Field(5, ge=1, le=10, description="检索结果数")
-    lang: str = Field(
-        "", max_length=10, description="作答语言：zh / en；留空或无法识别时按 zh"
-    )
-    conversation_id: str = Field(
-        "",
-        max_length=64,
-        description="话题 id：带上就是接着那个话题追问，留空则新开一个",
-    )
-    history: list[ConversationTurn] = Field(
-        default_factory=list,
-        max_length=MAX_REQUEST_TURNS,
-        description="最近几轮问答（新的在后）。追问时带上，回答才不会像失忆",
-    )
-    llm: Optional[LLMEndpoint] = Field(
-        None, description="自定义模型端点；省略或留空则使用内置的默认模型"
-    )
-
-
-class AskResponse(BaseModel):
-    """问答响应。"""
-    question: str
-    answer: str
-    retrieved_count: int
-    llm_used: bool
-    model: Optional[str] = Field(None, description="实际使用的模型；未走 LLM 时为 null")
-    history_id: Optional[int] = Field(
-        None, description="这条问答在历史记录里的 id；未记上（库不可用等）为 null"
-    )
-    conversation_id: str = Field(..., description="这次问答所属的话题；追问时原样带回")
-
-
-class AskPlanRequest(BaseModel):
-    """只检索、不生成的请求。字段与 :class:`AskRequest` 保持一致，减去 ``llm``。"""
-
-    question: str = Field(..., min_length=1, max_length=500, description="用户问题")
-    top_k: int = Field(5, ge=1, le=10, description="检索结果数")
-    lang: str = Field("", max_length=10, description="作答语言：zh / en")
-    conversation_id: str = Field("", max_length=64, description="话题 id；留空则新开一个")
-    history: list[ConversationTurn] = Field(default_factory=list, max_length=MAX_REQUEST_TURNS)
-
-
-class ChatMessage(BaseModel):
-    """一条对话消息。后端组装好交给浏览器去生成。"""
-
-    role: str = Field(..., description="system / user / assistant")
-    content: str = Field(..., description="消息正文")
-
-
-class AskPlanResponse(BaseModel):
-    """检索结果与组装好的提示词。"""
-
-    question: str
-    messages: list[ChatMessage]
-    lang: str
-    retrieved_count: int
-    conversation_id: str
-
-
-class AskSaveRequest(BaseModel):
-    """浏览器侧生成完，把这一问一答送回来存档。"""
-
-    question: str = Field(..., min_length=1, max_length=500, description="用户问题")
-    answer: str = Field(..., min_length=1, max_length=40_000, description="模型生成的回答")
-    model: str = Field("", max_length=200, description="实际使用的模型名；留空记为云端来源")
-    retrieved_count: int = Field(0, ge=0, le=50, description="这次用了几条检索片段")
-    conversation_id: str = Field("", max_length=64, description="话题 id；留空则新开一个")
-
-
-class AskStatusResponse(BaseModel):
-    """问答能力状态（描述内置默认模型，不含用户自填的端点）。"""
-    enabled: bool
-    base_url: str
-    model: str
-    available_models: int
-    cooling_down: list[str]
-    last_error: str
-
-
-class ProbeResponse(BaseModel):
-    """自定义端点的连通性报告。"""
-    ok: bool
-    base_url: str
-    model: str
-    models: list[str]
-    error: str
+    return EndpointOverride.from_payload(payload.model_dump() if payload else None)
 
 
 @router.post("", response_model=AskResponse)
-def ask(request: AskRequest, user: Optional[User] = Depends(current_user)):
+def ask(request: AskRequest, user: User = Depends(require_user)):
     """
     智能问答：
     1. 本地 TF-IDF 检索相关经典段落
@@ -163,11 +72,11 @@ def ask(request: AskRequest, user: Optional[User] = Depends(current_user)):
     result = qa.ask(
         request.question,
         top_k=request.top_k,
-        override=request.llm.to_override() if request.llm else None,
+        override=_to_override(request.llm),
         lang=request.lang,
         history=[(turn.question, turn.answer) for turn in request.history],
         conversation_id=request.conversation_id,
-        user_id=user.id if user else None,
+        user_id=user.id,
     )
     return AskResponse(
         question=result.question,
@@ -179,9 +88,8 @@ def ask(request: AskRequest, user: Optional[User] = Depends(current_user)):
         conversation_id=result.conversation_id or "",
     )
 
-
 @router.post("/plan", response_model=AskPlanResponse)
-def plan(request: AskPlanRequest, user: Optional[User] = Depends(current_user)):
+def plan(request: AskPlanRequest, user: User = Depends(require_user)):
     """只做检索与组装提示词，把 messages 交给浏览器去调云模型。
 
     为什么要有这条：WorkBuddy 的免密钥模型按**浏览器 Origin** 鉴权
@@ -198,7 +106,7 @@ def plan(request: AskPlanRequest, user: Optional[User] = Depends(current_user)):
         lang=request.lang,
         history=[(turn.question, turn.answer) for turn in request.history],
         conversation_id=request.conversation_id,
-        user_id=user.id if user else None,
+        user_id=user.id,
     )
     return AskPlanResponse(
         question=result.question,
@@ -208,9 +116,8 @@ def plan(request: AskPlanRequest, user: Optional[User] = Depends(current_user)):
         conversation_id=result.conversation_id,
     )
 
-
 @router.post("/save", response_model=AskResponse)
-def save(request: AskSaveRequest, user: Optional[User] = Depends(current_user)):
+def save(request: AskSaveRequest, user: User = Depends(require_user)):
     """把浏览器侧生成好的回答补记进历史记录。
 
     云模型那条路的回答不经过后端，不送回来的话「回响」里会缺一整段对话。
@@ -225,7 +132,7 @@ def save(request: AskSaveRequest, user: Optional[User] = Depends(current_user)):
         model=request.model or None,
         retrieved_count=request.retrieved_count,
         conversation_id=request.conversation_id,
-        user_id=user.id if user else None,
+        user_id=user.id,
     )
     return AskResponse(
         question=result.question,
@@ -237,7 +144,6 @@ def save(request: AskSaveRequest, user: Optional[User] = Depends(current_user)):
         conversation_id=result.conversation_id or "",
     )
 
-
 @router.post("/probe", response_model=ProbeResponse)
 def probe(request: LLMEndpoint):
     """测试自填的模型端点：能否连通、暴露了哪些模型、挑得中哪一个。
@@ -245,8 +151,7 @@ def probe(request: LLMEndpoint):
     供界面上的"测试连接"按钮使用。同样写成同步函数——它内部要发真实请求，
     且会等满 ``PROBE_BUDGET``。
     """
-    return ProbeResponse(**qa.probe(request.to_override()))
-
+    return ProbeResponse(**qa.probe(_to_override(request)))
 
 @router.get("/status", response_model=AskStatusResponse)
 async def status():

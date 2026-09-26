@@ -2,45 +2,30 @@
 
 所有业务逻辑在 InsightService 中，路由不包含任何业务规则，
 保证 HTTP 层可随时替换（如换成 CLI / gRPC）而不影响核心逻辑。
+
+「感悟」要登录（它在前端路由表 `RequireAuth` 那一组里）。
+这一组原本**完全没有鉴权**——不是"可选登录"，是彻底敞开，收紧了才算对齐。
+理由与做法见 `deps.py`。
+
+内容来自语料文件、不碰数据库，所以错误声明里没有 503。
 """
 
 from datetime import date as date_type
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 
 from ..deps import require_user
+from ..errors import LOGGED_IN
+from ..schemas.insight import InsightItem, InsightListResponse, ThemeListResponse
 from ..services.insight import get_insight_service
 
-# 「感悟」要登录（它在前端路由表 `RequireAuth` 那一组里）。
-# 这一组原本**完全没有鉴权**——不是"可选登录"，是彻底敞开，收紧了才算对齐。
-# 理由与做法见 `deps.py`。
 router = APIRouter(
-    prefix="/api/insight", tags=["insight"], dependencies=[Depends(require_user)]
+    prefix="/api/insight",
+    tags=["insight"],
+    dependencies=[Depends(require_user)],
+    responses=LOGGED_IN,
 )
-
-
-class InsightItem(BaseModel):
-    """单条感悟的响应模型。"""
-    id: int
-    text: str
-    interpretation: str
-    source: str
-    book_id: str
-    themes: list[str]
-
-
-class InsightListResponse(BaseModel):
-    """感悟列表响应。"""
-    total: int
-    items: list[InsightItem]
-
-
-class ThemeListResponse(BaseModel):
-    """主题列表响应。"""
-    themes: list[str]
-    counts: dict[str, int]
 
 
 def _to_item(view) -> InsightItem:
@@ -64,7 +49,13 @@ async def daily_insight(day: Optional[str] = Query(None, description="日期 YYY
         try:
             target = date_type.fromisoformat(day)
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"无效日期格式: {day}，应为 YYYY-MM-DD")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "bad_date",
+                    "message": f"无效日期格式: {day}，应为 YYYY-MM-DD",
+                },
+            )
     else:
         target = date_type.today()
     return _to_item(service.daily(target))
@@ -73,18 +64,14 @@ async def daily_insight(day: Optional[str] = Query(None, description="日期 YYY
 @router.get("/random", response_model=InsightItem)
 async def random_insight():
     """随机感悟。"""
-    service = get_insight_service()
-    return _to_item(service.random())
+    return _to_item(get_insight_service().random())
 
 
 @router.get("/themes", response_model=ThemeListResponse)
 async def list_themes():
     """主题列表及每个主题的感悟数量。"""
     service = get_insight_service()
-    return ThemeListResponse(
-        themes=service.themes(),
-        counts=service.theme_counts(),
-    )
+    return ThemeListResponse(themes=service.themes(), counts=service.theme_counts())
 
 
 @router.get("/by-theme/{theme}", response_model=InsightListResponse)
@@ -92,24 +79,32 @@ async def by_theme(theme: str):
     """按主题获取感悟列表。"""
     service = get_insight_service()
     if not service.is_valid_theme(theme):
-        raise HTTPException(status_code=404, detail=f"未知主题: {theme}")
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "unknown_theme", "message": f"未知主题: {theme}"},
+        )
     items = service.by_theme(theme)
     return InsightListResponse(total=len(items), items=[_to_item(v) for v in items])
 
 
 @router.get("/by-book/{book_id}", response_model=InsightListResponse)
 async def by_book(book_id: str):
-    """按书目获取感悟列表。"""
-    service = get_insight_service()
-    items = service.by_book(book_id)
+    """按书目获取感悟列表。
+
+    书不存在时返回空列表而不是 404：这一页是"这本书有哪些感悟"，
+    "一条都没有"是个正常答案。
+    """
+    items = get_insight_service().by_book(book_id)
     return InsightListResponse(total=len(items), items=[_to_item(v) for v in items])
 
 
 @router.get("/{insight_id}", response_model=InsightItem)
 async def get_insight(insight_id: int):
-    """按ID获取单条感悟。"""
-    service = get_insight_service()
-    view = service.get(insight_id)
+    """按 ID 获取单条感悟。"""
+    view = get_insight_service().get(insight_id)
     if view is None:
-        raise HTTPException(status_code=404, detail=f"感悟不存在: id={insight_id}")
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "insight_not_found", "message": f"感悟不存在: id={insight_id}"},
+        )
     return _to_item(view)

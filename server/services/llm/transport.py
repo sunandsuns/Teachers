@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Mapping, Optional, Sequence
 
+from .. import netproxy
 from .config import LLMConfig
 
 
@@ -32,15 +33,6 @@ class LLMTransportError(RuntimeError):
         return self.status >= 500 or self.status == 429
 
 
-def _build_opener() -> urllib.request.OpenerDirector:
-    """默认遵循系统代理设置；设置 ``LLM_NO_PROXY=1`` 可强制直连。"""
-    import os
-
-    if os.environ.get("LLM_NO_PROXY", "").strip().lower() in ("1", "true", "yes"):
-        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    return urllib.request.build_opener()
-
-
 def _request(
     config: LLMConfig,
     url: str,
@@ -59,7 +51,7 @@ def _request(
     request = urllib.request.Request(url, data=data, headers=headers)
 
     try:
-        with _build_opener().open(request, timeout=timeout) as response:
+        with netproxy.build_opener().open(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise LLMTransportError(_describe_http_error(exc), exc.code) from exc

@@ -21,14 +21,16 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
+from . import meta
 from .db import Database
-from .llm import LLMTransportError, get_router, normalize_lang
+from .llm import LLMTransportError, extract_json_block, get_router, normalize_lang
+from .ownership import scope_clause
+from .store import StoreBase
 
 #: 特征分类。界面上人形两侧的引线标签按它分组，所以是个封闭集合——
 #: 模型给出别的分类会被丢掉，宁可少一条，也别让标签没地方挂。
@@ -93,10 +95,6 @@ _PROMPT_WRAPPER = {
     ),
 }
 
-#: 模型常把 JSON 包在 ```json 围栏里
-_FENCED_JSON = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
-
-
 def _meta_key(key: str, user_id: Optional[int]) -> str:
     """meta 表的键带上归属。
 
@@ -112,14 +110,6 @@ def _meta_key(key: str, user_id: Optional[int]) -> str:
         return key
     return f"u{int(user_id)}:{key}"
 
-
-def _scope(user_id: Optional[int]) -> tuple[str, tuple]:
-    """traits 表的归属条件。``None`` 是"无归属那一份"（老数据 + 匿名访客）。"""
-    if user_id is None:
-        return "user_id IS NULL", ()
-    return "user_id = ?", (int(user_id),)
-
-
 @dataclass(frozen=True)
 class Trait:
     """一条画像特征。"""
@@ -133,7 +123,6 @@ class Trait:
     created_ts: float
     updated_ts: float
 
-
 def _row_to_trait(row: Any) -> Trait:
     return Trait(
         id=row["id"],
@@ -145,12 +134,10 @@ def _row_to_trait(row: Any) -> Trait:
         updated_ts=float(row["updated_ts"]),
     )
 
-
 def _figure_key(gender: str) -> Optional[str]:
     """人物记录的 meta 键。性别认不出时返回 None（调用方据此跳过读写）。"""
     code = (gender or "").strip().lower() if isinstance(gender, str) else ""
     return f"{META_FIGURE_PREFIX}:{code}" if code in AVATARS else None
-
 
 def _clamp_confidence(value: Any) -> float:
     try:
@@ -158,18 +145,6 @@ def _clamp_confidence(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.5
     return min(1.0, max(0.0, number))
-
-
-def _candidate_json(raw: str) -> str:
-    """从模型的回答里抠出最可能是 JSON 的那一段。"""
-    fenced = _FENCED_JSON.search(raw)
-    if fenced:
-        return fenced.group(1).strip()
-    start, end = raw.find("["), raw.rfind("]")
-    if start != -1 and end > start:
-        return raw[start : end + 1]
-    return raw.strip()
-
 
 def parse_traits(raw: str) -> list[dict[str, Any]]:
     """把模型输出解析成特征列表。**解析不出来就返回空表，不抛异常。**
@@ -179,7 +154,7 @@ def parse_traits(raw: str) -> list[dict[str, Any]]:
     用户再点一次就好。
     """
     try:
-        data = json.loads(_candidate_json(raw))
+        data = json.loads(extract_json_block(raw, array=True))
     except (ValueError, TypeError):
         return []
 
@@ -213,7 +188,6 @@ def parse_traits(raw: str) -> list[dict[str, Any]]:
         )
     return traits
 
-
 def build_profile_prompt(
     records: Sequence[Any], *, limit: int = EXTRACT_SOURCE_LIMIT, lang: str = "zh"
 ) -> str:
@@ -226,26 +200,11 @@ def build_profile_prompt(
     intro, outro = _PROMPT_WRAPPER[normalize_lang(lang)]
     return f"{intro}\n\n{body}\n\n{outro}"
 
-
-class ProfileStore:
+class ProfileStore(StoreBase):
     """画像的读写。与历史记录同一套约定：**所有方法都不抛异常**。"""
 
     def __init__(self, db: Optional[Database] = None) -> None:
-        self._db = db if db is not None else Database()
-
-    # ── 状态 ────────────────────────────────────────────────────────────
-
-    @property
-    def available(self) -> bool:
-        return self._db.available
-
-    @property
-    def error(self) -> str:
-        return self._db.error
-
-    @property
-    def db_path(self) -> str:
-        return str(self._db.path)
+        super().__init__(db)
 
     # ── 写 ──────────────────────────────────────────────────────────────
 
@@ -267,7 +226,7 @@ class ProfileStore:
         timestamp = time.time() if now is None else now
         if not traits:
             return 0
-        scope, scope_params = _scope(user_id)
+        scope, scope_params = scope_clause(user_id)
         try:
             written = 0
             with self._db.session() as connection:
@@ -310,7 +269,7 @@ class ProfileStore:
             return 0
 
     def delete(self, trait_id: int, *, user_id: Optional[int] = None) -> bool:
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 cursor = connection.execute(
@@ -323,7 +282,7 @@ class ProfileStore:
 
     def clear(self, *, user_id: Optional[int] = None) -> int:
         """清空**这个人**的画像。返回删掉的条数。"""
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 return connection.execute(
@@ -398,9 +357,7 @@ class ProfileStore:
         ]
         try:
             with self._db.session() as connection:
-                connection.executemany(
-                    "DELETE FROM meta WHERE key = ?", [(key,) for key in keys]
-                )
+                meta.delete_values(connection, keys)
         except Exception:  # noqa: BLE001
             pass
 
@@ -408,29 +365,22 @@ class ProfileStore:
         """meta 表的 upsert。库不可用时静默跳过（这类数据丢了不影响主流程）。"""
         try:
             with self._db.session() as connection:
-                connection.execute(
-                    "INSERT INTO meta (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (_meta_key(key, user_id), value),
-                )
+                meta.write_value(connection, _meta_key(key, user_id), value)
         except Exception:  # noqa: BLE001
             pass
 
     def _read_meta(self, key: str, *, user_id: Optional[int] = None) -> Optional[str]:
         try:
             with self._db.session() as connection:
-                row = connection.execute(
-                    "SELECT value FROM meta WHERE key = ?", (_meta_key(key, user_id),)
-                ).fetchone()
+                return meta.read_value(connection, _meta_key(key, user_id))
         except Exception:  # noqa: BLE001
             return None
-        return None if row is None else str(row["value"])
 
     # ── 读 ──────────────────────────────────────────────────────────────
 
     def list(self, *, user_id: Optional[int] = None) -> list[Trait]:
         """按分类顺序返回，同类别内把握高的在前（界面上的引线顺序）。"""
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 rows = connection.execute(
@@ -443,7 +393,7 @@ class ProfileStore:
             return []
 
     def count(self, *, user_id: Optional[int] = None) -> int:
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 return int(
@@ -479,7 +429,6 @@ class ProfileStore:
             ),
         }
 
-
 @dataclass(frozen=True)
 class ExtractionResult:
     """一次归纳的结果。"""
@@ -492,7 +441,6 @@ class ExtractionResult:
     llm_used: bool
     #: 没归纳出东西时的原因，直接给人看
     error: str = ""
-
 
 def extract(
     profile: ProfileStore,
@@ -545,11 +493,9 @@ def extract(
     profile.mark_extracted(user_id=user_id)
     return ExtractionResult(written, profile.count(user_id=user_id), True)
 
-
 #: 进程级单例
 _store: Optional[ProfileStore] = None
 _lock = threading.Lock()
-
 
 def get_profile_store() -> ProfileStore:
     global _store
@@ -557,7 +503,6 @@ def get_profile_store() -> ProfileStore:
         if _store is None:
             _store = ProfileStore()
         return _store
-
 
 def reset_profile_store() -> None:
     """丢掉单例。测试用它隔离数据目录。"""

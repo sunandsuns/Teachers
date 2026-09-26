@@ -8,7 +8,7 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 996 项）+ Vitest（前端 252 项）
+- **测试**：pytest（后端 1002 项）+ Vitest（前端 252 项）
 
 ---
 
@@ -573,6 +573,28 @@ python -m pytest -q
 
 # 前端
 cd web && npm test
+```
+
+前端测试**跑在单进程**（`--no-file-parallelism`）：并行时 vitest 的 worker 会写缓存失败
+（沙箱拦下 `EPERM`），然后**静默少跑文件却照样报 "N passed"**——实测同一份代码并行报
+246 / 233（两次跑到的文件组成还不同），串行报 252。慢三十几秒换"不漏跑"，划算。
+
+### 契约与前端类型
+
+接口形状的**单一来源**是 `server/schemas/`。改了它，前端类型要重新生成：
+
+```bash
+cd web && npm run gen:api        # = python ../packaging/gen_web_types.py
+```
+
+`web/src/api/types.gen.ts` 是生成物，**要提交但不要手改**——`tests/unit/test_contract.py`
+会检查它与当前契约是否一致，忘了生成会当场变红。前端专属的类型（`SearchKind` 等）
+放 `web/src/api/types.ts`。
+
+想要一份机器可读的契约快照（给人 review、看 diff 用）：
+
+```bash
+python packaging/export_openapi.py     # 写到根目录 openapi.json（已 gitignore）
 ```
 
 ### 联调冒烟（需要服务已启动）

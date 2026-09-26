@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .errors import install_error_handlers
 from .paths import resolve_web_dist, should_serve_frontend
 from .routers.admin import router as admin_router
 from .routers.ask import router as ask_router
@@ -27,6 +28,7 @@ from .routers.kb import router as kb_router
 from .routers.profile import router as profile_router
 from .routers.search import router as search_router
 from .routers.shelf import router as shelf_router
+from .schemas.system import HealthResponse, IndexProgress, RootResponse
 from .services.auth import admin_credentials, get_auth_store
 from .services.content_loader import get_loader
 from .services.history import get_history_store
@@ -35,7 +37,43 @@ from .services.retriever import ensure_retriever, get_retriever, index_progress
 from .web_ui import mount_frontend
 
 #: 应用版本。发版时改这一处即可——FastAPI 的 OpenAPI 与根路径索引都读它。
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
+
+#: ``/docs`` 上的分组说明与顺序。
+#: 不写这一段的话，Swagger 会按 tag 名的字母序把接口堆成一长条，而且只有
+#: "admin"、"ask" 这种光秃秃的词，看不出哪一组是干什么的、从哪读起。
+OPENAPI_TAGS = [
+    {"name": "system", "description": "探活与索引规模。这两个接口**不需要登录**。"},
+    {"name": "auth", "description": "注册、登录、登出、改密码。登录注册本身也不需要登录，否则没人进得来。"},
+    {"name": "books", "description": "书目、章节、原典正文（分块）。"},
+    {"name": "search", "description": "「寻章」：跨笔记与原典的词面检索。"},
+    {"name": "ask", "description": "「求教」：检索 + 模型作答。含交给浏览器调云模型的那条 plan/save 通路。"},
+    {"name": "history", "description": "「回响」：问答记录与话题聚合。库不可用时降级成 `available: false` 而不是报错。"},
+    {"name": "profile", "description": "「画像」：从提问里归纳出的性格特征与历史人物比对。"},
+    {"name": "knowledge base", "description": "「知识库」：原典、主题、洞察之间的引用图谱。"},
+    {"name": "insight", "description": "「感悟」：按日/按书/按主题取一条洞察。"},
+    {"name": "shelf", "description": "个人书架：联网检索书籍、加书、改阅读状态、申请公开。"},
+    {"name": "admin", "description": "后台管理。**每个接口都需要管理员身份**；其中数据库那一组是运维口子。"},
+]
+
+#: 错误长什么样，写在文档首页——省得每个调用方自己去猜。
+API_DESCRIPTION = """中国传统经典智慧知识库与智能问答服务。
+
+**所有接口都要登录**，只有 ``/api/auth/*`` 与 ``/api/health`` 留开：这套产品的入口就是登录页，登录之前一个页面也看不了。
+
+出错时响应体只有一种形状：
+
+```json
+{"detail": {"code": "bad_credentials", "message": "邮箱或密码不正确"}}
+```
+
+``code`` 给机器读（按它分支），``message`` 给人读（可直接展示）。唯一的例外是 422——
+参数没过校验时 ``code`` 固定为 ``validation``，``message`` 里带着字段路径。
+
+数据库不可用时，**裸列表类的接口**返回 503 而不是空列表：空的用户列表和"读不到"
+分不清。只有响应里带 ``available`` 字段的那两个（回响、画像）会降级成 200 加
+``available: false``。
+"""
 
 
 @asynccontextmanager
@@ -87,10 +125,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="人生导师 API",
-    description="中国传统经典智慧知识库与智能问答服务",
+    description=API_DESCRIPTION,
     version=APP_VERSION,
+    openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )
+
+# 全局错误出口：统一的 {code, message} 形状、业务异常、库故障（见 errors.py）。
+install_error_handlers(app)
 
 # CORS 配置：允许前端开发服务器访问
 app.add_middleware(
@@ -113,7 +155,7 @@ app.include_router(shelf_router)
 app.include_router(admin_router)
 
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["system"], response_model=HealthResponse)
 async def health():
     """健康检查：反映已加载的书目规模与索引规模。
 
@@ -121,24 +163,25 @@ async def health():
     换成一条真在走的进度条——索引没建好之前，本接口在 lifespan 里就还没开始
     应答，所以这里的 ``ready`` 只在服务已经可用时才会是 True，而 ``indexing``
     描述的是"此刻进行到哪了"，供惰性构建（首个请求触发）时仍能显示。
+
+    **本接口不需要登录**——部署平台拿它判断服务起没起来。
     """
     loader = get_loader()
     retriever = get_retriever()
     books = loader.get_books()
     coverage = retriever.source_coverage
-    progress = index_progress()
-    return {
-        "status": "ok",
-        "ready": bool(retriever.documents),
-        "indexing": progress,
-        "books_loaded": len(books),
-        "books_with_source": sum(1 for b in books if b.source_file),
-        "total_chapters": sum(len(b.chapters) for b in books),
-        "total_passages": len(retriever.documents),
-        "source_indexed": len(coverage.get("indexed", [])),
-        "source_skipped": coverage.get("skipped", []),
-        "categories": loader.categories(),
-    }
+    return HealthResponse(
+        status="ok",
+        ready=bool(retriever.documents),
+        indexing=IndexProgress(**index_progress()),
+        books_loaded=len(books),
+        books_with_source=sum(1 for b in books if b.source_file),
+        total_chapters=sum(len(b.chapters) for b in books),
+        total_passages=len(retriever.documents),
+        source_indexed=len(coverage.get("indexed", [])),
+        source_skipped=coverage.get("skipped", []),
+        categories=loader.categories(),
+    )
 
 
 #: 前端构建产物。分发态随包分发；开发态通常不存在（页面走 Vite 的 :5173）。
@@ -151,13 +194,13 @@ if FRONTEND_DIST is not None:
     mount_frontend(app, FRONTEND_DIST)
 else:
 
-    @app.get("/")
+    @app.get("/", tags=["system"], response_model=RootResponse)
     async def root():
         """根路径：无前端产物时退化为 API 索引（开发态请走 Vite 的 :5173）。"""
-        return {
-            "name": "人生导师 API",
-            "version": APP_VERSION,
-            "endpoints": {
+        return RootResponse(
+            name="人生导师 API",
+            version=APP_VERSION,
+            endpoints={
                 "books": "/api/books",
                 "search": "/api/search?q=关键词",
                 "ask": "POST /api/ask",
@@ -167,7 +210,7 @@ else:
                 "kb": "/api/kb/graph",
                 "docs": "/docs",
             },
-        }
+        )
 
 
 if __name__ == "__main__":

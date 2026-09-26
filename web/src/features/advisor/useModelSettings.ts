@@ -10,7 +10,14 @@ import type { LLMEndpoint } from '../../api/types'
  */
 export type ModelMode = 'default' | 'custom' | 'cloud'
 
-export interface ModelSettings extends LLMEndpoint {
+/**
+ * 存在本地的那份设置。
+ *
+ * ``Required<LLMEndpoint>``：契约里那三个字段是**可以为空**的（它描述的是
+ * 请求体，只填一半会被后端视同没填），但存进 localStorage 的这一份是"已定稿"
+ * 的字符串，界面直接把它当输入框的 value。形状仍然来自生成物，只是收紧了可选性。
+ */
+export interface ModelSettings extends Required<LLMEndpoint> {
   mode: ModelMode
 }
 

@@ -47,7 +47,10 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from . import meta
 from .db import Database, DatabaseUnavailable
+from .errors import DomainError
+from .store import StoreBase
 
 #: PBKDF2 迭代次数。见模块注释。
 PBKDF2_ITERATIONS = 200_000
@@ -73,15 +76,14 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD_LEN = 8
 
 
-class AuthError(ValueError):
+class AuthError(DomainError):
     """可预期的业务错误（邮箱重复、密码太短、账号密码不对）。
 
-    ``code`` 给前端做分支用；``message`` 直接展示给用户，所以是中文。
+    只声明默认 ``code``——存 ``code``、转 HTTP 那些事都在 :class:`DomainError`
+    与 ``server/errors.py`` 里，不在这里重写一遍。
     """
 
-    def __init__(self, message: str, code: str = "auth_error") -> None:
-        super().__init__(message)
-        self.code = code
+    default_code = "auth_error"
 
 
 @dataclass(frozen=True)
@@ -168,30 +170,18 @@ def admin_credentials() -> tuple[str, str]:
 # ── 存储 ────────────────────────────────────────────────────────────────
 
 
-class AuthStore:
+class AuthStore(StoreBase):
     """用户与会话的读写。
 
     ``Database`` 是惰性的，本类也惰性——构造时不碰磁盘。
     """
 
     def __init__(self, db: Optional[Database] = None, *, ttl: float = TOKEN_TTL) -> None:
-        self._db = db if db is not None else Database()
+        super().__init__(db)
         self._ttl = ttl
         self._secret: Optional[str] = None
 
     # ── 状态 ────────────────────────────────────────────────────────
-
-    @property
-    def available(self) -> bool:
-        return self._db.available
-
-    @property
-    def error(self) -> str:
-        return self._db.error
-
-    @property
-    def db_path(self) -> str:
-        return str(self._db.path)
 
     @property
     def ttl(self) -> float:
@@ -405,18 +395,12 @@ class AuthStore:
             return self._secret
 
         with self._db.session() as conn:
-            row = conn.execute(
-                "SELECT value FROM meta WHERE key = ?", (SECRET_META_KEY,)
-            ).fetchone()
-            if row is not None and row["value"]:
-                self._secret = str(row["value"])
+            stored = meta.read_value(conn, SECRET_META_KEY)
+            if stored:
+                self._secret = stored
                 return self._secret
             generated = _b64(secrets.token_bytes(32))
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (SECRET_META_KEY, generated),
-            )
+            meta.write_value(conn, SECRET_META_KEY, generated)
             self._secret = generated
             return self._secret
 

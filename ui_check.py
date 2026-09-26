@@ -26,7 +26,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-FRONT = "http://localhost:5173"
+# 与 run.py 的默认前端端口一致。run.py 在端口被占时会自动避让，那时用
+# ``UI_FRONT_PORT=5174 python ui_check.py`` 指过来。
+FRONT = "http://localhost:%s" % os.environ.get("UI_FRONT_PORT", "5173")
 CDP_PORT = 9222
 
 # 截图落到 `.workbuddy/shots/`：那是 .gitignore 里写明的"本地工具目录

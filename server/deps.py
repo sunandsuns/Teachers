@@ -27,10 +27,12 @@
 实现统一用**路由级** ``dependencies=[Depends(require_user)]``，而不是在每个
 处理函数上各写一遍：漏一个 handler 不会报错，只会安静地对匿名开放。
 
-处理函数里那个 ``user: Optional[User] = Depends(current_user)`` 保留原样：
-路由级已经保证有身份，所以它运行时不会是 ``None``；继续写成 Optional 是因为
-``_owner()`` 要把"没有归属"这个取值交给 store 层，而库里可能还留着账号体系
-上线之前那些 ``user_id IS NULL`` 的老数据。
+处理函数里要身份就写 ``user: User = Depends(require_user)``，直接用 ``user.id``。
+路由级那道闸已经保证了有身份，所以**不需要**再写成 ``Optional`` 然后到处
+``user.id if user else None``——那个 ``else`` 分支永远走不到，只是一层伪装成
+"兼容"的死代码。（原先 history / profile / ask / search / insight 五处都这么写，
+现在只剩 ``/api/auth/me`` 一个接口用可选的 ``current_user``，因为它是真的允许
+未登录。）
 
 token 从哪读
 --------------------------------------------------------------------------

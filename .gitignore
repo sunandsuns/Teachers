@@ -52,3 +52,7 @@ Thumbs.db
 .v2c/
 .video_agent/
 .zcode/
+
+# 契约快照：packaging/export_openapi.py 的输出，随时可重新生成。
+# 前端类型（web/src/api/types.gen.ts）**要入库**——它是前端构建的输入。
+/openapi.json

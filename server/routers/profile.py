@@ -5,15 +5,28 @@
 和其它路由一样，**"做不成"不等于"请求失败"**：还没有问答记录、模型不可用、
 模型这次没看出什么，一律 200 + ``ok: false`` + 原因，界面照常渲染并把原因
 说清楚。弹一个红色报错只会让用户以为功能坏了。
-"""
 
-from typing import Optional
+「库不可用」也走这条路：画像的响应里带着 ``available`` 与 ``error``，读不到就
+明说读不到。这是全项目仅有的两处降级之一（另一处是回响），理由见
+``routers/history.py`` 的模块说明。
+"""
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
 
-from ..deps import current_user, require_user
+from ..deps import require_user
+from ..errors import NOT_FOUND, UNAUTHORIZED, merge
+from ..schemas.common import DeleteResponse
+from ..schemas.profile import (
+    AvatarRequest,
+    AvatarResponse,
+    ExtractRequest,
+    ExtractResponse,
+    FigureInfo,
+    FigureResponse,
+    ProfileResponse,
+    TraitItem,
+)
 from ..services import figures as figures_service
 from ..services.auth import User
 from ..services.history import get_history_store
@@ -26,110 +39,15 @@ from ..services.profile import (
 )
 
 # 「画像」是从你自己的问答里归纳出来的，必须登录。理由与做法见 `deps.py`。
+#
+# 错误面比其他组窄：库故障在这里表现为 ``available: false``（不是 503），
+# 而模型不可用表现为 ``ok: false``——两者都在响应体里，不占错误码。
 router = APIRouter(
-    prefix="/api/profile", tags=["profile"], dependencies=[Depends(require_user)]
+    prefix="/api/profile",
+    tags=["profile"],
+    dependencies=[Depends(require_user)],
+    responses=merge(UNAUTHORIZED, NOT_FOUND),
 )
-
-
-def _owner(user: Optional[User]) -> Optional[int]:
-    """当前是谁 → 画像归属。
-
-    类型上仍是 ``Optional``，但路由级已挂 ``require_user``，运行时不会是 ``None``。
-    保留 ``None`` 这一支是因为 store 层仍认 ``user_id IS NULL``（老数据）。
-    """
-    return user.id if user is not None else None
-
-
-class TraitItem(BaseModel):
-    """一条画像特征。"""
-
-    id: int
-    category: str
-    content: str
-    evidence: str = Field("", description="依据：用户说过的哪句话")
-    confidence: float
-
-
-class FigureInfo(BaseModel):
-    """「最像你的一位历史人物」。
-
-    整块都可能为空（还没选出 / 名录为空 / 库不可用）：那时 ``id`` 是空串，
-    界面退回默认的两页册页。
-    """
-
-    id: str = ""
-    name: str = ""
-    era: str = ""
-    blurb: str = Field("", description="一句话说他是谁")
-    reason: str = Field("", description="模型写的：像在哪里")
-    credit: str = Field("", description="题签式的出处")
-    portrait: str = Field("", description="画像的相对 URL，可直接放进 <img src>")
-    week: str = Field("", description="选出时的 ISO 周，如 2026-W38")
-    chosen_at: str = Field("", description="选出的日期，YYYY-MM-DD")
-    pool_size: int = Field(0, description="该性别下的候选人数")
-    needs_refresh: bool = Field(
-        False,
-        description="是否该重新评定一次。跨周且画像有变化、或还没评过、或选中的人"
-        "已不在名录里，都为真。界面据此在后台补一次评定。",
-    )
-
-
-class ProfileResponse(BaseModel):
-    """画像全貌。"""
-
-    available: bool
-    error: str
-    avatar: str = Field(..., description="形象性别：male / female")
-    total: int
-    traits: list[TraitItem]
-    categories: list[str] = Field(..., description="全部分类，界面按它排引线")
-    pending: int = Field(
-        ...,
-        description="上次归纳之后又问了多少条（最多 EXTRACT_SOURCE_LIMIT 条）。"
-        "界面靠它决定要不要自动归纳一次。",
-    )
-    figure: FigureInfo = Field(
-        default_factory=FigureInfo, description="最像你的一位历史人物"
-    )
-
-
-class ExtractResponse(BaseModel):
-    """一次归纳的结果。``error`` 为机器可读的代号或上游错误文本。"""
-
-    ok: bool
-    extracted: int = Field(..., description="本次新增或更新的条数")
-    total: int = Field(..., description="画像里现在共有几条")
-    llm_used: bool
-    error: str
-
-
-class ExtractRequest(BaseModel):
-    """归纳请求。`lang` 决定特征正文用哪种语言写；分类始终是中文封闭集合。"""
-
-    lang: str = Field("zh", description="zh / en")
-
-
-class FigureResponse(BaseModel):
-    """一次历史人物评定的结果。``error`` 为机器可读的代号或上游错误文本。"""
-
-    ok: bool
-    id: str = ""
-    llm_used: bool
-    error: str
-
-
-class AvatarRequest(BaseModel):
-    """切换形象。"""
-
-    gender: str = Field("", description="male / female；认不出的值按默认")
-
-
-class AvatarResponse(BaseModel):
-    avatar: str
-
-
-class DeleteResponse(BaseModel):
-    deleted: int
 
 
 def _to_item(trait) -> TraitItem:
@@ -142,7 +60,7 @@ def _to_item(trait) -> TraitItem:
     )
 
 
-def _figure_info(store, lang: str, *, traits=None, user_id: Optional[int] = None) -> FigureInfo:
+def _figure_info(store, lang: str, *, traits, user_id: int) -> FigureInfo:
     """把"该性别当前选中的人"读成接口形状。
 
     这里做四件事：取出记录、从名录里还原出那个人、数一下候选人数、判断要不要重评。
@@ -158,11 +76,9 @@ def _figure_info(store, lang: str, *, traits=None, user_id: Optional[int] = None
 
     名录空着时一律不评：调了也只有 ``no_pool``，白白占掉一次模型调用。
 
-    ``traits`` 可以由调用方递进来——``GET /api/profile`` 手上已经有一份，
+    ``traits`` 由调用方递进来——``GET /api/profile`` 手上已经有一份，
     没必要为了这一处再向库里问一遍。
     """
-    if traits is None:
-        traits = store.list(user_id=user_id)
     gender = store.avatar(user_id=user_id)
     stored = store.get_figure(gender, user_id=user_id)
     figure = figures_service.find(stored.get("id")) if stored.get("id") else None
@@ -177,14 +93,11 @@ def _figure_info(store, lang: str, *, traits=None, user_id: Optional[int] = None
 
 
 @router.get("", response_model=ProfileResponse)
-async def get_profile(lang: str = "zh", user: Optional[User] = Depends(current_user)):
+async def get_profile(lang: str = "zh", user: User = Depends(require_user)):
     """读取**当前这个人**的画像：形象、全部特征、分类清单、还没归纳过的提问数、
     最像你的一位历史人物。
-
-    未登录时读的是"无归属那一份"（登录功能上线前的老数据）。
     """
     store = get_profile_store()
-    owner = _owner(user)
     if not store.available:
         return ProfileResponse(
             available=False,
@@ -197,28 +110,26 @@ async def get_profile(lang: str = "zh", user: Optional[User] = Depends(current_u
             figure=FigureInfo(),
         )
 
-    traits = store.list(user_id=owner)
+    traits = store.list(user_id=user.id)
     return ProfileResponse(
         available=True,
         error="",
-        avatar=store.avatar(user_id=owner),
-        total=store.count(user_id=owner),
+        avatar=store.avatar(user_id=user.id),
+        total=store.count(user_id=user.id),
         traits=[_to_item(trait) for trait in traits],
         categories=list(TRAIT_CATEGORIES),
         # 只数个数，**不把最近 40 条回答的全文读出来**（见 HistoryStore.count_since）
         pending=get_history_store().count_since(
-            store.last_extract_ts(user_id=owner),
-            user_id=owner,
+            store.last_extract_ts(user_id=user.id),
+            user_id=user.id,
             window=EXTRACT_SOURCE_LIMIT,
         ),
-        figure=_figure_info(store, lang, traits=traits, user_id=owner),
+        figure=_figure_info(store, lang, traits=traits, user_id=user.id),
     )
 
 
 @router.post("/figure", response_model=FigureResponse)
-def evaluate_figure(
-    request: ExtractRequest | None = None, user: Optional[User] = Depends(current_user)
-):
+def evaluate_figure(request: ExtractRequest | None = None, user: User = Depends(require_user)):
     """让模型从名录里挑出最像你的一位历史人物，并存下来。
 
     写成同步函数：内部要调用阻塞的模型请求（受 ``LLM_TOTAL_BUDGET`` 约束），
@@ -229,16 +140,15 @@ def evaluate_figure(
     """
     lang = (request.lang if request is not None else "") or "zh"
     store = get_profile_store()
-    owner = _owner(user)
     if not store.available:
         return FigureResponse(ok=False, llm_used=False, error="history_unavailable")
 
     result = figures_service.choose_figure(
         store,
-        store.list(user_id=owner),
-        gender=store.avatar(user_id=owner),
+        store.list(user_id=user.id),
+        gender=store.avatar(user_id=user.id),
         lang=lang,
-        user_id=owner,
+        user_id=user.id,
     )
     return FigureResponse(
         ok=bool(result.figure_id),
@@ -248,16 +158,30 @@ def evaluate_figure(
     )
 
 
-@router.get("/figure/portrait/{figure_id}")
+@router.get(
+    "/figure/portrait/{figure_id}",
+    response_class=FileResponse,
+    responses=merge(
+        NOT_FOUND,
+        {200: {"content": {"image/webp": {}}, "description": "这位候选人的画像（WebP）"}},
+    ),
+)
 async def get_figure_portrait(figure_id: str):
     """取一位候选人的画像。
+
+    **返回的是一张图，不是 JSON**——所以这个接口在文档里没有响应模型，
+    只有 ``image/webp``。原先它在 OpenAPI 里是一片空白，看不出到底是没写完
+    还是故意如此。
 
     路径只认名录里登记过的 id：不在这里自己拼文件名去查磁盘，
     免得 ``../`` 之类的 id 把程序目录外的文件读出去。
     """
     path = figures_service.portrait_path(figure_id)
     if path is None:
-        raise HTTPException(status_code=404, detail=f"没有这张画像: {figure_id}")
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "portrait_not_found", "message": f"没有这张画像: {figure_id}"},
+        )
     return FileResponse(
         path,
         media_type="image/webp",
@@ -266,9 +190,7 @@ async def get_figure_portrait(figure_id: str):
 
 
 @router.post("/extract", response_model=ExtractResponse)
-def extract_profile(
-    request: ExtractRequest | None = None, user: Optional[User] = Depends(current_user)
-):
+def extract_profile(request: ExtractRequest | None = None, user: User = Depends(require_user)):
     """从**这个人自己**的问答记录里归纳画像特征。
 
     写成同步函数：内部要调用阻塞的模型请求（受 ``LLM_TOTAL_BUDGET`` 约束），
@@ -278,9 +200,8 @@ def extract_profile(
     混着来会让 A 的提问变成 B 的画像。
     """
     lang = (request.lang if request is not None else "") or "zh"
-    owner = _owner(user)
-    records = get_history_store().list(user_id=owner, limit=EXTRACT_SOURCE_LIMIT)[1]
-    result = extract(get_profile_store(), records, lang=lang, user_id=owner)
+    records = get_history_store().list(user_id=user.id, limit=EXTRACT_SOURCE_LIMIT)[1]
+    result = extract(get_profile_store(), records, lang=lang, user_id=user.id)
     return ExtractResponse(
         ok=result.extracted > 0,
         extracted=result.extracted,
@@ -291,29 +212,29 @@ def extract_profile(
 
 
 @router.put("/avatar", response_model=AvatarResponse)
-async def set_avatar(request: AvatarRequest, user: Optional[User] = Depends(current_user)):
+async def set_avatar(request: AvatarRequest, user: User = Depends(require_user)):
     """切换形象性别。存后端而不是浏览器本地：它属于画像这份数据。"""
-    return AvatarResponse(
-        avatar=get_profile_store().set_avatar(request.gender, user_id=_owner(user))
-    )
+    return AvatarResponse(avatar=get_profile_store().set_avatar(request.gender, user_id=user.id))
 
 
 @router.delete("/traits/{trait_id}", response_model=DeleteResponse)
-async def delete_trait(trait_id: int, user: Optional[User] = Depends(current_user)):
+async def delete_trait(trait_id: int, user: User = Depends(require_user)):
     """删掉一条特征。用户不认同的判断就该能抹掉。**只删自己的**。"""
-    if not get_profile_store().delete(trait_id, user_id=_owner(user)):
-        raise HTTPException(status_code=404, detail=f"特征不存在: id={trait_id}")
+    if not get_profile_store().delete(trait_id, user_id=user.id):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "trait_not_found", "message": f"特征不存在: id={trait_id}"},
+        )
     return DeleteResponse(deleted=1)
 
 
 @router.delete("", response_model=DeleteResponse)
-async def clear_profile(user: Optional[User] = Depends(current_user)):
+async def clear_profile(user: User = Depends(require_user)):
     """清空**这个人**的画像（不删问答记录）。
 
     连带抹掉"最像你的一位历史人物"：那个人是从这份画像推出来的，画像没了，
     他还留在页面上就成了一个没有依据的判断。
     """
     store = get_profile_store()
-    owner = _owner(user)
-    store.clear_figures(user_id=owner)
-    return DeleteResponse(deleted=store.clear(user_id=owner))
+    store.clear_figures(user_id=user.id)
+    return DeleteResponse(deleted=store.clear(user_id=user.id))

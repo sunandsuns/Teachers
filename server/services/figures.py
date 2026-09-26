@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -36,7 +35,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from ..paths import FIGURES_DIRNAME, PROJECT_ROOT
-from .llm import LLMTransportError, get_router, normalize_lang
+from .llm import LLMTransportError, extract_json_block, get_router, normalize_lang
 
 #: 名录文件名与画像子目录名
 FIGURES_FILENAME = "figures.json"
@@ -99,9 +98,6 @@ _PROMPT_WRAPPER = {
 
 #: 名录的引子
 _POOL_HEADER = {"zh": "历史人物名录（只能从中选一个）：", "en": "The list (choose one only):"}
-
-#: 模型常把 JSON 包在 ```json 围栏里
-_FENCED_JSON = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
 
 # ── 候选池 ──────────────────────────────────────────────────────────────
@@ -327,17 +323,6 @@ def build_figure_prompt(
     return f"{intro}\n\n{body}\n\n{_POOL_HEADER[code]}\n\n{people}\n\n{outro}"
 
 
-def _candidate_json(raw: str) -> str:
-    """从模型输出里抠出最像 JSON 的一段。"""
-    fenced = _FENCED_JSON.search(raw)
-    if fenced:
-        return fenced.group(1).strip()
-    start, end = raw.find("{"), raw.rfind("}")
-    if start != -1 and end > start:
-        return raw[start : end + 1]
-    return raw.strip()
-
-
 def parse_selection(raw: str) -> dict[str, str]:
     """解析模型输出，返回 ``{"id", "reason_zh", "reason_en"}``。
 
@@ -345,7 +330,7 @@ def parse_selection(raw: str) -> dict[str, str]:
     或者把 JSON 包在解释里。为此让整次评定失败不值得。
     """
     try:
-        data = json.loads(_candidate_json(raw))
+        data = json.loads(extract_json_block(raw))
     except (ValueError, TypeError):
         return {"id": "", "reason_zh": "", "reason_en": ""}
     if not isinstance(data, dict):

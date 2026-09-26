@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "gen:api": "python ../packaging/gen_web_types.py",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --no-file-parallelism",
     "test:watch": "vitest"
   },
   "dependencies": {

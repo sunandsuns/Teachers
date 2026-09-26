@@ -36,10 +36,13 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Optional, Sequence
 
+from ..formatting import iso_time
+from . import meta
 from .db import Database
+from .ownership import scope_clause
+from .store import StoreBase
 
 #: 默认保留天数（半个月）
 DEFAULT_RETENTION_DAYS = 15.0
@@ -58,11 +61,9 @@ SOLO_PREFIX = "solo:"
 #: 话题 id 取 uuid4 前多少位。12 位十六进制足够单机不重复，且便于人眼扫过
 TOPIC_ID_LENGTH = 12
 
-
 def new_topic_id() -> str:
     """生成一个新的话题 id。"""
     return uuid.uuid4().hex[:TOPIC_ID_LENGTH]
-
 
 def retention_days(env: Optional[dict[str, str]] = None) -> float:
     """从环境变量读保留天数；缺失或非法时用默认值。"""
@@ -73,14 +74,6 @@ def retention_days(env: Optional[dict[str, str]] = None) -> float:
     except (TypeError, ValueError):
         return DEFAULT_RETENTION_DAYS
     return value if value >= 0 else DEFAULT_RETENTION_DAYS
-
-
-def _iso(ts: Optional[float]) -> Optional[str]:
-    """时间戳 → 带时区的 ISO 8601（前端 ``new Date(…)`` 能直接解析）。"""
-    if ts is None:
-        return None
-    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
-
 
 @dataclass(frozen=True)
 class Record:
@@ -103,8 +96,7 @@ class Record:
 
     @property
     def created_at(self) -> str:
-        return _iso(self.created_ts) or ""
-
+        return iso_time(self.created_ts) or ""
 
 @dataclass(frozen=True)
 class Topic:
@@ -124,7 +116,6 @@ class Topic:
     latest_question: str
     latest_answer: str
 
-
 def _row_to_record(row: Any) -> Record:
     return Record(
         id=row["id"],
@@ -135,7 +126,6 @@ def _row_to_record(row: Any) -> Record:
         created_ts=row["created_ts"],
         conversation_id=row["conversation_id"],
     )
-
 
 def _topic_condition(topic_id: str) -> tuple[Optional[str], tuple]:
     """话题 id → WHERE 条件。认不出来的 id 返回 ``(None, ())``。
@@ -152,20 +142,6 @@ def _topic_condition(topic_id: str) -> tuple[Optional[str], tuple]:
             return None, ()
         return "id = ?", (int(raw),)
     return "conversation_id = ?", (cleaned,)
-
-
-def _scope(user_id: Optional[int]) -> tuple[str, tuple]:
-    """把"这份记录属于谁"变成一个 WHERE 片段。
-
-    ``None`` 是**匿名访客**那一份，不是"不过滤"。没有登录的人看到的是
-    ``user_id IS NULL`` 的记录——也就是登录功能上线之前留下的那些，以及
-    匿名状态下新产生的那些。若把 ``None`` 当成"全部"，任何一次匿名读取都会
-    把所有人的问答端出来，那正是加用户系统要防的事。
-    """
-    if user_id is None:
-        return "user_id IS NULL", ()
-    return "user_id = ?", (int(user_id),)
-
 
 def _clean_ids(values: Any) -> list[int]:
     """把外部传来的 id 列表收拾成一串正整数，认不出的直接丢掉。
@@ -185,8 +161,8 @@ def _clean_ids(values: Any) -> list[int]:
                 cleaned.add(number)
     return sorted(cleaned)
 
-
-#: 按话题聚合。``{where}`` 由 :func:`_scope` 填（归属过滤必须在 GROUP BY 之前，
+#: 按话题聚合。``{where}`` 由 :func:`ownership.scope_clause` 填（归属过滤必须在
+#: GROUP BY 之前，
 #: 否则会把别人的记录也聚进同一个话题里，``COUNT(*)`` 跟着一起错）。
 #: 占位符 ``?`` 依次是 solo 前缀、limit、offset。
 #:
@@ -207,26 +183,22 @@ ORDER BY last_ts DESC, last_id DESC
 LIMIT ? OFFSET ?
 """
 
-
 def _read_meta(connection, key: str) -> Optional[float]:
-    row = connection.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    if row is None:
+    """读一个时间戳。值被手改坏（或不是数）时当作没有，不抛异常。"""
+    raw = meta.read_value(connection, key)
+    if raw is None:
         return None
     try:
-        return float(row["value"])
+        return float(raw)
     except (TypeError, ValueError):
         return None
 
 
 def _write_meta(connection, key: str, value: float) -> None:
-    connection.execute(
-        "INSERT INTO meta (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, repr(value)),
-    )
+    meta.write_value(connection, key, repr(value))
 
 
-class HistoryStore:
+class HistoryStore(StoreBase):
     """历史记录的读写。所有方法都**不抛异常**：数据库坏了就当这次没有记录。
 
     这看着像"把错误藏起来"，其实是这个功能的定位决定的：历史记录是附加项，
@@ -236,25 +208,13 @@ class HistoryStore:
     """
 
     def __init__(self, db: Optional[Database] = None, *, days: Optional[float] = None) -> None:
-        self._db = db if db is not None else Database()
+        super().__init__(db)
         self._days = retention_days() if days is None else days
         self._lock = threading.Lock()
         #: 本进程内是否已经检查过"该不该清理"，省掉每次请求一次 meta 查询
         self._purge_checked = False
 
     # ── 状态 ────────────────────────────────────────────────────────────
-
-    @property
-    def available(self) -> bool:
-        return self._db.available
-
-    @property
-    def error(self) -> str:
-        return self._db.error
-
-    @property
-    def db_path(self) -> str:
-        return str(self._db.path)
 
     @property
     def retention_seconds(self) -> float:
@@ -280,7 +240,8 @@ class HistoryStore:
         """存一条。返回新记录的 id；存不进去返回 None（调用方照常返回答案）。
 
         ``conversation_id`` 由调用方给（追问时沿用上一轮的话题 id），也可以不给。
-        ``user_id`` 是这条记录的归属；``None`` 表示匿名访客（见 :func:`_scope`）。
+        ``user_id`` 是这条记录的归属；``None`` 表示匿名访客（见
+        :func:`ownership.scope_clause`）。
         """
         timestamp = time.time() if now is None else now
         try:
@@ -302,7 +263,7 @@ class HistoryStore:
 
     def delete(self, record_id: int, *, user_id: Optional[int] = None) -> bool:
         """删一条。不存在、或不属于这个人，返回 False。"""
-        where, params = _scope(user_id)
+        where, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 cursor = connection.execute(
@@ -318,7 +279,7 @@ class HistoryStore:
         where, params = _topic_condition(topic_id)
         if where is None:
             return 0
-        scope, scope_params = _scope(user_id)
+        scope, scope_params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 return connection.execute(
@@ -330,7 +291,7 @@ class HistoryStore:
 
     def clear(self, *, user_id: Optional[int] = None) -> int:
         """清空**这个人**的全部记录。返回删掉的条数（失败为 0）。"""
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 return connection.execute(
@@ -374,7 +335,7 @@ class HistoryStore:
             return 0
 
         combined = " OR ".join(f"({where})" for where, _ in clauses)
-        scope, scope_params = _scope(user_id)
+        scope, scope_params = scope_clause(user_id)
         params = tuple(value for _, values in clauses for value in values)
         try:
             with self._db.session() as connection:
@@ -397,7 +358,7 @@ class HistoryStore:
         """按时间倒序列出。返回 ``(总数, 本页记录)``——总数用于界面上"还有更多"。"""
         limit = max(1, min(int(limit), MAX_LIMIT))
         offset = max(0, int(offset))
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 total = int(
@@ -424,7 +385,7 @@ class HistoryStore:
         """按话题聚合列出，最近活跃的在前。返回 ``(话题总数, 本页话题)``。"""
         limit = max(1, min(int(limit), MAX_LIMIT))
         offset = max(0, int(offset))
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 total = int(
@@ -495,7 +456,7 @@ class HistoryStore:
             return 0, []
         limit = max(1, min(int(limit), MAX_LIMIT))
         offset = max(0, int(offset))
-        scope, scope_params = _scope(user_id)
+        scope, scope_params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 total = int(
@@ -514,7 +475,7 @@ class HistoryStore:
             return 0, []
 
     def get(self, record_id: int, *, user_id: Optional[int] = None) -> Optional[Record]:
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 row = connection.execute(
@@ -547,7 +508,7 @@ class HistoryStore:
         会把窗口占满，这个人自己的新记录反而被挤到窗口外，画像永远不刷新。
         """
         window = max(1, min(int(window), MAX_LIMIT))
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         try:
             with self._db.session() as connection:
                 row = connection.execute(
@@ -613,7 +574,7 @@ class HistoryStore:
         available = self._db.available
         total = 0
         last_purge: Optional[float] = None
-        scope, params = _scope(user_id)
+        scope, params = scope_clause(user_id)
         if available:
             # 界面每次打开都会问一次状态，正好借这个时机做机会式清理
             self._maybe_purge(now=timestamp)
@@ -633,19 +594,17 @@ class HistoryStore:
             "db_path": self.db_path,
             "total": total,
             "retention_days": self._days,
-            "last_purge_at": _iso(last_purge),
+            "last_purge_at": iso_time(last_purge),
             # 还没清理过时，把"下一次"说成从现在起算，界面上不至于空着
-            "next_purge_at": _iso((last_purge if last_purge is not None else timestamp)
+            "next_purge_at": iso_time((last_purge if last_purge is not None else timestamp)
                                   + self.retention_seconds),
             "size_bytes": self._db.size_bytes() if available else 0,
         }
-
 
 #: 进程级单例。历史记录是"一份数据"，多处各建一个 Database 只会互相打架
 #: （各自持有连接、各自判断可用性）。
 _store: Optional[HistoryStore] = None
 _store_lock = threading.Lock()
-
 
 def get_history_store() -> HistoryStore:
     """取历史记录存储（惰性创建，进程内共享）。"""
@@ -654,7 +613,6 @@ def get_history_store() -> HistoryStore:
         if _store is None:
             _store = HistoryStore()
         return _store
-
 
 def reset_history_store() -> None:
     """丢掉单例。测试用它隔离数据目录，运行时不必调用。"""

@@ -10,6 +10,7 @@
 - ``router``    —— 模型发现、探活、缓存与失败轮换（单端点）
 - ``session``   —— 默认端点与请求级自定义端点之间的选择与隔离
 - ``prompt``    —— 提示词构造、对话历史编排与离线降级排版
+- ``parse``     —— 从模型回复里抠出 JSON（剥围栏）
 - 本模块        —— 把上面几层组装成"问一个问题，拿到一个回答"
 """
 
@@ -24,6 +25,7 @@ from .config import (
     load_config,
     load_env_file,
 )
+from .parse import extract_json_block
 from .prompt import (
     DEFAULT_LANG,
     MAX_HISTORY_TURNS,
@@ -63,6 +65,7 @@ __all__ = [
     "build_user_prompt",
     "chat",
     "clean_excerpt",
+    "extract_json_block",
     "generate_answer",
     "generate_answer_with_model",
     "get_router",

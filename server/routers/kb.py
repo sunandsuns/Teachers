@@ -5,92 +5,43 @@
 坐标不在这里算——图的布局是**渲染**问题，交给前端。后端只回答
 "有哪些节点、哪些边、谁连谁"。这样同一份图既能画成力导向图，
 也能在别的场合画成矩阵或列表。
+
+「知识库」要登录（它在前端路由表 `RequireAuth` 那一组里）。
+这一组原本**完全没有鉴权**——不是"可选登录"，是彻底敞开，收紧了才算对齐。
+理由与做法见 `deps.py`。
+
+图谱从语料文件构建、不碰数据库，所以错误声明里没有 503。
 """
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 
 from ..deps import require_user
+from ..errors import LOGGED_IN
+from ..schemas.kb import (
+    CrossRefModel,
+    GraphResponse,
+    KbEdgeModel,
+    KbLinkModel,
+    KbNodeModel,
+    NodeDetailResponse,
+    ThemeRowModel,
+)
 from ..services.kb import SEARCH_LIMIT, Graph, get_kb
 
-# 「知识库」要登录（它在前端路由表 `RequireAuth` 那一组里）。
-# 这一组原本**完全没有鉴权**——不是"可选登录"，是彻底敞开，收紧了才算对齐。
-# 理由与做法见 `deps.py`。
 router = APIRouter(
-    prefix="/api/kb", tags=["knowledge base"], dependencies=[Depends(require_user)]
+    prefix="/api/kb",
+    tags=["knowledge base"],
+    dependencies=[Depends(require_user)],
+    responses=LOGGED_IN,
 )
 
 
-# ── 响应模型 ────────────────────────────────────────────────────────────
+def _missing_node(node_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={"code": "node_not_found", "message": f"节点不存在: {node_id}"},
+    )
 
-class KbNodeModel(BaseModel):
-    """图上的一个节点。``meta`` 内容随 kind 变化，见服务层说明。"""
-
-    id: str
-    kind: str
-    label: str
-    degree: int
-    meta: dict[str, Any]
-
-
-class KbEdgeModel(BaseModel):
-    """一条边。``label`` 为空的边表示"关系成立但没有留下说明"。"""
-
-    source: str
-    target: str
-    kind: str
-    label: str
-    weight: int
-
-
-class GraphResponse(BaseModel):
-    """一张可渲染的图。"""
-
-    nodes: list[KbNodeModel]
-    edges: list[KbEdgeModel]
-    stats: dict[str, Any]
-
-
-class KbLinkModel(BaseModel):
-    """一条双链。``direction`` 为 ``out`` 时 ``node_id`` 是目标，``in`` 时是来源。"""
-
-    node_id: str
-    label: str
-    kind: str
-    edge_label: str
-    direction: str
-
-
-class ThemeRowModel(BaseModel):
-    """某书在某主题下的判断与代表章句。"""
-
-    theme: str
-    book_id: str
-    book_title: str
-    judgment: str
-    quote: str
-
-
-class CrossRefModel(BaseModel):
-    """笔记里写下的一句互参原文。"""
-
-    name: str
-    detail: str
-
-
-class NodeDetailResponse(BaseModel):
-    """一个节点打开后的全部内容。"""
-
-    node: KbNodeModel
-    outgoing: list[KbLinkModel]
-    backlinks: list[KbLinkModel]
-    theme_rows: list[ThemeRowModel]
-    cross_refs: list[CrossRefModel]
-
-
-# ── 转换 ────────────────────────────────────────────────────────────────
 
 def _to_node(node) -> KbNodeModel:
     return KbNodeModel(
@@ -99,6 +50,16 @@ def _to_node(node) -> KbNodeModel:
         label=node.label,
         degree=node.degree,
         meta=dict(node.meta),
+    )
+
+
+def _to_link(link) -> KbLinkModel:
+    return KbLinkModel(
+        node_id=link.node_id,
+        label=link.label,
+        kind=link.kind,
+        edge_label=link.edge_label,
+        direction=link.direction,
     )
 
 
@@ -119,8 +80,6 @@ def _to_graph(graph: Graph) -> GraphResponse:
     )
 
 
-# ── 端点 ────────────────────────────────────────────────────────────────
-
 @router.get("/graph", response_model=GraphResponse)
 async def get_graph(
     chapters: bool = Query(
@@ -140,29 +99,11 @@ async def get_node(node_id: str):
     """
     detail = get_kb().detail(node_id)
     if detail is None:
-        raise HTTPException(status_code=404, detail=f"节点不存在: {node_id}")
+        raise _missing_node(node_id)
     return NodeDetailResponse(
         node=_to_node(detail.node),
-        outgoing=[
-            KbLinkModel(
-                node_id=l.node_id,
-                label=l.label,
-                kind=l.kind,
-                edge_label=l.edge_label,
-                direction=l.direction,
-            )
-            for l in detail.outgoing
-        ],
-        backlinks=[
-            KbLinkModel(
-                node_id=l.node_id,
-                label=l.label,
-                kind=l.kind,
-                edge_label=l.edge_label,
-                direction=l.direction,
-            )
-            for l in detail.backlinks
-        ],
+        outgoing=[_to_link(l) for l in detail.outgoing],
+        backlinks=[_to_link(l) for l in detail.backlinks],
         theme_rows=[
             ThemeRowModel(
                 theme=r.theme,
@@ -185,7 +126,7 @@ async def get_local_graph(
     """局部图：焦点 + 邻居 + 与焦点直接相连的边。"""
     graph = get_kb().local(node_id, chapters=chapters)
     if graph is None:
-        raise HTTPException(status_code=404, detail=f"节点不存在: {node_id}")
+        raise _missing_node(node_id)
     return _to_graph(graph)
 
 

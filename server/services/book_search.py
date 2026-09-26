@@ -27,12 +27,13 @@ OpenLibrary 不提供全书正文。所以用户书架里的书只有元信息�
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
+
+from . import netproxy
 
 #: 检索端点
 SEARCH_URL = "https://openlibrary.org/search.json"
@@ -94,23 +95,13 @@ class SearchOutcome:
         return not self.error
 
 
-def _build_opener() -> urllib.request.OpenerDirector:
-    """默认遵循系统代理；``RSDS_NO_PROXY=1`` 可强制直连。
-
-    与 LLM 传输层同样的开关，便于在代理环境里排查"到底是谁把请求挡了"。
-    """
-    if os.environ.get("RSDS_NO_PROXY", "").strip().lower() in ("1", "true", "yes"):
-        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    return urllib.request.build_opener()
-
-
 def _get_json(url: str, opener: Optional[urllib.request.OpenerDirector] = None) -> Any:
     """发一次 GET 并解析 JSON。失败一律转成 :class:`BookSearchError`。"""
     request = urllib.request.Request(
         url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
     )
     try:
-        with (opener or _build_opener()).open(request, timeout=TIMEOUT) as response:
+        with (opener or netproxy.build_opener()).open(request, timeout=TIMEOUT) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 422:

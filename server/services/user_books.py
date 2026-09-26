@@ -21,10 +21,12 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from .book_search import BookCandidate
 from .db import Database, DatabaseUnavailable
+from .errors import DomainError
+from .store import StoreBase
 
 #: 阅读状态的合法取值
 STATUSES = ("wish", "reading", "done")
@@ -42,12 +44,10 @@ VISIBILITIES = (
 MAX_LIMIT = 200
 
 
-class UserBookError(ValueError):
+class UserBookError(DomainError):
     """可预期的业务错误（重复添加、状态非法、无权操作）。"""
 
-    def __init__(self, message: str, code: str = "shelf_error") -> None:
-        super().__init__(message)
-        self.code = code
+    default_code = "shelf_error"
 
 
 @dataclass(frozen=True)
@@ -170,19 +170,11 @@ def _row_to_public(row: Any) -> PublicBook:
     )
 
 
-class UserBookStore:
+class UserBookStore(StoreBase):
     """私人书架与"贡献到公共书架"的读写。"""
 
     def __init__(self, db: Optional[Database] = None) -> None:
-        self._db = db if db is not None else Database()
-
-    @property
-    def available(self) -> bool:
-        return self._db.available
-
-    @property
-    def error(self) -> str:
-        return self._db.error
+        super().__init__(db)
 
     # ── 私人书架 ────────────────────────────────────────────────────
 
@@ -551,43 +543,32 @@ class UserBookStore:
                 )
             return cursor.rowcount > 0
 
-    def count_all(self) -> int:
+    def _count(self, sql: str, params: Sequence[Any] = ()) -> int:
+        """跑一个 COUNT。库不可用时算 0——计数只用于展示，不该让整个页面挂掉。
+
+        四个计数入口以前各抄了一遍 ``try/session/execute/int`` 的骨架，
+        于是"库坏了返回 0"这条约定有四个副本。收在这里，以后改一处就够。
+        """
         try:
             with self._db.session() as conn:
-                return int(conn.execute("SELECT COUNT(*) AS n FROM user_books").fetchone()["n"])
+                return int(conn.execute(sql, tuple(params)).fetchone()["n"])
         except DatabaseUnavailable:
             return 0
+
+    def count_all(self) -> int:
+        return self._count("SELECT COUNT(*) AS n FROM user_books")
 
     def count_public(self) -> int:
-        try:
-            with self._db.session() as conn:
-                return int(conn.execute("SELECT COUNT(*) AS n FROM public_books").fetchone()["n"])
-        except DatabaseUnavailable:
-            return 0
+        return self._count("SELECT COUNT(*) AS n FROM public_books")
 
     def count_pending(self) -> int:
-        try:
-            with self._db.session() as conn:
-                return int(
-                    conn.execute(
-                        "SELECT COUNT(*) AS n FROM user_books WHERE visibility = ?",
-                        (VISIBILITY_PENDING,),
-                    ).fetchone()["n"]
-                )
-        except DatabaseUnavailable:
-            return 0
+        return self._count(
+            "SELECT COUNT(*) AS n FROM user_books WHERE visibility = ?", (VISIBILITY_PENDING,)
+        )
 
     def count_added_since(self, since: float) -> int:
         """某时刻之后新增了多少本（后台"今日新增"用）。"""
-        try:
-            with self._db.session() as conn:
-                return int(
-                    conn.execute(
-                        "SELECT COUNT(*) AS n FROM user_books WHERE created_ts >= ?", (since,)
-                    ).fetchone()["n"]
-                )
-        except DatabaseUnavailable:
-            return 0
+        return self._count("SELECT COUNT(*) AS n FROM user_books WHERE created_ts >= ?", (since,))
 
 
 def _next_public_book_id(conn: Any) -> str:
