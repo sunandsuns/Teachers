@@ -8,7 +8,7 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 1002 项）+ Vitest（前端 252 项）
+- **测试**：pytest（后端 1006 项）+ Vitest（前端 252 项）
 
 ---
 
@@ -404,6 +404,27 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 > 做法是在各 `APIRouter` 上挂 `dependencies=[Depends(require_user)]`，而不是
 > 每个 handler 各写一遍：漏一处不会报错，只会安静地对匿名开放。详见 `server/deps.py`。
 
+**错误响应只有一种形状**：`{"detail": {"code", "message"}}`。`code` 是机器可读的短标识
+（`unauthorized` / `not_found` / `email_taken` / `validation` / `db_unavailable` …），前端按它
+分支而不是去比中文文案（文案随语言变）；`message` 是给人看的一句话。**参数校验失败（422）也
+收编成这一种**，字段路径拼在 `message` 里（`q: Field required`）——原先它是
+`[{loc, msg}]` 数组，等于把"自己挑一条"这件事推给每个调用方。定义在 `server/errors.py`，
+形状在 `server/schemas/common.py`。
+
+**库故障有两种答复，判据是响应体里有没有地方写 `available`**：
+
+| 情形 | 答复 | 哪些接口 |
+| --- | --- | --- |
+| 响应里带 `available` / `ok` | **200** + `available:false` + `error` | 「回响」、画像 |
+| 其余碰库的接口 | **503** + `code: "db_unavailable"` | 书架、后台 |
+
+前者能说清"读不到"与"真的没有"的区别，后者不能——给裸列表回 200 加空数组就是把两者混为一谈。
+这条规则反过来约束了写法：**偏离默认的地方必须自己 `try/except`**，于是"哪里在降级"在代码里
+一眼可见。声明里也一致：降级的那两组不声明 503。
+
+> 想看完整契约：跑起来之后开 `/docs`（Swagger UI），或 `python packaging/export_openapi.py`
+> 导出一份 `openapi.json`。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/books` | 书目列表（含章节数、是否有原典） |
@@ -590,6 +611,11 @@ cd web && npm run gen:api        # = python ../packaging/gen_web_types.py
 `web/src/api/types.gen.ts` 是生成物，**要提交但不要手改**——`tests/unit/test_contract.py`
 会检查它与当前契约是否一致，忘了生成会当场变红。前端专属的类型（`SearchKind` 等）
 放 `web/src/api/types.ts`。
+
+同一个文件里另外还有九条**契约守卫**，挡的都是"不会让任何业务测试变红、只会让接口文档悄悄烂掉"
+的疏漏：接口要有响应模型（认 2xx，`201` 也算）、要声明错误码、tag 要有说明、schema 不许重名、
+契约显示名要唯一；错误面四条——错误体只有一种形状、会降级的组不许声明 503、库坏了降级必须
+带上非空的 `error`、不能降级的接口库坏了要回 503 + `db_unavailable`。
 
 想要一份机器可读的契约快照（给人 review、看 diff 用）：
 

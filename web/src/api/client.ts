@@ -126,12 +126,11 @@ export function clearApiCache(): void {
 /**
  * 接口报错。
  *
- * 后端有三种 `detail` 形状，之前只认第一种（字符串），另外两种会被
- * `String(obj)` 变成 `[object Object]` 直接显示给用户：
- *
- * 1. `detail: "文本"`          —— 普通的 `HTTPException(400, "…")`
- * 2. `detail: {code, message}` —— 带机器可读代号（认证、书架、后台）
- * 3. `detail: [{loc, msg}]`    —— Pydantic 校验失败（422）
+ * 错误体**只有一种形状**：`{ detail: { code, message } }`。原先有三种
+ * （字符串 / `{code,message}` / 422 的 `[{loc,msg}]`），前端只好在这里写三段
+ * 分支去猜"这次是哪种"——那是形状不统一收的税，而且是**每个**调用方都要交的税。
+ * 现在 422 也收编进来了（`code` 为 `validation`，字段路径拼在 `message` 里），
+ * 所以只剩一种。定义在后端 `server/errors.py`，形状在 `server/schemas/common.py`。
  *
  * 把 `code` 单独留出来，是为了让调用方能对**特定**错误分支（比如
  * `bad_credentials` 时把光标放回密码框），而不是去比中文文案——文案随语言变。
@@ -149,25 +148,20 @@ export class ApiError extends Error {
   }
 }
 
-/** 把后端返回的 `detail` 收成一句人话。 */
+/**
+ * 从错误体里取出人话与代号。
+ *
+ * 只在形状对不上时兜底——比如请求被网关拦下、回来的是 HTML 而不是 JSON，
+ * 那时 `detail` 根本不存在。**不为"后端可能返回别的形状"写分支**：那正是
+ * 统一错误体要消掉的东西，留着就是在等它重新长出来。
+ */
 function errorMessage(detail: unknown, status: number): { message: string; code: string } {
   const fallback = tCurrent('error.requestFailed', { status })
-  if (typeof detail === 'string' && detail) return { message: detail, code: '' }
-  if (detail && typeof detail === 'object') {
-    if (Array.isArray(detail)) {
-      // Pydantic 的校验错误：取第一条的 msg，它已经是给程序员看的短句
-      const first = detail[0] as { msg?: unknown } | undefined
-      const msg = typeof first?.msg === 'string' ? first.msg : ''
-      return { message: msg || fallback, code: 'validation' }
-    }
-    const boxed = detail as { code?: unknown; message?: unknown; detail?: unknown }
-    const message =
-      (typeof boxed.message === 'string' && boxed.message) ||
-      // FastAPI 的 HTTPException 里再包一层 detail 的写法
-      (typeof boxed.detail === 'string' && boxed.detail) ||
-      ''
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const boxed = detail as { code?: unknown; message?: unknown }
+    const message = typeof boxed.message === 'string' ? boxed.message : ''
     const code = typeof boxed.code === 'string' ? boxed.code : ''
-    return { message: message || fallback, code }
+    if (message) return { message, code }
   }
   return { message: fallback, code: '' }
 }

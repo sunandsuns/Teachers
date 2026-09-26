@@ -130,3 +130,122 @@ def test_frontend_types_are_generated_from_current_contract(spec: dict[str, Any]
         "types.gen.ts 与当前契约不一致：改了 server/schemas/ 之后要重新生成"
         "（在 web/ 下跑 `npm run gen:api`）"
     )
+
+
+# ── 错误面 ──────────────────────────────────────────────────────────────
+#
+# 契约不只是"有哪些字段、有哪些码"，还包括**出错时回什么形状**。下面四条把
+# 错误面钉住：形状统一、库故障按"能不能说清缘由"分两种答复。
+#
+# 这一节全是已经踩过的坑：错误体曾有三种形状（前端为此写了三段分支去猜）、
+# 历史那组声明了永远不会发生的 503（它的响应体里带着 available，库坏了回 200）、
+# 后台审计读接口用空列表冒充"从来没操作过"。
+
+#: 库坏了降级成 ``200 + available:false`` 的两组——判据是响应体里**有地方写**
+#: ``available``，而不是"这组碰不碰库"。裸列表不行（见 errors.py）。
+DEGRADING_PREFIXES = ("/api/history", "/api/profile")
+
+
+def _broken_db(tmp_path: Path):
+    """一个打不开的库。
+
+    路径指向一个**目录**：``sqlite3.connect`` 会以 "unable to open database file"
+    失败，于是 ``available`` 为假。比去改文件权限可靠——那在 Windows 上还要应付
+    ACL，慢且脆。
+    """
+    from server.services.db import Database
+
+    return Database(tmp_path)
+
+
+def test_error_body_is_uniform(client, anon_client) -> None:
+    """所有出错响应都是 ``{"detail": {"code", "message"}}``，没有第二种形状。
+
+    四种来源各取一个：未登录（401）、找不到（404）、业务规则不过（400）、
+    参数校验失败（422）。**422 也收编**——它原先是 ``[{loc, msg}]`` 数组，
+    等于把"自己挑一条"这件事推给每个调用方。
+    """
+    probes = [
+        ("未登录", anon_client.get("/api/history"), "unauthorized"),
+        # 路由自己声明了更具体的码时就用它（book_not_found 而不是通用的 not_found）
+        ("找不到", client.get("/api/books/nope"), "book_not_found"),
+        ("业务规则", client.get("/api/shelf", params={"status": "nope"}), None),
+        ("参数校验", client.get("/api/search"), "validation"),
+    ]
+    for label, response, expected_code in probes:
+        body = response.json()
+        assert isinstance(body, dict) and set(body) == {"detail"}, (
+            f"{label}：顶层应该是且只是 detail，实际是 {body!r}"
+        )
+        detail = body["detail"]
+        assert isinstance(detail, dict), f"{label}：detail 应该是对象，实际是 {detail!r}"
+        assert set(detail) == {"code", "message"}, f"{label}：detail 的键不对 {detail!r}"
+        assert isinstance(detail["code"], str) and detail["code"], (
+            f"{label}：code 不能为空——前端按它分支，不去比文案"
+        )
+        assert isinstance(detail["message"], str) and detail["message"], (
+            f"{label}：message 不能为空，它是要显示给用户的那句话"
+        )
+        if expected_code is not None:
+            assert detail["code"] == expected_code, f"{label}：code 应是 {expected_code}"
+
+
+def test_degrading_groups_do_not_declare_503(spec: dict[str, Any]) -> None:
+    """会降级成 200 的接口不许声明 503。
+
+    ``/api/history`` 与 ``/api/profile`` 的响应体里带着 ``available``，库坏了
+    回 200 + ``available:false`` + ``error``。真声明了 503，生成的客户端就会带
+    一条永远走不到的分支，读文档的人也会以为"库坏了这页就打不开"。
+    """
+    wrong = [
+        name
+        for name, path, operation in operations(spec)
+        if path.startswith(DEGRADING_PREFIXES)
+        and 503 in {int(code) for code in operation.get("responses", {}) if code.isdigit()}
+    ]
+    assert not wrong, f"这些接口会降级成 200，却声明了 503：{wrong}"
+
+
+def test_db_failure_degrades_with_a_reason(client, tmp_path, monkeypatch) -> None:
+    """库坏了「回响」回 200，并且在响应体里说清为什么。
+
+    光看状态码不够——降级的**全部意义**是"把读不到与真的没有分开"，所以必须
+    同时有 ``available:false`` 与非空的 ``error``。只断言 200 会让"空库"
+    与"库坏了"两种情况在测试里长得一模一样。
+    """
+    from server.services import history as history_module
+    from server.services.history import HistoryStore
+
+    monkeypatch.setattr(history_module, "_store", HistoryStore(db=_broken_db(tmp_path)))
+
+    listing = client.get("/api/history")
+    assert listing.status_code == 200, listing.text
+    body = listing.json()
+    assert body["available"] is False
+    assert body["error"], "既然不可用，就得说清原因"
+    assert body["items"] == []
+
+    for path in ("/api/history/status", "/api/history/topics"):
+        assert client.get(path).status_code == 200, f"{path} 应当降级而不是报错"
+
+
+def test_db_failure_returns_503_where_it_cannot_degrade(client, tmp_path, monkeypatch) -> None:
+    """不能降级的接口（响应是裸列表/聚合对象）库坏了回 503 加 ``db_unavailable``。
+
+    后台总览是这种：它回的是一个聚合对象，没有地方写"我没读到"，所以只能报错。
+    库坏了它以前会 500（未捕获的异常），现在是 503 + 一句稳定的文案。
+    """
+    from server.services import admin as admin_module
+    from server.services.admin import AdminStore
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "admin@test.local", "password": "admin-test-pw"},
+    )
+    assert login.status_code == 200, login.text
+    admin_module.reset_admin_store(AdminStore(db=_broken_db(tmp_path)))
+
+    for path in ("/api/admin/overview", "/api/admin/audit"):
+        response = client.get(path)
+        assert response.status_code == 503, f"{path} 应当 503，实际 {response.status_code}"
+        assert response.json()["detail"]["code"] == "db_unavailable"

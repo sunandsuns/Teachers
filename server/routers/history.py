@@ -13,6 +13,11 @@
 做——那是把"读不到"伪装成"真的没有"。所以库故障的默认出口是 503（见
 ``errors.py``），要降级就得在这里显式接住。这样偏离默认的地方一眼可见。
 
+**声明里也不写 503**：契约要和行为一致，而不是"凡碰库的接口都声明 503"。这一组
+所有接口都会降级（存储层的公开方法一律不抛异常），真声明了 503，生成的客户端就会
+带一条永远走不到的分支。其他碰库的组照旧声明——见「画像」那组的同样处理，以及
+``tests/unit/test_contract.py`` 里把这条钉住的守卫。
+
 两种列表
 --------------------------------------------------------------------------
 - ``/api/history``      平铺：一条记录一项
@@ -29,7 +34,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..deps import require_user
-from ..errors import DB_BACKED
+from ..errors import NOT_FOUND, UNAUTHORIZED, merge
 from ..schemas.common import DeleteResponse
 from ..schemas.history import (
     BulkDeleteRequest,
@@ -43,11 +48,12 @@ from ..services.auth import User
 from ..services.history import MAX_LIMIT, get_history_store
 
 # 「回响」是每个人的问答记录，必须登录。理由与做法见 `deps.py`。
+# 错误面比其他组窄：库故障在这里表现为 ``available: false``，不占错误码。
 router = APIRouter(
     prefix="/api/history",
     tags=["history"],
     dependencies=[Depends(require_user)],
-    responses=DB_BACKED,
+    responses=merge(UNAUTHORIZED, NOT_FOUND),
 )
 
 

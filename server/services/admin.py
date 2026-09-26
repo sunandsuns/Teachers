@@ -24,7 +24,7 @@ import time
 from datetime import datetime, time as dtime
 from typing import Any, Optional, Sequence
 
-from .db import Database, DatabaseUnavailable
+from .db import Database
 from .errors import DomainError
 from .store import StoreBase
 
@@ -214,15 +214,20 @@ class AdminStore(StoreBase):
             pass
 
     def recent_audit(self, limit: int = AUDIT_LIMIT) -> list[dict[str, Any]]:
+        """最近的审计记录。
+
+        **库不可用时让它抛出去（→ 503），不返回空列表。** 这里与上面那个写方法
+        刻意不同：审计读的是一个**裸列表**，响应里没有地方写"我没读到"，返回 ``[]``
+        就是在说"从来没操作过"——那是在运维入口上说假话，比报错糟得多。
+        （这就是 ``errors.py`` 里那条"裸列表不能降级"的规则；全项目允许降级的只有
+        「回响」与「画像」，因为它们能在同一条响应里用 ``available`` 说清缘由。）
+        """
         capped = max(1, min(int(limit), AUDIT_LIMIT))
-        try:
-            with self._db.session() as conn:
-                rows = conn.execute(
-                    "SELECT * FROM admin_audit ORDER BY created_ts DESC, id DESC LIMIT ?",
-                    (capped,),
-                ).fetchall()
-        except DatabaseUnavailable:
-            return []
+        with self._db.session() as conn:
+            rows = conn.execute(
+                "SELECT * FROM admin_audit ORDER BY created_ts DESC, id DESC LIMIT ?",
+                (capped,),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ── 内部 ────────────────────────────────────────────────────────
