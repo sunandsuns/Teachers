@@ -73,10 +73,12 @@ class TestAuthRequired:
         ("delete", "/api/shelf/books/1"),
         ("post", "/api/shelf/books/1/submit"),
     ])
-    def test_requires_login(self, client, method, path):
+    def test_requires_login(self, anon_client, method, path):
+        # 用**不带身份**的客户端。默认那个 `client` 是已登录的，拿它来断言 401
+        # 只会得到"一个登录用户也能看到自己的书架"——什么也没证明。
         # 只有 post 需要 body；get/delete 不接受 json 参数
         kwargs = {"json": {}} if method == "post" else {}
-        resp = getattr(client, method)(path, **kwargs)
+        resp = getattr(anon_client, method)(path, **kwargs)
         assert resp.status_code == 401
 
 

@@ -75,8 +75,10 @@ class TestAccessControl:
         "/api/admin/db/tables",
         "/api/admin/audit",
     ])
-    def test_anonymous_is_401(self, client, path):
-        assert client.get(path).status_code == 401
+    def test_anonymous_is_401(self, anon_client, path):
+        # 用不带身份的客户端。默认的 `client` 是已登录的，而且是个普通用户
+        # ——拿它断言 401 只会拿到 403（"你没权限"），那是另一回事。
+        assert anon_client.get(path).status_code == 401
 
     @pytest.mark.parametrize("path", [
         "/api/admin/overview",
@@ -104,7 +106,9 @@ class TestOverview:
         admin = as_admin(client)
         sign_in(client, ALICE)
         data = client.get("/api/admin/overview", headers=admin).json()
-        assert data["users"] == 2          # alice + 内置管理员
+        # 三个：夹具预置的那个（`client` 一起来就注册的 tester@example.com）、
+        # alice、以及内置管理员
+        assert data["users"] == 3
         assert data["admins"] == 1
         assert data["shelf_books"] == 0
         assert data["corpus_books"] > 0    # 语料规模由内容层补上
@@ -287,7 +291,8 @@ class TestDatabaseAccess:
         admin = as_admin(client)
         data = client.get("/api/admin/db/tables/users", headers=admin).json()
         assert data["table"] == "users"
-        assert data["total"] == 1
+        # tester（夹具预置的那个）+ 内置管理员
+        assert data["total"] == 2
         cols = {c["name"]: c for c in data["columns"]}
         assert cols["email"]["name"] == "email"
         assert cols["password_hash"]["protected"] is True

@@ -1,11 +1,15 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Button, Card } from '../../components/ui'
+import { navItemFor } from '../../components/layout/nav'
 import { useI18n } from '../../i18n'
 import { useAuth } from './AuthProvider'
 
 /** 两个模式共用一张表：字段只差一个昵称，逻辑只差一个 API 调用。 */
 export type AuthMode = 'login' | 'register'
+
+/** 登录成功后默认去哪。现在整套产品都要登录，所以就是书架（首页）。 */
+const HOME = '/'
 
 interface FieldProps {
   id: string
@@ -59,15 +63,13 @@ function Field({
 }
 
 /**
- * 登录 / 注册页。
+ * 登录 / 注册页——整套产品的**入口**。
  *
  * 两页共用一个组件：它们的版式完全一样，字段只差一个"昵称"，动作只差一个
  * API 调用。拆成两份文件的结果一定是"改了一边忘了另一边"——比如某天要给
  * 密码框加上显示/隐藏，就得记得改两处。
  *
- * 一个刻意的取舍：**登录页不把"不登录也能用"藏起来**。书架与阅读页确实对
- * 所有人开放，登录决定的是"其余功能进不进得去"；把这句话说出来，比让用户
- * 以为整个站都得先注册要诚实得多——他至少知道门外还留着一块地方。
+ * 版式由 `AuthLayout` 提供（整屏、品牌在上、表单居中）；这里只管表单本身。
  */
 export default function AuthPage({ mode }: { mode: AuthMode }) {
   const { t } = useI18n()
@@ -85,15 +87,24 @@ export default function AuthPage({ mode }: { mode: AuthMode }) {
 
   /** 登录成功之后去哪。
    *
-   * 从「寻章」这类页面被拦下来的用户，`location.state.from` 记着原地址——
-   * 登完直接送回去，而不是丢到首页让他再点一次。
+   * 从「寻章」这类页面被送过来的用户，`location.state.from` 记着原地址——
+   * 登完直接送回去，而不是落到首页让他再点一次。
    *
    * 只认**站内路径**：`//evil.com` 这种协议相对地址在浏览器里等于外站，
    * 万一哪天 `state` 能被外部写进来，这里就是现成的开放重定向。
    * 校验放在取值这一处，比在每个 `navigate` 调用点各防一次可靠。
    */
   const requested = (location.state as { from?: string } | null)?.from
-  const from = requested?.startsWith('/') && !requested.startsWith('//') ? requested : '/shelf'
+  const from =
+    requested?.startsWith('/') && !requested.startsWith('//') ? requested : HOME
+
+  /** 用户是从哪个功能被送到这儿来的。
+   *
+   * 从首页（`/`）直接进来的话没有"来路"可言，不点名；从别处被送来的话，
+   * 说一句「登录后回到「求教」」，用户就知道自己刚才那一下没白点。
+   * 功能名从导航表里取，不在这里再维护一份"路径 → 功能名"的对照。
+   */
+  const target = from === HOME ? null : navItemFor(from.split('?')[0])
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
@@ -119,9 +130,9 @@ export default function AuthPage({ mode }: { mode: AuthMode }) {
       <AuthShell title={t('auth.loginTitle')}>
         <p className="text-sm text-ink-600">{t('auth.signedInAs', { name: user.name })}</p>
         <div className="mt-4 flex gap-2">
-          <Button onClick={() => navigate('/shelf')}>{t('nav.mine')}</Button>
-          <Button variant="secondary" onClick={() => navigate('/')}>
-            {t('nav.library')}
+          <Button onClick={() => navigate(HOME)}>{t('nav.library')}</Button>
+          <Button variant="secondary" onClick={() => navigate('/shelf')}>
+            {t('nav.mine')}
           </Button>
         </div>
       </AuthShell>
@@ -130,8 +141,9 @@ export default function AuthPage({ mode }: { mode: AuthMode }) {
 
   return (
     <AuthShell title={isLogin ? t('auth.loginTitle') : t('auth.registerTitle')}>
-      <p className="mb-6 text-sm text-ink-500">
-        {isLogin ? t('auth.loginDesc') : t('auth.registerDesc')}
+      <p className="mb-6 space-y-1 text-sm text-ink-500">
+        {target && <span className="block">{t('auth.continueTo', { name: t(target.key) })}</span>}
+        <span className="block">{isLogin ? t('auth.loginDesc') : t('auth.registerDesc')}</span>
       </p>
 
       <form onSubmit={onSubmit} className="space-y-4" noValidate>
@@ -184,7 +196,7 @@ export default function AuthPage({ mode }: { mode: AuthMode }) {
         </Button>
       </form>
 
-      {/* `state` 要跟着一起走：从「寻章」被拦下来的人，点「还没有账号？去注册」
+      {/* `state` 要跟着一起走：从「寻章」被送过来的人，点「还没有账号？去注册」
           之后仍然得记得回「寻章」。不带过去的话，`from` 在这一次跳转上就断了，
           注册完只会落到默认那一页——用户刚点过的入口被悄悄忘掉。 */}
       <Link
@@ -194,20 +206,18 @@ export default function AuthPage({ mode }: { mode: AuthMode }) {
       >
         {isLogin ? t('auth.toRegister') : t('auth.toLogin')}
       </Link>
-
-      <p className="mt-6 border-t border-paper-200 pt-4 text-xs leading-relaxed text-ink-400">
-        <span className="font-medium text-ink-500">{t('auth.optional')}</span>
-        {' · '}
-        {t('auth.optionalHint')}
-      </p>
     </AuthShell>
   )
 }
 
-/** 版式外壳。窄一点（`max-w-sm`）：表单一行只有两个字段，铺满 5xl 会显得空。 */
+/** 版式外壳：只有一张卡片。
+ *
+ * 居中和宽度归 `AuthLayout`（它知道整屏还剩多少地方），这里不再重复
+ * `max-w-sm`——两处各写一次宽度，改的时候只会改到一处。
+ */
 function AuthShell({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="mx-auto max-w-sm pt-6">
+    <section>
       <Card className="p-6 sm:p-7">
         <h1 className="mb-2 font-serif text-2xl font-bold tracking-tight text-ink-900">
           {title}

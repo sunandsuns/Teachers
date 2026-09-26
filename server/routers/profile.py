@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ..deps import current_user
+from ..deps import current_user, require_user
 from ..services import figures as figures_service
 from ..services.auth import User
 from ..services.history import get_history_store
@@ -25,11 +25,18 @@ from ..services.profile import (
     get_profile_store,
 )
 
-router = APIRouter(prefix="/api/profile", tags=["profile"])
+# 「画像」是从你自己的问答里归纳出来的，必须登录。理由与做法见 `deps.py`。
+router = APIRouter(
+    prefix="/api/profile", tags=["profile"], dependencies=[Depends(require_user)]
+)
 
 
 def _owner(user: Optional[User]) -> Optional[int]:
-    """当前是谁 → 画像归属。未登录为 ``None``，即"无归属那一份"。"""
+    """当前是谁 → 画像归属。
+
+    类型上仍是 ``Optional``，但路由级已挂 ``require_user``，运行时不会是 ``None``。
+    保留 ``None`` 这一支是因为 store 层仍认 ``user_id IS NULL``（老数据）。
+    """
     return user.id if user is not None else None
 
 

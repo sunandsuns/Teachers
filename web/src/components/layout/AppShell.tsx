@@ -1,19 +1,22 @@
-import type { ReactNode } from 'react'
 import { useI18n } from '../../i18n'
+import ContentStage from './ContentStage'
 import TopBar from './TopBar'
 
 /**
- * 应用外壳：顶栏 + 内容区 + 页脚。
+ * 正式界面的外壳：顶栏 + 内容区 + 页脚。
  *
  * 存在的意义是**把"页面之外的东西"从路由文件里挪走**。原来的 `App.tsx`
  * 一个文件里塞了懒加载声明、导航数据、顶栏 JSX、路由表、页脚五件事，
  * 改导航要翻到文件中间去动一段 JSX。现在 `App.tsx` 只剩一张路由表，
  * 布局归这里，导航归 `nav.ts`。
  *
+ * 是一条**布局路由**（`element={<AppShell />}`），所以正文走 `<Outlet />`
+ * ——转场与分包兜底这两件事封在 `ContentStage` 里，与账号页共用。
+ *
  * 内容区宽度仍收在 `max-w-5xl`：这是个中文长文阅读为主的产品，
  * 再宽一行字数就超过舒适区（中文约 35~45 字/行）。
  */
-export default function AppShell({ children }: { children: ReactNode }) {
+export default function AppShell() {
   const { t } = useI18n()
 
   return (
@@ -29,7 +32,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       </a>
       <TopBar />
       <main id="main" className="mx-auto w-full max-w-5xl flex-1 px-4 py-8 sm:px-6">
-        {children}
+        <ContentStage />
       </main>
       <footer className="mt-4 border-t border-paper-200/70 py-8 text-center">
         <p className="font-serif text-sm text-ink-400">{t('app.footer')}</p>

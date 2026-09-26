@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { api } from '../api/client'
 import { AuthProvider, useAuth } from '../features/auth/AuthProvider'
-import LoginGate from '../features/auth/LoginGate'
+import RequireAuth from '../features/auth/RequireAuth'
 import Login from '../pages/Login'
 import Register from '../pages/Register'
 import { I18nProvider } from '../i18n'
@@ -92,7 +92,9 @@ describe('登录页', () => {
     renderApp(
       <Routes>
         <Route path="/login" element={<Login />} />
-        <Route path="/shelf" element={<div>我的书架内容</div>} />
+        {/* 没有来路时登完落在首页（`/`）。整套产品都要登录之后，"首页"
+            就是默认去处——原先这里是 `/shelf`，那时书架是唯一要登录的页。 */}
+        <Route path="/" element={<div>书架首页内容</div>} />
       </Routes>,
     )
 
@@ -102,7 +104,7 @@ describe('登录页', () => {
     await user.click(screen.getByRole('button', { name: '登录' }))
 
     await waitFor(() => expect(mockedApi.login).toHaveBeenCalledWith('alice@example.com', 'goodpass123'))
-    expect(await screen.findByText('我的书架内容')).toBeInTheDocument()
+    expect(await screen.findByText('书架首页内容')).toBeInTheDocument()
   })
 
   it('登录失败时把后端给的原因原样显示出来', async () => {
@@ -118,11 +120,16 @@ describe('登录页', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('邮箱或密码不正确')
   })
 
-  it('登录页明说"不登录也能用"', async () => {
-    // 这不是客套话：检索、阅读、求教确实对匿名开放。把这句话藏起来，
-    // 会让用户以为必须先注册才能进门。
+  it('登录页说清"这是入口"——不留"不登录也能用"那种话', async () => {
+    // 登录之前一个页面也看不了。若还写着"不登录也能翻书架、读正文"，
+    // 用户照着做只会撞墙——那句话曾经是真的，现在不是了。
     renderApp(<Login />)
-    expect(await screen.findByText('不登录也能用')).toBeInTheDocument()
+    expect(
+      await screen.findByText(
+        '登录后即可开始使用。你加的书、问过的话和归纳出的画像都存在账号里。',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('不登录也能用')).not.toBeInTheDocument()
   })
 
   it('已经登录的人停在登录页上，看到的是"去书架"而不是表单', async () => {
@@ -141,7 +148,7 @@ describe('注册页', () => {
     renderApp(
       <Routes>
         <Route path="/register" element={<Register />} />
-        <Route path="/shelf" element={<div>我的书架内容</div>} />
+        <Route path="/" element={<div>书架首页内容</div>} />
       </Routes>,
       ['/register'],
     )
@@ -156,7 +163,7 @@ describe('注册页', () => {
     await waitFor(() =>
       expect(mockedApi.register).toHaveBeenCalledWith('alice@example.com', 'goodpass123', ''),
     )
-    expect(await screen.findByText('我的书架内容')).toBeInTheDocument()
+    expect(await screen.findByText('书架首页内容')).toBeInTheDocument()
   })
 
   it('密码框用 new-password，让密码管理器知道这是注册', async () => {
@@ -166,30 +173,37 @@ describe('注册页', () => {
   })
 })
 
-describe('LoginGate', () => {
-  it('加载中先不结论——不闪一下"请先登录"', async () => {
+describe('RequireAuth', () => {
+  it('加载中先不结论——不把已登录的人闪到登录页去', async () => {
+    // 启动时那次 `/auth/me` 还没回来，此刻渲染 `<Navigate>` 会把一个
+    // 已登录的人在刷新的一瞬间弹到登录页。
     let release: (value: { user: null }) => void = () => {}
-    mockedApi.me.mockReturnValue(new Promise(resolve => {
-      release = resolve
-    }))
+    mockedApi.me.mockReturnValue(
+      new Promise(resolve => {
+        release = resolve
+      }),
+    )
 
     renderApp(
-      <LoginGate>
-        <div>私密内容</div>
-      </LoginGate>,
+      <Routes>
+        <Route element={<RequireAuth />}>
+          <Route path="/shelf" element={<div>私密内容</div>} />
+        </Route>
+        <Route path="/login" element={<div>登录页</div>} />
+      </Routes>,
+      ['/shelf'],
     )
 
     expect(screen.getByText('加载中…')).toBeInTheDocument()
-    expect(screen.queryByText('需要先登录')).not.toBeInTheDocument()
+    expect(screen.queryByText('登录页')).not.toBeInTheDocument()
 
     release({ user: null })
-    expect(await screen.findByText('需要先登录')).toBeInTheDocument()
+    expect(await screen.findByText('登录页')).toBeInTheDocument()
   })
 
-  it('未登录时给出出口，且把来路带上', async () => {
-    const user = userEvent.setup()
-    /** 把登录页收到的 `state.from` 打出来。用户从「我的书架」被拦下来，
-     *  登完就该回到「我的书架」——不带这个信息就会丢到首页，还得自己再点一次。 */
+  it('未登录时送到登录页，并把来路带上', async () => {
+    /** 把登录页收到的 `state.from` 打出来。用户从「我的书架」被送过来，
+     *  登完就该回到「我的书架」——不带这个信息就会落到首页，还得自己再点一次。 */
     function LoginStub() {
       const location = useLocation()
       const from = (location.state as { from?: string } | null)?.from ?? '（没有）'
@@ -198,29 +212,48 @@ describe('LoginGate', () => {
 
     renderApp(
       <Routes>
-        <Route
-          path="/shelf"
-          element={
-            <LoginGate>
-              <div>私密内容</div>
-            </LoginGate>
-          }
-        />
+        <Route element={<RequireAuth />}>
+          <Route path="/shelf" element={<div>私密内容</div>} />
+        </Route>
         <Route path="/login" element={<LoginStub />} />
       </Routes>,
       ['/shelf'],
     )
 
-    await user.click(await screen.findByRole('button', { name: '去登录' }))
     expect(await screen.findByText('登录页 from=/shelf')).toBeInTheDocument()
+  })
+
+  it('查询串也要带上——搜索词不能丢在门口', async () => {
+    function LoginStub() {
+      const location = useLocation()
+      const from = (location.state as { from?: string } | null)?.from ?? '（没有）'
+      return <div>登录页 from={from}</div>
+    }
+
+    renderApp(
+      <Routes>
+        <Route element={<RequireAuth />}>
+          <Route path="/search" element={<div>私密内容</div>} />
+        </Route>
+        <Route path="/login" element={<LoginStub />} />
+      </Routes>,
+      ['/search?q=%E6%81%95'],
+    )
+
+    expect(
+      await screen.findByText('登录页 from=/search?q=%E6%81%95'),
+    ).toBeInTheDocument()
   })
 
   it('已登录时直接渲染内容', async () => {
     mockedApi.me.mockResolvedValue({ user: ALICE })
     renderApp(
-      <LoginGate>
-        <div>私密内容</div>
-      </LoginGate>,
+      <Routes>
+        <Route element={<RequireAuth />}>
+          <Route path="/shelf" element={<div>私密内容</div>} />
+        </Route>
+      </Routes>,
+      ['/shelf'],
     )
     expect(await screen.findByText('私密内容')).toBeInTheDocument()
   })

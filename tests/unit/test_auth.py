@@ -166,8 +166,10 @@ class TestSession:
         assert resp.status_code == 400
         assert resp.json()["detail"]["code"] == "bad_password"
 
-    def test_password_change_requires_login(self, client):
-        assert client.post(
+    def test_password_change_requires_login(self, anon_client):
+        # 不带身份。默认的 `client` 是已登录的，用它只会走到"原密码不对"那条
+        # 分支拿到 400——那证明的是别的事。
+        assert anon_client.post(
             "/api/auth/password",
             json={"old_password": "x" * 10, "new_password": "brandnew456"},
         ).status_code == 401
@@ -236,3 +238,49 @@ class TestPasswordHashing:
         first = store._secret_value()
         auth_module.reset_auth_store()
         assert auth_module.get_auth_store()._secret_value() == first
+
+
+class TestAccessBoundary:
+    """**未登录时，一个接口也不放行。**
+
+    这是前端 `web/src/test/route-access.test.tsx` 配对的另一半：界面上那道
+    登录墙只是可见的一半，直接打接口照样能绕过去，所以后端得自己站住。
+
+    用 `anon_client`（不带身份）而不是默认的 `client`（已登录）——默认夹具
+    会掩盖这道边界，下面的用例正是为了不让它被掩盖。
+    """
+
+    #: 每一行都能对上一条真实路由（路径写错会得 404 而不是 401，
+    #: 那会让"拦住了"这个断言变成假通过）。
+    PROTECTED = [
+        "/api/books",
+        "/api/books/01",
+        "/api/books/01/chapters",
+        "/api/search?q=%E4%BB%81",  # 仁
+        "/api/kb/graph",
+        "/api/insight/daily",
+        "/api/profile",
+        "/api/history",
+        "/api/ask/status",
+        "/api/shelf",
+        "/api/admin/overview",
+    ]
+
+    @pytest.mark.parametrize("path", PROTECTED)
+    def test_anonymous_is_rejected(self, anon_client, path):
+        assert anon_client.get(path).status_code == 401
+
+    def test_only_auth_and_health_stay_open(self, anon_client):
+        """留开的口子只有这两个：登录注册本身，以及探活。"""
+        assert anon_client.get("/api/health").status_code == 200
+        resp = anon_client.get("/api/auth/me")
+        assert resp.status_code == 200
+        assert resp.json()["user"] is None
+
+    @pytest.mark.parametrize("path", ["/api/books", "/api/books/01/chapters"])
+    def test_the_same_path_opens_once_signed_in(self, client, path):
+        """同一批地址，带上身份就通了。
+
+        少了这条，上面那些 401 也可能只是路径写错了——这条是它们的阳性对照。
+        """
+        assert client.get(path).status_code == 200

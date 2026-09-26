@@ -9,6 +9,11 @@
 所有请求都走 vite 代理（``localhost:5173``），即浏览器实际使用的那条链路；
 后端 API 直连只用于 A 段，以便区分"后端故障"与"代理故障"。
 
+账号体系上线后，**登录之前一个接口也不放行**（只有 ``/api/auth/*`` 与
+``/api/health`` 例外）。所以除了 L 段里那几处刻意用匿名会话做的边界断言，
+其余每一段都跑在管理员会话上——脚本一开始就登好了，用的是 ``.env`` 里的
+``RSDS_ADMIN_*``（没配则是内置管理员的默认值）。
+
 注意：本机 Vite 绑定 IPv6，且环境 http_proxy 会拦截 127.0.0.1，
 因此浏览器侧一律用 localhost；后端 API 直连用 127.0.0.1。
 """
@@ -31,12 +36,54 @@ ASK_TIMEOUT = 150
 # 探活有独立的预算（PROBE_BUDGET，约 20s），等它用不着那么久
 PROBE_TIMEOUT = 40
 
-# 后端直连不能走环境代理
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# 后端直连不能走环境代理。
+#
+# 这个 opener 还挂着 **cookie jar**：账号体系上线后，从 A 段到 K 段的每一个数据
+# 接口都要登录（留开的口子只有 ``/api/auth/*`` 与 ``/api/health``）。所以脚本
+# 一开始就以管理员身份登一次，此后所有 ``get`` / ``post`` 都带着会话。
+# 不这么做的话，那些请求会齐刷刷拿到 401，而报错长得像"后端坏了"。
+SESSION_JAR = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPCookieProcessor(SESSION_JAR),
+)
 
 
 def get(url, timeout=20):
     return opener.open(url, timeout=timeout).read().decode("utf-8")
+
+
+def admin_credentials():
+    """内置管理员的凭据：环境变量优先，其次 ``.env``，最后是默认值。"""
+    env = read_env_file()
+    return (
+        os.environ.get("RSDS_ADMIN_EMAIL")
+        or env.get("RSDS_ADMIN_EMAIL", "admin@renshengdaoshi.local"),
+        os.environ.get("RSDS_ADMIN_PASSWORD")
+        or env.get("RSDS_ADMIN_PASSWORD", "admin123456"),
+    )
+
+
+def login_via(base, email, password):
+    """在 ``base``（``FRONT`` / ``BACK``）上登一次，返回 ``(状态码, 响应体)``。
+
+    ``base`` 是参数而不是写死的一个，因为 **cookie 按 host 分**：在
+    ``localhost:5173`` 上登一次，不会让 ``127.0.0.1:8000`` 也带上身份。
+    两边都得登，A 段那个"直连后端"的对照才有意义。
+    """
+    request = urllib.request.Request(
+        base + "/api/auth/login",
+        data=json.dumps({"email": email, "password": password}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with opener.open(request, timeout=30) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read().decode())
+        except ValueError:
+            return exc.code, None
 
 
 def wait(url, label, tries=40):
@@ -148,6 +195,22 @@ def main():
     check("原典已入检索库 >= 10", h.get("source_indexed", 0) >= 10, h.get("source_indexed"))
     check("超大书跳过索引", "史记" in h.get("source_skipped", []) and
           "资治通鉴" in h.get("source_skipped", []), h.get("source_skipped"))
+
+    # 先把身份拿到手，再往下走。账号体系上线后**每个**数据接口都要登录，
+    # 而 cookie 按 host 分，所以两个 host 各登一次（见 `login_via` 的说明）。
+    admin_email, admin_password = admin_credentials()
+    front_login = login_via(FRONT, admin_email, admin_password)
+    back_login = login_via(BACK, admin_email, admin_password)
+    check("管理员经 vite 代理登录成功", front_login[0] == 200,
+          "%s / %s" % (front_login[0], admin_email))
+    check("管理员直连后端登录成功（cookie 按 host 分）", back_login[0] == 200,
+          back_login[0])
+    if front_login[0] != 200 or back_login[0] != 200:
+        # 硬停而不是继续：后面每一段都靠这个会话，没有它只会一路 401，
+        # 那些报错看起来像"后端坏了"，反而把真正的问题埋掉。
+        raise SystemExit(
+            "[FAIL] 冒烟需要一个能登录的内置管理员，"
+            "检查 .env 里的 RSDS_ADMIN_EMAIL / RSDS_ADMIN_PASSWORD")
 
     books = json.loads(get(BACK + "/api/books"))
     no_source = [b["title"] for b in books if not b["has_source"]]
@@ -657,10 +720,23 @@ def main():
     check("匿名访问 /api/auth/me 得到 null 而非 401",
           anon.call("/api/auth/me")[1]["user"] is None)
 
-    code, _ = anon.call("/api/shelf")
-    check("匿名读我的书架返回 401", code == 401, code)
-    code, _ = anon.call("/api/admin/overview")
-    check("匿名访问后台返回 401", code == 401, code)
+    # **登录之前一个接口也不放行。** 逐个走一遍，守住这条边界——漏挂一个路由级
+    # `dependencies` 不会报错，只会安静地对匿名敞开，那正是加账号体系要防的事。
+    # 留开的口子只有两个：`/api/auth/*`（得能登录）与 `/api/health`（探活）。
+    for path in ("/api/books",
+                 "/api/books/01",
+                 "/api/books/01/chapters",
+                 "/api/search?q=%E4%BB%81",
+                 "/api/kb/graph",
+                 "/api/insight/daily",
+                 "/api/profile",
+                 "/api/history",
+                 "/api/ask/status",
+                 "/api/shelf",
+                 "/api/admin/overview"):
+        code, _ = anon.call(path)
+        check("匿名访问 %s 返回 401" % path, code == 401, code)
+    check("匿名访问 /api/health 仍放行", anon.call("/api/health")[0] == 200)
 
     # 加一本不存在于公共语料里的书，方便后面验证"检索能命中自己的书架"
     CANDIDATE = {
@@ -717,13 +793,11 @@ def main():
     mine = alice.call("/api/history")[1]
     check("登录用户的回响里有自己的记录",
           any("冒烟问题" in i["question"] for i in mine["items"]), mine["total"])
-    # 匿名桶**不是空的**：登录功能上线前留下的问答、以及本次冒烟前面几段匿名求教的
-    # 记录，user_id 都是 NULL，本来就归在匿名那一份里。所以这里不能断言"为空"——
-    # 那是在断言"历史被清空了"，而不是在断言"隔离生效了"。要看的是 alice 那条有没有漏过来。
-    anon_items = anon.call("/api/history")[1]["items"]
-    check("匿名看不到登录用户的记录",
-          not any("冒烟问题" in i["question"] for i in anon_items),
-          "匿名桶 %d 条，均非 alice 的记录" % len(anon_items))
+    # 隔离以前是"匿名一份 vs 你一份"，现在匿名根本进不来，所以要看的是
+    # **两个登录用户之间**互不可见。先问一句"匿名到底能不能读到"——
+    # 答案是 401，不是"读到一个空桶"。
+    code, _ = anon.call("/api/history")
+    check("匿名连回响这个接口都进不去（401）", code == 401, code)
     # bob 是本次新注册的账号，名下一条记录都没有，这里可以直接断言为空。
     check("别的用户看不到我的记录",
           bob.call("/api/history")[1]["items"] == [])
@@ -733,15 +807,13 @@ def main():
     check("申请公开后可见性为 pending", pending["visibility"] == "pending",
           pending["visibility"])
 
-    env = read_env_file()
-    admin_email = os.environ.get("RSDS_ADMIN_EMAIL") or env.get(
-        "RSDS_ADMIN_EMAIL", "admin@renshengdaoshi.local")
-    admin_password = os.environ.get("RSDS_ADMIN_PASSWORD") or env.get(
-        "RSDS_ADMIN_PASSWORD", "admin123456")
+    # 凭据在 A 段就取过了。这里**新起一个干净会话**再登一次，不是多此一举：
+    # 那个共享 opener 上的 cookie 可能掩盖"登录其实坏了"——比如 Set-Cookie
+    # 没写对，共享 jar 里却还留着早先某次登录的旧 cookie。
     admin = Session()
     code, _ = admin.call("/api/auth/login", "POST",
                          {"email": admin_email, "password": admin_password})
-    check("内置管理员能登录", code == 200, "%s / %s" % (code, admin_email))
+    check("内置管理员能登录（干净会话）", code == 200, "%s / %s" % (code, admin_email))
 
     if code == 200:
         overview = admin.call("/api/admin/overview")[1]
@@ -772,11 +844,13 @@ def main():
         check("贡献书号带 u 前缀（不与内置书号撞车）",
               all(b["book_id"].startswith("u") for b in public if b["title"] == "冒烟测试之书"))
 
-        # 批准之后，**匿名**也应该检索得到——它已经进了公共书架
-        public_hit = anon.call(
+        # 批准之后，**别的登录用户**也应该检索得到——它已经进了公共书架。
+        # 这里换成 bob 而不是匿名：匿名现在连 `/api/search` 都进不去（401），
+        # "公共"是"对所有注册用户可见"，不是"对全世界可见"。
+        public_hit = bob.call(
             "/api/search?q=" + urllib.parse.quote("冒烟测试之书") + "&top_k=10"
         )[1]["results"]
-        check("批准后匿名也能检索到这本书", bool(public_hit), len(public_hit))
+        check("批准后别的用户也能检索到这本书", bool(public_hit), len(public_hit))
 
         users = admin.call("/api/admin/users")[1]
         check("用户列表含刚注册的账号",

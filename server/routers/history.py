@@ -22,21 +22,25 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from ..deps import current_user
+from ..deps import current_user, require_user
 from ..services.auth import User
 from ..services.history import MAX_LIMIT, get_history_store
 
 #: 一次批量删除最多接受多少个目标。见 :class:`BulkDeleteRequest`。
 MAX_BULK_TARGETS = 500
 
-router = APIRouter(prefix="/api/history", tags=["history"])
+# 「回响」是每个人的问答记录，必须登录。理由与做法见 `deps.py`。
+router = APIRouter(
+    prefix="/api/history", tags=["history"], dependencies=[Depends(require_user)]
+)
 
 
 def _owner(user: Optional[User]) -> Optional[int]:
     """把"当前是谁"收敛成一个归属 id。
 
-    未登录时返回 ``None``——那是 :mod:`services.history` 里"匿名访客那一份"
-    的约定值（``user_id IS NULL``），不是"不过滤"。
+    类型上仍是 ``Optional``，但路由级已经挂了 ``require_user``，运行时不会是
+    ``None``。保留 ``None`` 这一支是因为 :mod:`services.history` 的 store 层
+    仍然认 ``user_id IS NULL``——库里可能有账号体系上线之前留下的老数据。
     """
     return user.id if user is not None else None
 

@@ -9,12 +9,15 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ..deps import current_user
+from ..deps import current_user, require_user
 from ..services import qa
 from ..services.auth import User
 from ..services.llm import EndpointOverride
 
-router = APIRouter(prefix="/api/ask", tags=["ask"])
+# 「求教」要登录：它把问答写进「回响」，而回响是按账号隔离的——
+# 匿名提问会落到谁都看不见的 `user_id IS NULL` 那一份里，等于白问。
+# 理由与做法见 `deps.py`。
+router = APIRouter(prefix="/api/ask", tags=["ask"], dependencies=[Depends(require_user)])
 
 #: 请求体里最多接受几轮历史。真实上限比这严（``prompt.MAX_HISTORY_TURNS``），
 #: 这里放宽只是不想因为前端多带两轮就让整次提问 422——截断是服务层的事。

@@ -277,73 +277,61 @@ def main() -> int:
             # 而 localStorage 只有偏好、没有会话，降级不致命。
             pass
 
-        print("=== 1. 首页书架（等数据落定后截图）===")
+        def lands_on(expected, target, timeout=14.0):
+            """导航到 `target`，断言浏览器最终停在 `expected`。
+
+            判据里必须带上"这是一份**新**文档"：只看
+            `location.pathname === expected` 会被上一页蒙过去——本脚本里相邻两段
+            常常起点与终点同名（登录页 → 登录页），下一页还没加载出来就已经
+            "通过"了。所以先在当前文档上埋一个记号，新文档读不到它，
+            两个条件同时成立才算数。
+            """
+            cdp.evaluate("window.__staleDoc = true")
+            cdp.goto(target)
+            return cdp.wait_for(
+                "window.__staleDoc === undefined && location.pathname === %s"
+                % json.dumps(expected), timeout=timeout)
+
+        print("=== 1. 打开网站第一眼是登录页 ===")
+        # 这一段就是需求本身：**未登录的人看到的第一屏是登录页**。
+        # 断言的是浏览器地址栏与页面结构，不是"页面上有某个词"——
+        # 后者会被顶栏里恰好也写着「登录」的按钮蒙过去。
         cdp.goto("/")
-        arrived = cdp.wait_for(
-            "document.querySelectorAll('a[href^=\"/books/\"]').length >= 15")
-        check("15 本书卡渲染出来", arrived,
-              cdp.evaluate("document.querySelectorAll('a[href^=\"/books/\"]').length"))
-        # 别去数 `.opacity-0`：卡片右上那个悬停箭头本来就常驻 opacity-0，
-        # 数出来永远不是 0。真正要问的是"用户看得见第一张卡片吗"——
-        # 于是把卡片自身与所有祖先的 opacity 乘起来，看有效值是不是 1。
-        EFFECTIVE_OPACITY = """
-        (function () {
-          var el = document.querySelector('a[href^="/books/"]');
-          if (!el) return -1;
-          var value = 1;
-          while (el && el !== document.documentElement) {
-            value *= parseFloat(window.getComputedStyle(el).opacity || '1');
-            el = el.parentElement;
-          }
-          return value;
-        })()
-        """
-        check("首张书卡已入场（有效不透明度为 1）",
-              cdp.wait_for(EFFECTIVE_OPACITY + " === 1", timeout=10),
-              cdp.evaluate(EFFECTIVE_OPACITY))
-        title = cdp.evaluate("document.querySelector('h2') && document.querySelector('h2').textContent")
-        check("首张卡片有书名", bool(title), title)
-        cdp.pump(0.6)
-        cdp.shot("ui-01-home.png")
+        check("打开首页落在登录页（地址栏 /login）",
+              cdp.wait_for("location.pathname === '/login'", timeout=12),
+              cdp.evaluate("location.pathname"))
+        check("登录页有邮箱与密码输入框",
+              cdp.wait_for("!!document.querySelector('input[type=email]') && "
+                           "!!document.querySelector('input[type=password]')"))
+        # 「独立整屏」的判据是**没有顶栏**：`nav` 住在 `TopBar` 里，是全站唯一的
+        # 导航容器。它不在，就说明这一屏没被套进正式界面壳——那排导航在还没登录
+        # 的人眼里是七个同样的死胡同，点哪个都会回到这一页。
+        check("登录屏不显示顶栏导航（整屏，不是 AppShell）",
+              cdp.evaluate("!document.querySelector('nav')"))
+        check("登录之前看不到书架内容",
+              cdp.evaluate(
+                  "document.querySelectorAll('a[href^=\"/books/\"]').length === 0"))
+        cdp.pump(0.5)
+        cdp.shot("ui-01-login-first.png")
 
         print()
-        print("=== 2. 我的书架：未登录时是登录门 ===")
-        cdp.goto("/shelf")
-        gate = cdp.wait_for("document.body.innerText.indexOf('需要先登录') >= 0")
-        check("未登录显示登录门", gate)
-        check("登录门给了去登录的按钮",
-              bool(cdp.evaluate(
-                  "!!Array.from(document.querySelectorAll('button,a')).find("
-                  "e => e.textContent.indexOf('去登录') >= 0)")))
-        cdp.pump(0.4)
-        cdp.shot("ui-02-shelf-gate.png")
-
-        print()
-        print("=== 2b. 权限边界：匿名只看得见书架与阅读页 ===")
+        print("=== 2. 权限边界：登录之前一个页面也看不了 ===")
         # 门禁是**路由表**上那条 `RequireAuth` 分组，不是各页自己的判断。所以这段
         # 的职责是守住那张清单：哪天把某条路由挪出分组（或加了一条却忘了放进去），
         # 这里就会红——那种错误不会报错，只会安静地对匿名开放。
-        GATED = ("/shelf", "/search", "/knowledge", "/ask", "/history",
-                 "/profile", "/insights", "/admin")
+        #
+        # `/` 与 `/books/01` 也在清单里。它们曾经对匿名放行（"书架是门面"），
+        # 现在门面换成了登录页本身——能翻书目、能点开读，都是登录之后的事。
+        GATED = ("/", "/books/01", "/shelf", "/search", "/knowledge", "/ask",
+                 "/history", "/profile", "/insights", "/admin")
         for path in GATED:
-            cdp.goto(path)
-            check("匿名进 %s 看到登录门" % path,
-                  cdp.wait_for(
-                      "document.body.innerText.indexOf('需要先登录') >= 0",
-                      timeout=8))
-            check("  %s 的门给了去登录的出口" % path,
-                  bool(cdp.evaluate(
-                      "!!Array.from(document.querySelectorAll('button'))"
-                      ".find(e => e.textContent.indexOf('去登录') >= 0)")))
-        # 反面：这两条必须放行。断言里带上"这一页真的渲染了"，是因为
-        # 单看"没有登录门"证明不了任何事——整页挂了时同样没有门。
-        for path, marker in (("/", "a[href^='/books/']"), ("/books/01", "h1")):
-            cdp.goto(path)
-            rendered = cdp.wait_for(
-                "!!document.querySelector(%s)" % json.dumps(marker), timeout=10)
-            check("匿名进 %s 不被拦，且这一页真的渲染了" % path,
-                  rendered and cdp.evaluate(
-                      "document.body.innerText.indexOf('需要先登录') < 0"))
+            landed = lands_on("/login", path)
+            check("匿名进 %s 被送到登录页" % path, landed,
+                  cdp.evaluate("location.pathname"))
+            check("  %s 送到的那一屏真的能登录（有邮箱框）" % path,
+                  cdp.evaluate("!!document.querySelector('input[type=email]')"))
+        cdp.pump(0.4)
+        cdp.shot("ui-02-boundary-login.png")
 
         print()
         print("=== 3. 登录页：错误凭据要报错 ===")
@@ -367,18 +355,16 @@ def main() -> int:
             "RSDS_ADMIN_PASSWORD", "admin123456")
 
         print()
-        print("=== 3b. 从登录门进去：登完回到被拦下那一页 ===")
+        print("=== 3b. 从被拦下的那一页进去：登完回到原地 ===")
         # "登录完成后转跳"最容易断在两处：门没把来路带上，或者登录页跳注册页时
         # 把 `state` 丢了。这里端到端走一遍，断言的是**浏览器地址栏**——
         # 不是"页面上出现了某个词"：后者会被顶栏里恰好也写着「求教」的链接蒙过去。
         cdp.goto("/search")
-        cdp.wait_for("document.body.innerText.indexOf('需要先登录') >= 0", timeout=8)
-        cdp.evaluate(
-            "(function(){var b=Array.from(document.querySelectorAll('button'))"
-            ".find(e => e.textContent.indexOf('去登录') >= 0); if(b) b.click();})()")
-        check("点去登录进了登录页",
-              cdp.wait_for("location.pathname === '/login'", timeout=8),
+        check("匿名进 /search 被送到登录页", lands_on("/login", "/search"),
               cdp.evaluate("location.pathname"))
+        # 门要把来路带上，登录页才知道该说"回哪儿"。`state` 一丢这条就红。
+        check("登录页点名了来路（「登录后回到……」）",
+              cdp.wait_for("document.body.innerText.indexOf('登录后回到') >= 0"))
 
         cdp.wait_for("!!document.querySelector('input[type=email]')")
         cdp.evaluate(SET_VALUE % ("'input[type=email]'", json.dumps(admin_email)))
@@ -468,13 +454,46 @@ def main() -> int:
             cdp.shot("ui-06-admin-%s.png" % tab)
 
         print()
-        print("=== 5. 登录后回到我的书架 ===")
-        cdp.goto("/shelf")
-        check("登录后不再是登录门",
-              cdp.wait_for("document.body.innerText.indexOf('需要先登录') < 0") and
-              cdp.evaluate("document.body.innerText.indexOf('需要先登录') < 0"))
-        cdp.pump(0.8)
-        cdp.shot("ui-07-shelf-logged-in.png")
+        print("=== 5. 登录之后：书架首页与我的书架都进来了 ===")
+        # 这一段是第 2 段的反面。少了它，第 2 段全绿也证明不了任何事——
+        # 整站都坏在登录页上时，同样"每一个路径都把人送到登录页"。
+        # 书架首页的渲染检查也搬到了这里：它现在得先有会话才看得见。
+        cdp.goto("/")
+        check("登录后书架首页真的渲染了（不是又弹回登录页）",
+              cdp.wait_for(
+                  "location.pathname === '/' && "
+                  "document.querySelectorAll('a[href^=\"/books/\"]').length >= 15",
+                  timeout=15),
+              cdp.evaluate("location.pathname"))
+        # 别去数 `.opacity-0`：卡片右上那个悬停箭头本来就常驻 opacity-0，
+        # 数出来永远不是 0。真正要问的是"用户看得见第一张卡片吗"——
+        # 于是把卡片自身与所有祖先的 opacity 乘起来，看有效值是不是 1。
+        EFFECTIVE_OPACITY = """
+        (function () {
+          var el = document.querySelector('a[href^="/books/"]');
+          if (!el) return -1;
+          var value = 1;
+          while (el && el !== document.documentElement) {
+            value *= parseFloat(window.getComputedStyle(el).opacity || '1');
+            el = el.parentElement;
+          }
+          return value;
+        })()
+        """
+        check("首张书卡已入场（有效不透明度为 1）",
+              cdp.wait_for(EFFECTIVE_OPACITY + " === 1", timeout=10),
+              cdp.evaluate(EFFECTIVE_OPACITY))
+        title = cdp.evaluate("document.querySelector('h2') && document.querySelector('h2').textContent")
+        check("首张卡片有书名", bool(title), title)
+        cdp.pump(0.6)
+        cdp.shot("ui-07-home-logged-in.png")
+
+        # 停在 /shelf 上、又没有输入框，说明这一页是个空壳（挂在半路），
+        # 所以两个条件一起问。
+        check("登录后进我的书架不再被拦，且这一页真的渲染了",
+              lands_on("/shelf", "/shelf")
+              and cdp.wait_for("!!document.querySelector('input')", timeout=10),
+              cdp.evaluate("location.pathname"))
 
         print()
         print("=== 6. 联网检索：上游成败都要给出明确反馈 ===")

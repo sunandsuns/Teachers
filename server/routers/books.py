@@ -1,11 +1,16 @@
 """书籍/章节 API 路由。"""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..deps import require_user
 from ..services.content_loader import get_loader
 
-router = APIRouter(prefix="/api/books", tags=["books"])
+# 书目与正文也要登录：这套产品现在的入口就是登录页，登录之前一个页面也看不了。
+# 界面那道门在后端跟着收紧，否则直接打接口照样绕过去——而"哪些接口要登录"
+# 若只写在前端，漏一处的代价是悄悄地对匿名开放。
+# 为什么是路由级 `dependencies` 而不是每个 handler 各写一遍，见 `deps.py`。
+router = APIRouter(prefix="/api/books", tags=["books"], dependencies=[Depends(require_user)])
 
 #: 原典单次返回的最大字符数。
 #: 《资治通鉴》全文约 310 万字，一次性塞给浏览器会让页面卡死，

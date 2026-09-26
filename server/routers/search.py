@@ -5,11 +5,15 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from ..deps import current_user
+from ..deps import current_user, require_user
 from ..services.auth import User
 from ..services.unified_search import search_all
 
-router = APIRouter(prefix="/api/search", tags=["search"])
+# 「寻章」在界面上要登录（它在前端路由表 `RequireAuth` 那一组里），接口跟着收紧：
+# 检索会连你自己的书架一起查，匿名不该进得来。理由与做法见 `deps.py`。
+router = APIRouter(
+    prefix="/api/search", tags=["search"], dependencies=[Depends(require_user)]
+)
 
 #: 来源过滤：不限 / 只看深读笔记 / 只看原典全文 / 只看我的书架
 KindFilter = Literal["all", "notes", "source", "shelf"]

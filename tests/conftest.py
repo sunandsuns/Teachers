@@ -134,12 +134,48 @@ def index(loader):
     retriever_module.reset_retriever()
 
 
-@pytest.fixture()
-def client(index):
-    """干净的 FastAPI 测试客户端。
+#: 测试用的固定身份。固定成常量是为了可复现：用例要断言"这是我自己的记录"，
+#: 每次换一个随机邮箱会让"哪条是我的"变得没法写。
+TEST_USER_EMAIL = "tester@example.com"
+TEST_USER_PASSWORD = "tester-pass-123"
 
-    依赖 `index` 保证索引已就绪；`main.lifespan` 是幂等的，
-    因此进入上下文不会重复建索引，但仍覆盖启动路径。
+
+@pytest.fixture()
+def anon_client(index):
+    """**不带身份**的 FastAPI 测试客户端。
+
+    绝大多数用例不该用它。它只给一类用例：断言"未登录时一个接口也进不去"
+    （见 `tests/unit/test_auth.py::TestAccessBoundary`）。留开的口子只有
+    `/api/auth/*` 与 `/api/health` 两个，那张清单得有人专门盯着——漏一个
+    接口不会报错，只会安静地对匿名开放。
     """
     with TestClient(main.app) as test_client:
+        yield test_client
+
+
+@pytest.fixture()
+def client(index):
+    """已登录的 FastAPI 测试客户端（默认就用它）。
+
+    为什么默认带身份
+    ------------------------------------------------------------------
+    后端收紧之后，除 `/api/books/*` 与 `/api/auth/*` 外的每个接口都挂了
+    `require_user`（见 `server/deps.py`）——界面上"匿名只看得见书架与阅读页"
+    这道门，在接口层同样成立，否则直接打接口就能绕过去。
+
+    于是"匿名的 TestClient"不再是一个中立的默认值：它会让几百个跟权限无关的
+    用例（检索、求教、回响、画像、知识库、感悟）统统拿到 401，报出来的错还
+    全都长得很像"业务坏了"。把身份放在夹具里，这些用例一个字都不用改，
+    改的是**默认值本身**——它现在如实反映"一个登录用户在用这个产品"。
+
+    每个用例都是干净的库（`isolate_history` 把数据目录指向 `tmp_path`），
+    所以注册永远成功，不存在"用户已存在"。
+    """
+    with TestClient(main.app) as test_client:
+        registered = test_client.post(
+            "/api/auth/register",
+            json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD},
+        )
+        # 注册即登录：种下会话 cookie，之后这个客户端的每次请求都带上身份。
+        assert registered.status_code == 201, registered.text
         yield test_client

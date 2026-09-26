@@ -413,8 +413,20 @@ class UserBookStore:
     # ── 检索用 ──────────────────────────────────────────────────────
 
     def searchable_for(self, user_id: int) -> list[ShelfBook]:
-        """某人的全部藏书，供检索融合使用。"""
-        _, books = self.list_for(user_id, limit=MAX_LIMIT)
+        """某人的全部藏书，供检索融合使用。
+
+        库不可用时返回空列表——**不是**"这个人没有书"，而是"这次取不到"。
+        取不到就不融这一路，求教拿公共语料照样能答；为几本取不到的书把整次
+        求教变成 500 是不划算的（与 :meth:`public_books` 同一做法）。
+
+        这条不是理论问题：登录之后求教会**都**走到这里（匿名时 `user_id`
+        为空、这一路根本不会被调用），所以"库一坏、求教就崩"是在账号体系
+        上线之后才出现的，`test_history_api.py` 的降级用例把它抓了出来。
+        """
+        try:
+            _, books = self.list_for(user_id, limit=MAX_LIMIT)
+        except DatabaseUnavailable:
+            return []
         return books
 
     def public_books(self) -> list[PublicBook]:

@@ -7,12 +7,18 @@
 from datetime import date as date_type
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..deps import require_user
 from ..services.insight import get_insight_service
 
-router = APIRouter(prefix="/api/insight", tags=["insight"])
+# 「感悟」要登录（它在前端路由表 `RequireAuth` 那一组里）。
+# 这一组原本**完全没有鉴权**——不是"可选登录"，是彻底敞开，收紧了才算对齐。
+# 理由与做法见 `deps.py`。
+router = APIRouter(
+    prefix="/api/insight", tags=["insight"], dependencies=[Depends(require_user)]
+)
 
 
 class InsightItem(BaseModel):

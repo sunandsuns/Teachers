@@ -312,13 +312,13 @@ const ZH = {
     '接口地址与 API Key 都填上之后，「求教」才会走这个模型；在此之前仍用默认模型。',
 
   // ── 账号 ────────────────────────────────────────────────────
-  // 「不登录也能用」是这个产品的定位，不是一句客套：登录只决定**哪些数据
-  // 归到你名下**，不决定能不能用。所以这几条文案的重心都在"登录换来什么"，
-  // 而不是"不登录会失去什么"。
+  // 这套产品现在的入口就是登录页：**登录之前一个页面也看不了**。所以文案的
+  // 重心从"登录换来什么"换成了"这一页是干什么的"——第一句就得说清楚，
+  // 别让人以为网站坏了、或者以为只有老用户才进得去。
   'auth.login': '登录',
   'auth.register': '注册',
   'auth.loginTitle': '登录',
-  'auth.loginDesc': '登录后，你加的书、问过的话和归纳出的画像都跟着账号走。',
+  'auth.loginDesc': '登录后即可开始使用。你加的书、问过的话和归纳出的画像都存在账号里。',
   'auth.registerTitle': '注册',
   'auth.registerDesc': '用邮箱注册即可，不需要验证邮件。',
   'auth.email': '邮箱',
@@ -333,14 +333,9 @@ const ZH = {
   'auth.toLogin': '已有账号？去登录',
   'auth.logout': '退出登录',
   'auth.menu': '账号菜单',
-  'auth.optional': '不登录也能用',
-  'auth.optionalHint':
-    '不登录也能翻书架、读正文。登录之后，寻章、知识库、求教、回响、画像、感悟才对你开放。',
-  'auth.needLogin': '需要先登录',
-  'auth.needLoginHint': '这一页要登录之后才能看。不登录也能先翻书架、读正文。',
-  // 带功能名的版本。功能名从导航表里取，所以门禁不必自己维护一份路径对照。
-  'auth.needLoginFor': '「{name}」要登录之后才能用。不登录也能先翻书架、读正文。',
-  'auth.goLogin': '去登录',
+  // 从某个功能页被送过来时点名（功能名同样取自导航表）：用户知道自己
+  // 刚才那一下没白点，登完还会回到那儿。
+  'auth.continueTo': '登录后回到「{name}」',
   'auth.signedInAs': '已登录 · {name}',
   'auth.passwordChanged': '密码已修改，请重新登录。',
 
@@ -751,7 +746,8 @@ const EN: Record<MessageKey, string> = {
   'auth.login': 'Sign in',
   'auth.register': 'Sign up',
   'auth.loginTitle': 'Sign in',
-  'auth.loginDesc': 'Once signed in, the books you add, the questions you ask and your profile follow your account.',
+  'auth.loginDesc':
+    'Sign in to get started. Your books, questions and profile are kept in your account.',
   'auth.registerTitle': 'Create an account',
   'auth.registerDesc': 'Just an email address — no verification mail needed.',
   'auth.email': 'Email',
@@ -766,15 +762,7 @@ const EN: Record<MessageKey, string> = {
   'auth.toLogin': 'Already have an account? Sign in',
   'auth.logout': 'Sign out',
   'auth.menu': 'Account menu',
-  'auth.optional': 'Usable without signing in',
-  'auth.optionalHint':
-    'Without an account you can browse the shelf and read. Signing in unlocks search, the knowledge base, Ask, Echoes, Profile and Insights.',
-  'auth.needLogin': 'Please sign in first',
-  'auth.needLoginHint':
-    'This page needs a signed-in account. You can still browse the shelf and read without one.',
-  'auth.needLoginFor':
-    '“{name}” needs a signed-in account. You can still browse the shelf and read without one.',
-  'auth.goLogin': 'Go to sign in',
+  'auth.continueTo': 'You’ll return to “{name}” after signing in',
   'auth.signedInAs': 'Signed in · {name}',
   'auth.passwordChanged': 'Password changed. Please sign in again.',
 

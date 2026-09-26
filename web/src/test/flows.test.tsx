@@ -179,7 +179,8 @@ describe('导航', () => {
     renderApp()
     const user = userEvent.setup()
 
-    await user.click(screen.getByText('寻章'))
+    // 先等顶栏出现再点：`/` 现在也要登录，首帧是"登录态还没回来"的兜底。
+    await user.click(await screen.findByText('寻章'))
     await waitFor(() => expect(screen.getByPlaceholderText('输入关键词，例如：上善若水')).toBeTruthy())
 
     await user.click(screen.getByText('求教'))
@@ -240,7 +241,8 @@ describe('回响的勾选删除（整个应用里）', () => {
     renderApp()
     const user = userEvent.setup()
 
-    await user.click(screen.getByText('回响'))
+    // 同上：顶栏要等登录态回来才渲染
+    await user.click(await screen.findByText('回响'))
     await waitFor(() => expect(screen.getByText('工作中遇到小人怎么办？')).toBeTruthy())
 
     await user.click(screen.getByRole('button', { name: '选择' }))

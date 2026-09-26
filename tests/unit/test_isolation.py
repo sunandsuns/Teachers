@@ -272,11 +272,14 @@ class TestHistoryRoutesScope:
         ]
         assert client.get("/api/history", headers=bob).json()["items"] == []
 
-    def test_anonymous_does_not_see_a_logged_in_users_questions(self, client):
-        alice = sign_in(client, ALICE)
-        client.post("/api/ask", json={"question": "甲问的问题"}, headers=alice)
+    def test_anonymous_cannot_read_anyones_questions(self, anon_client):
+        """匿名连这一层都进不去——不是"看到空列表"，是压根不给看。
 
-        assert client.get("/api/history").json()["items"] == []
+        这条原先断言的是"匿名读到空列表"（那时匿名是个合法身份，只是看不到
+        别人的东西）。现在登录之前一个接口也不放行，所以它变成 401；
+        "两个人互相看不见"由上面那条覆盖。
+        """
+        assert anon_client.get("/api/history").status_code == 401
 
     def test_topics_endpoint_is_scoped(self, client):
         alice = sign_in(client, ALICE)

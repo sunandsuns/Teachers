@@ -9,12 +9,18 @@
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..deps import require_user
 from ..services.kb import SEARCH_LIMIT, Graph, get_kb
 
-router = APIRouter(prefix="/api/kb", tags=["knowledge base"])
+# 「知识库」要登录（它在前端路由表 `RequireAuth` 那一组里）。
+# 这一组原本**完全没有鉴权**——不是"可选登录"，是彻底敞开，收紧了才算对齐。
+# 理由与做法见 `deps.py`。
+router = APIRouter(
+    prefix="/api/kb", tags=["knowledge base"], dependencies=[Depends(require_user)]
+)
 
 
 # ── 响应模型 ────────────────────────────────────────────────────────────

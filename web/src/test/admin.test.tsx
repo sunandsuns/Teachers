@@ -111,17 +111,18 @@ beforeEach(() => {
 })
 
 describe('后台的权限边界', () => {
-  it('未登录时这一页自己不说话——"请先登录"由路由上的登录门负责', async () => {
+  it('未登录时这一页自己不说话——把人送去登录页由路由上的 `RequireAuth` 负责', async () => {
     // 门禁上移到路由层之后，`/admin` 未登录时根本走不到这一页：
-    // `RequireAuth` 会先把登录门摆出来。所以这里不该再冒出"请先登录"，
+    // `RequireAuth` 会先把人送到登录页。所以这里**什么都不渲染**，
     // 也不该把"你不是管理员"说成未登录——那句说错了，用户会去找管理员
-    // 要权限，而他其实只需要登录。（"匿名进 /admin 看到登录门"那条
+    // 要权限，而他其实只需要登录。（"未登录进 /admin 会落到登录页"那条
     // 在 `route-access.test.tsx` 里，走的是真实的 `<App />` 路由表。）
     mockedApi.me.mockResolvedValue({ user: null })
     renderAdmin()
 
     await waitFor(() => expect(mockedApi.me).toHaveBeenCalled())
-    expect(screen.queryByText('需要先登录')).not.toBeInTheDocument()
+    // 未登录 = 不渲染任何东西：既没有"只对管理员开放"（那是说给已登录的
+    // 普通用户听的），也没有后台自己的标题
     expect(screen.queryByText('这一页只对管理员开放')).not.toBeInTheDocument()
     // 同理也不该去问后台接口——没身份的人问也是 403
     expect(mockedApi.adminOverview).not.toHaveBeenCalled()

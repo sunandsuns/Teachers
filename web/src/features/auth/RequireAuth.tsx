@@ -1,44 +1,57 @@
-import { Outlet, useLocation } from 'react-router-dom'
-import { navItemFor } from '../../components/layout/nav'
-import { useI18n } from '../../i18n'
-import LoginGate from './LoginGate'
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { Loading } from '../../components/Status'
+import { useAuth } from './AuthProvider'
 
 /**
  * 「这一组路由需要登录」——一条**无路径的布局路由**。
  *
- * 为什么是布局路由，而不是给每条路由各包一层 `<LoginGate>`
+ * 为什么是布局路由，而不是给每条路由各包一层
  * --------------------------------------------------------------------------
  * 门禁是"一类页面的共同属性"，就该在路由表里用结构表达出来：
  *
  *   <Route element={<RequireAuth />}>
- *     <Route path="/shelf" element={<Shelf />} />
- *     ...
+ *     <Route element={<AppShell />}>
+ *       <Route path="/" element={<Library />} />
+ *       ...
+ *     </Route>
  *   </Route>
  *
  * 好处有三个，都不是审美问题：
- *   · **一处说了算。** "哪些页面要登录"从此只有路由表这一个答案，加一页
- *     只需挪一行；而"每条路由各包一层"时，答案散在八行里，漏包一条
+ *   · **一处说了算。** 现在**每一条**内容路由都在这一组里，加一页只需往
+ *     里面加一行；而"每条路由各包一层"时，答案散在十行里，漏包一条
  *     不会被任何人发现——它只是安静地对匿名开放了。
  *   · **页面保持纯粹。** 各 feature 的内容页不必知道自己被门禁罩着，
  *     单测里渲染 `<SearchPage />` 也不用先搭一套登录态。
- *   · **不改 URL。** 布局路由不占路径段，`/search` 还是 `/search`，
- *     转场方向（按导航次序算）与滚动复位都不受影响。
+ *   · **不改 URL。** 布局路由不占路径段，`/search` 还是 `/search`。
+ *
+ * 为什么是"送他去登录页"，而不是"停在原地把话说明白"
+ * --------------------------------------------------------------------------
+ * 这里换过一次做法，原因值得写下来。早先版本会在原地显示一块「需要先登录」
+ * 的空态加一个「去登录」按钮——理由是"不跳走，用户知道自己在哪儿"。那套
+ * 做法成立的前提是**匿名还能看别的地方**（当时只有书架与阅读页要登录），
+ * 所以"停在原地"是在给用户留选择。
+ *
+ * 现在前提没了：登录之前一个页面也看不了，停在原地只会让每个入口都变成
+ * 同一块空态墙，用户还得自己找到底哪个按钮能进去。所以改成直接送到登录页
+ * ——那本来就是这套产品现在的第一屏。
+ *
+ * `replace` 不能省：留一条历史记录的话，登录页上按后退会回到刚才那条被拦的
+ * 路由，它又立刻把人送回来，后退键就卡在原地打转了。
  *
  * 顺带一提：未登录时 `<Outlet />` 根本不渲染，所以那些按路由分包的页面
- * 连代码都不会去下载——进不去的东西没必要先取回来。
+ * 连代码都不会去下载，它们自己的接口也不会被调——进不去的东西没必要先取。
  */
 export default function RequireAuth() {
-  const { t } = useI18n()
-  const { pathname } = useLocation()
+  const { user, loading } = useAuth()
+  const { pathname, search } = useLocation()
 
-  // 点名当前这一页。功能名从导航表里取，而不是在门禁里再维护一份
-  // "路径 → 功能名"——那两份迟早对不上。取不到（理论上不会发生）就
-  // 退回通用那句，宁可说得泛一点，也不要冒出一个空引号。
-  const item = navItemFor(pathname)
+  // 加载中不能当作未登录：启动时那次 `/auth/me` 还没回来，此刻下结论会把
+  // 已登录的人在刷新的一瞬间弹到登录页去。
+  if (loading) return <Loading />
 
-  return (
-    <LoginGate hint={item ? t('auth.needLoginFor', { name: t(item.key) }) : undefined}>
-      <Outlet />
-    </LoginGate>
-  )
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: `${pathname}${search}` }} />
+  }
+
+  return <Outlet />
 }
