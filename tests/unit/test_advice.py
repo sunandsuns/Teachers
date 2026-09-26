@@ -166,11 +166,16 @@ def test_cap_per_chapter_counts_per_book_not_globally():
 
 
 class _RecordingRetriever:
-    """只记录查询的假检索器：追问到底把什么送进了检索，看这里就知道。"""
+    """只记录查询的假检索器：追问到底把什么送进了检索，看这里就知道。
+
+    ``book_ids`` 是 ``advice`` 算书权重时要读的接口——真检索器上是缓存着的
+    一个属性（"我索引了哪些书"），这里按同样的口径给出来。
+    """
 
     def __init__(self) -> None:
         self.queries: list[str] = []
         self.documents = [{"book_id": "09"}]
+        self.book_ids = frozenset({"09"})
 
     def search(self, query, top_k=5, book_weights=None):
         self.queries.append(query)

@@ -32,6 +32,20 @@ def build_small_retriever() -> TFIDFRetriever:
     return r
 
 
+def _twin_retriever() -> TFIDFRetriever:
+    """两篇**内容完全相同**的文档。
+
+    同文 → 同分，于是"取几条就有几条"是确定的（单本书的索引凑不出两条结果）。
+    顺带把"同分按下标升序"这条也一起验了。
+    """
+    r = TFIDFRetriever()
+    body = "上善若水，水善利万物而不争，处众人之所恶，故几于道。"
+    r.add_document("01", "甲书", "01", "章", body)
+    r.add_document("02", "乙书", "01", "章", body)
+    r.build_index()
+    return r
+
+
 class TestTokenize:
     def test_returns_multichar_tokens(self):
         tokens = _tokenize("天行健君子以自强不息")
@@ -174,6 +188,76 @@ class TestSearchConsistency:
         r = build_small_retriever()
         for k in (1, 2, 3):
             assert len(r.search("道 水 心 厚", top_k=k)) <= k
+
+
+class TestQueryCache:
+    """查询缓存省的是"同一路查询被反复执行"，前提仍是**不能省出错误结果**。
+
+    「求教」每问一次都要跑一遍"主题锚那一路"，而它的查询文本与权重只由主题
+    决定——同样的主题组合就该命中同一份缓存。这里钉住它的几条边界：键要认全
+    参与计算的输入、调用方动不了缓存里的东西、索引一变就作废。
+    """
+
+    def test_same_query_returns_the_same_results(self):
+        r = build_small_retriever()
+        first = r.search("上善若水", top_k=3)
+        second = r.search("上善若水", top_k=3)
+        assert [(x.book_id, x.chapter_id, x.score) for x in first] == [
+            (x.book_id, x.chapter_id, x.score) for x in second
+        ]
+
+    def test_caller_can_reorder_the_returned_list_without_poisoning_the_cache(self):
+        """返回的是副本：调用方就地排序，不该影响下一次查询的结果。"""
+        r = _twin_retriever()
+        expected = [x.book_id for x in r.search("上善若水 不争", top_k=2)]
+        assert len(expected) == 2
+        r.search("上善若水 不争", top_k=2).reverse()
+        assert [x.book_id for x in r.search("上善若水 不争", top_k=2)] == expected
+
+    def test_top_k_is_part_of_the_key(self):
+        """同一个查询取 1 条和取 2 条是两次不同的计算，不能互相顶掉。"""
+        r = _twin_retriever()
+        assert len(r.search("上善若水 不争", top_k=1)) == 1
+        assert len(r.search("上善若水 不争", top_k=2)) == 2
+
+    def test_book_weights_are_compared_by_content(self):
+        """权重每次都是新构造的字典，按键**内容**比对，不能按对象身份。"""
+        r = build_small_retriever()
+        plain = r.search("上善若水", top_k=3)
+        weighted = r.search("上善若水", top_k=3, book_weights={"08": 0.5})
+        assert weighted[0].score < plain[0].score
+        # 再查一次带权重的，仍该拿到带权重的结果
+        assert r.search("上善若水", top_k=3, book_weights={"08": 0.5})[0].score == weighted[0].score
+
+    def test_cache_is_dropped_when_the_index_grows(self):
+        """缓存里的结果指向旧下标，索引一变就必须作废。"""
+        r = build_small_retriever()
+        assert r.search("上善若水", top_k=3)
+        r.add_document(
+            "11", "鬼谷子", "01", "捭阖",
+            "上善若水，水善利万物而不争，处众人之所恶，故几于道。",
+        )
+        after = r.search("上善若水", top_k=3)
+        assert "11" in {x.book_id for x in after}
+
+
+class TestBookIds:
+    """``book_ids`` 是索引的固有属性，「求教」每次都要按它算书的权重。
+
+    原先调用方每次都把全部文档扫一遍取 ``book_id``——八千多篇，纯属白做。
+    """
+
+    def test_collects_every_indexed_book(self):
+        assert build_small_retriever().book_ids == frozenset({"01", "02", "08"})
+
+    def test_is_refreshed_after_adding_documents(self):
+        r = build_small_retriever()
+        assert r.book_ids == frozenset({"01", "02", "08"})
+        r.add_document("09", "论语", "01", "学而", "学而时习之，不亦说乎。有朋自远方来。")
+        assert r.book_ids == frozenset({"01", "02", "08", "09"})
+
+    def test_empty_index_has_no_books(self):
+        assert TFIDFRetriever().book_ids == frozenset()
 
 
 class TestIndexProgress:

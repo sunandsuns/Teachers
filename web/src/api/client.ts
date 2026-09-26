@@ -100,12 +100,16 @@ const CACHE_TTL_PREFIX: [string, number][] = [
   ['/kb/nodes/', 5 * 60_000],
 ]
 
-function ttlFor(path: string): number {
-  // 规则只看**路径**，查询串不参与匹配——`/kb/graph?chapters=false` 与
-  // `/kb/graph?chapters=true` 是两份不同的数据（要不要带章节节点），
-  // 但它们的缓存时长是同一个。用整串去查表会一个都匹配不上。
+/** 路径去掉查询串。缓存规则只看路径，查询串不参与匹配——`/kb/graph?chapters=false`
+ * 与 `/kb/graph?chapters=true` 是两份不同的数据（要不要带章节节点），但它们的
+ * 缓存时长是同一个。拿整串去查表会一个都匹配不上。 */
+function barePath(path: string): string {
   const q = path.indexOf('?')
-  const bare = q >= 0 ? path.slice(0, q) : path
+  return q >= 0 ? path.slice(0, q) : path
+}
+
+function ttlFor(path: string): number {
+  const bare = barePath(path)
   const exact = CACHE_TTL[bare]
   if (exact !== undefined) return exact
   for (const [prefix, ttl] of CACHE_TTL_PREFIX) {
@@ -114,13 +118,45 @@ function ttlFor(path: string): number {
   return 0
 }
 
+/** 写操作之后**不必**作废的缓存前缀。
+ *
+ * 这批路径的内容来自随包发布的语料文件（`books/`、`理解笔记/`），**任何写操作
+ * 都改不到它们**：求教落库改不到书目，审核通过一本别人的书也改不到「感悟」里的
+ * 金句——知识库图谱的边全部来自语料里写好的文字，不含任何用户数据。
+ *
+ * 为什么值得单独列出来：求教是**高频**操作（每问一次就是一次写），而原先一次
+ * 求教就把整份缓存清空。于是用户问完一句、切到书架页，书目又得重新拉一遍，
+ * 切到知识库又要重新拉一遍图谱——好不容易靠缓存消掉的白闪，被自己清了回来。
+ *
+ * 判据是「**这次写改不改得到它**」，不是「它变得快不快」：`/profile` 变得一点也不快，
+ * 但求教之后必须重读（`pending` 变了），所以它不在这里。
+ *
+ * 反过来说，**哪天 kb 图开始读用户数据（比如把你的主题标上去），这条就要一起改**。
+ * `src/test/api-cache.test.ts` 里有一条用例盯着这个边界。
+ */
+const WRITE_IMMUNE: readonly string[] = ['/books', '/insight/', '/kb/']
+
 /** 清掉全部 GET 缓存。
  *
- * 写操作之后调用：删了历史、「清空画像」之后再读，必须看到最新状态，
- * 而不是 30 秒前的快照。
+ * 留给"整份缓存都不再可信"的场合（登出、切换账号）。普通的写操作走
+ * ``invalidateAfterWrite``，它只清真正可能被改动的那部分。
  */
 export function clearApiCache(): void {
   getCache.clear()
+}
+
+/** 写操作之后的作废：只清可能被这次写改到的那部分。
+ *
+ * 没被改到的留着——它们的内容不随用户操作变化，重新请求一遍的唯一效果
+ * 就是让页面多闪一次骨架屏。
+ */
+function invalidateAfterWrite(): void {
+  const doomed: string[] = []
+  for (const key of getCache.keys()) {
+    const bare = barePath(key)
+    if (!WRITE_IMMUNE.some(prefix => bare.startsWith(prefix))) doomed.push(key)
+  }
+  for (const key of doomed) getCache.delete(key)
 }
 
 /**
@@ -200,11 +236,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (ttl > 0) {
       getCache.set(path, { value, expires: Date.now() + ttl })
     } else if (!isGet) {
-      // 写操作成功后把读缓存整体作废。逐个接口去清容易漏——比如
-      // 「清空画像」要连带清掉 /profile 与 /kb/*，而「归纳画像」「重评人物」
-      // 之后 /profile 也变了。整体作废的代价只是下次读多一次请求（几毫秒），
-      // 换来的是"改了之后一定看得到新值"。
-      clearApiCache()
+      // 写操作成功后把**受影响的**读缓存作废。逐个接口去清容易漏——比如
+      // 「清空画像」要连带清掉 /profile 与各处的画像视图；整体清光又太粗，
+      // 会把与这次写毫无关系的静态语料一起丢掉（见 WRITE_IMMUNE）。
+      invalidateAfterWrite()
     }
     return value
   })()

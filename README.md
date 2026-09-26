@@ -8,7 +8,7 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 1006 项）+ Vitest（前端 252 项）
+- **测试**：pytest（后端 1014 项）+ Vitest（前端 253 项）
 
 ---
 
@@ -598,7 +598,7 @@ cd web && npm test
 
 前端测试**跑在单进程**（`--no-file-parallelism`）：并行时 vitest 的 worker 会写缓存失败
 （沙箱拦下 `EPERM`），然后**静默少跑文件却照样报 "N passed"**——实测同一份代码并行报
-246 / 233（两次跑到的文件组成还不同），串行报 252。慢三十几秒换"不漏跑"，划算。
+246 / 233（两次跑到的文件组成还不同），串行报 253。慢三十几秒换"不漏跑"，划算。
 
 ### 契约与前端类型
 
@@ -697,7 +697,7 @@ python ui_check.py     # 界面层：75 项，CDP 驱动真实 Chrome
 | 集成 | `test_ask_cloud.py` · `test_ask_context.py` | 云通道：`/ask/plan` 备料不落库、`/ask/save` 事后补记；追问的上下文与作答语言真的走到了模型那一步 |
 | 集成 | `test_history_api.py` · `test_history_topics_api.py` · `test_profile_api.py` · `test_kb_api.py` | 回响、画像、知识库在 HTTP 上的边界（走真实语料） |
 
-> **性能**：内容层与索引只读，所以测试夹具是 **session 级**——整套后端测试（996 项）不到 1 分钟。
+> **性能**：内容层与索引只读，所以测试夹具是 **session 级**——整套后端测试（1014 项）约 2 分钟。
 > 把夹具改回函数级会退化到几分钟，这一步很容易在重构时被无意改掉。
 
 > **夹具里别写死"离现在很近"的时间。** 书架卡片上「导读生成中」的判定是

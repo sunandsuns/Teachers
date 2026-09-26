@@ -499,8 +499,9 @@ def search_for_advice(
     """
     query = f"{context.strip()} {question.strip()}".strip() if context.strip() else question
     themes = route_themes(question)
-    book_ids = {doc["book_id"] for doc in retriever.documents}
-    weights = advice_weights(book_ids, get_book_themes(loader), themes)
+    # 书 id 集合由索引自己缓存（``retriever.book_ids``）：原先这里每次求教
+    # 都要把全部八千多篇文档扫一遍只为收集 book_id，是纯粹的重复劳动。
+    weights = advice_weights(retriever.book_ids, get_book_themes(loader), themes)
 
     # 多取一些再筛：门槛会砍掉尾部，先多拿才不至于砍完不够数
     pool = top_k * 4

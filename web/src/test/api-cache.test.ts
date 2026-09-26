@@ -127,14 +127,33 @@ describe('写操作让读缓存作废', () => {
     expect(calls.filter(c => c.startsWith('GET'))).toHaveLength(2)
   })
 
-  it('清空画像之后，知识库与画像都重新读', async () => {
+  it('清空画像之后画像重读；知识库是语料图，跟着重读纯属白跑', async () => {
     const calls = stubFetch({})
     await api.getProfile()
     await api.kbGraph()
     await api.clearProfile()
     await api.getProfile()
     await api.kbGraph()
-    expect(calls.filter(c => c.startsWith('GET'))).toHaveLength(4)
+    // 画像被改了 → 画像必须重读。知识库的边**全部来自语料文件**里写好的文字，
+    // 不含任何用户数据，清画像改不到它 → 它走缓存。
+    // 哪天 kb 图开始读用户数据，这条要与 client.ts 的 WRITE_IMMUNE 一起改。
+    expect(calls.filter(c => c.startsWith('GET'))).toEqual([
+      'GET /api/profile',
+      'GET /api/kb/graph?chapters=false',
+      'GET /api/profile',
+    ])
+  })
+
+  it('求教之后静态语料缓存仍然有效——高频的写不该把书目、图谱一并清掉', async () => {
+    // 求教每问一次就是一次写。若它在作废时"全清"，用户问完一句切去书架页，
+    // 书目又要重新拉一遍，切去知识库又拉一遍图谱——缓存消掉的白闪全回来了。
+    const calls = stubFetch({ answer: 'x', conversation_id: 't' })
+    await api.listBooks()
+    await api.kbGraph()
+    await api.ask('我最近很焦虑')
+    await api.listBooks()
+    await api.kbGraph()
+    expect(calls.filter(c => c.startsWith('GET'))).toHaveLength(2)
   })
 
   it('写操作失败时缓存保持有效（没改成，就不该让缓存失效）', async () => {
