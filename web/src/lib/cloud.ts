@@ -40,6 +40,30 @@ export const cloud = createWorkBuddyCloud({
   publishableKey: CLOUD_PUBLISHABLE_KEY,
 })
 
+/**
+ * 这个来源是不是应用的发布域名。
+ *
+ * 单独抽成纯函数是为了能测：`window.location.origin` 在 jsdom 里改不动，
+ * 把判定收在一个只吃字符串的函数里，两种来源就都能各断言一次。
+ */
+export function isCloudOrigin(origin: string): boolean {
+  return origin === CLOUD_ENDPOINT
+}
+
+/**
+ * 当前页面是不是跑在发布域名上——**决定求教默认用哪一档模型**。
+ *
+ * 为什么默认值要分环境：后端那档（`api.sllying.bond`）在部署容器里时通时断，
+ * 实测同一个 `kimi-k3` 一次给出整段好答案、另一次只回 `Ret!!!!…` 这样的碎片；
+ * 而云模型这条路既稳（14s 出字）又快（后端那档要 35s 以上）。但云模型由服务端
+ * 按浏览器 `Origin` 精确匹配鉴权，桌面版（`127.0.0.1:8760`）与本地开发服务器
+ * 都对不上——在那里默认选它，只会先白白失败一次再降级。所以只在发布域名下
+ * 才默认走云模型。
+ */
+export function onCloudOrigin(): boolean {
+  return typeof window !== 'undefined' && isCloudOrigin(window.location.origin)
+}
+
 export interface CloudModel {
   id: string
   /** 显示名；服务端没配名字时用 id */

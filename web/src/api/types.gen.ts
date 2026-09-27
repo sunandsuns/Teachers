@@ -192,6 +192,7 @@ export interface BookCandidate {
 export interface BookSearchResponse {
   results: BookCandidate[]
   error: string
+  unavailable: boolean
 }
 
 /** 书目摘要（列表用）。 */

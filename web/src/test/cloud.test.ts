@@ -10,7 +10,13 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cloudErrorInfo, listCloudModels, pickCloudModel, type CloudModel } from '../lib/cloud'
+import {
+  cloudErrorInfo,
+  isCloudOrigin,
+  listCloudModels,
+  pickCloudModel,
+  type CloudModel,
+} from '../lib/cloud'
 
 // vi.mock 会被提到文件最前面执行，所以工厂里用到的桩必须一起提上去
 // （vi.hoisted），否则就是"在初始化前访问 modelsList"。
@@ -71,6 +77,22 @@ describe('挑模型', () => {
 
   it('目录是空的时候返回 null，交给调用方降级', () => {
     expect(pickCloudModel([])).toBeNull()
+  })
+})
+
+describe('发布域名判定', () => {
+  it('应用的发布域名算「能走云模型」', () => {
+    expect(isCloudOrigin('https://life-mentor-54743.app.workbuddy.host')).toBe(true)
+  })
+
+  it.each([
+    ['本地开发服务器的地址', 'http://localhost:5173'],
+    ['桌面版的地址', 'http://127.0.0.1:8760'],
+    ['只把发布域名当子串的仿冒域名', 'https://life-mentor-54743.app.workbuddy.host.evil.com'],
+  ])('%s 不算', (_label, origin) => {
+    // 精确相等，不是"包含"。云端那边也是这么匹配的，两边必须一致——
+    // 否则这里放行、那边拒绝，用户会先白等一轮失败再降级。
+    expect(isCloudOrigin(origin)).toBe(false)
   })
 })
 

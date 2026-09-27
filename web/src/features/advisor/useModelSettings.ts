@@ -1,12 +1,16 @@
 import { useCallback, useState } from 'react'
 import type { LLMEndpoint } from '../../api/types'
+import { onCloudOrigin } from '../../lib/cloud'
 
 /**
  * 用内置的默认模型、自己填的端点，还是 WorkBuddy 云模型（免密钥）。
  *
- * `cloud` 只在**发布域名**下才真的走得通：云端按浏览器 Origin 鉴权，
- * 桌面版（`127.0.0.1`）与本地开发服务器都会被拒。界面允许选它，
+ * 三档里 `cloud` 最特殊：它只在**发布域名**下才真的走得通，因为云端按浏览器
+ * `Origin` 鉴权，桌面版（`127.0.0.1`）与本地开发服务器都会被拒。界面允许选它，
  * 但失败时必须回落到内置模型，不能让用户卡在报错上。
+ *
+ * 也正因为如此，**没配过时用哪一档要按来源分**（见下面的 `defaultSettings`）：
+ * 在发布域名下默认就是 `cloud`——那是那里唯一稳且快的一条路。
  */
 export type ModelMode = 'default' | 'custom' | 'cloud'
 
@@ -32,11 +36,22 @@ export interface ModelSettings extends Required<LLMEndpoint> {
  */
 const STORAGE_KEY = 'rsds.model-settings'
 
-export const EMPTY_SETTINGS: ModelSettings = {
-  mode: 'default',
-  base_url: '',
-  api_key: '',
-  model: '',
+/**
+ * 没存过设置（或清空本地存储后）时的起点。
+ *
+ * **分环境的默认值**：在发布域名下默认选云模型，其余环境（桌面版、本地开发
+ * 服务器）仍从内置模型起步。理由是那条通道的鉴权方式——云模型由服务端按浏览器
+ * `Origin` 精确匹配放行，只有发布域名对得上；而它在部署环境里又比后端那档
+ * **更稳也更快**（后端 `api.sllying.bond` 实测会回 `Ret!!!!…` 这样的碎片答案）。
+ * 详见 `lib/cloud.ts` 的 `onCloudOrigin`。
+ */
+export function defaultSettings(): ModelSettings {
+  return {
+    mode: onCloudOrigin() ? 'cloud' : 'default',
+    base_url: '',
+    api_key: '',
+    model: '',
+  }
 }
 
 /** 自定义模式是否已填全。只填一半视同没填——后端也会这么判。 */
@@ -60,7 +75,7 @@ export function toPayload(settings: ModelSettings): LLMEndpoint | null {
 function read(): ModelSettings {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) return EMPTY_SETTINGS
+    if (!raw) return defaultSettings()
     const parsed = JSON.parse(raw) as Partial<ModelSettings>
     return {
       mode:
@@ -71,7 +86,7 @@ function read(): ModelSettings {
     }
   } catch {
     // 无痕模式、被禁用、或存的内容坏了：一律当作没配过，不影响问答本身
-    return EMPTY_SETTINGS
+    return defaultSettings()
   }
 }
 
@@ -95,8 +110,9 @@ export function useModelSettings() {
   }, [])
 
   const reset = useCallback(() => {
-    setSettings(EMPTY_SETTINGS)
-    write(EMPTY_SETTINGS)
+    const next = defaultSettings()
+    setSettings(next)
+    write(next)
   }, [])
 
   return { settings, update, reset, payload: toPayload(settings) }

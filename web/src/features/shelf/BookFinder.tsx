@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { api, type BookCandidate } from '../../api/client'
+import { fetchDetailDirect, searchBooksDirect } from '../../api/openlibrary'
 import { Button, Card, Empty } from '../../components/ui'
 import Spinner from '../../components/ui/Spinner'
 import { useI18n } from '../../i18n'
@@ -31,6 +32,9 @@ export default function BookFinder({ onShelf, onAdd }: BookFinderProps) {
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
   const [addingKey, setAddingKey] = useState('')
+  // 这批候选是不是**浏览器直连**取回来的（后端那条路当时走不通）。加书时要据此
+  // 决定要不要在浏览器里自己补简介——那种情况下后端同样补不到。
+  const [direct, setDirect] = useState(false)
 
   async function onSearch(event: FormEvent) {
     event.preventDefault()
@@ -40,10 +44,28 @@ export default function BookFinder({ onShelf, onAdd }: BookFinderProps) {
     setError('')
     try {
       const data = await api.searchBooks(trimmed, author.trim())
-      setResults(data.results)
-      // 上游说"这次没搜成"（限流、词太短）时，`results` 是空的、`error` 有话说。
-      // 两者都空才是真的"没有这本书"。
-      setError(data.error)
+      if (!data.unavailable) {
+        setDirect(false)
+        setResults(data.results)
+        // 上游说"这次没搜成"（限流、词太短）时，`results` 是空的、`error` 有话说。
+        // 两者都空才是真的"没有这本书"。
+        setError(data.error)
+        return
+      }
+
+      // `unavailable` = 后端**没走到上游**，而不是"上游说没有这本书"。在线版的
+      // 容器在境内、没有出海代理，到 openlibrary.org 的 TLS 会被掐断——这在部署
+      // 环境里是常态，不是故障。浏览器用的是访客自己的网络，多数时候还出得去，
+      // 且 OpenLibrary 的接口放开了 CORS。
+      setDirect(true)
+      try {
+        setResults(await searchBooksDirect(trimmed, author.trim()))
+        setError('')
+      } catch {
+        setDirect(false)
+        setResults(null)
+        setError(t('shelf.networkBlocked'))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setResults(null)
@@ -57,7 +79,21 @@ export default function BookFinder({ onShelf, onAdd }: BookFinderProps) {
     setAddingKey(key)
     setError('')
     try {
-      await onAdd(candidate)
+      let book = candidate
+      // 候选若是浏览器直连拿回来的，后端在 `POST /shelf/books` 里补简介那一步
+      // 同样走不出去（同一个网络原因），所以在这里补上，别让在线版的书少这一段。
+      // 拿不到就用现有的——详情是锦上添花，不该挡住"加入书架"。
+      if (direct && !book.summary && book.source_key) {
+        const detail = await fetchDetailDirect(book.source_key)
+        if (detail) {
+          book = {
+            ...book,
+            summary: detail.summary || book.summary,
+            subjects: detail.subjects.length > 0 ? detail.subjects : book.subjects,
+          }
+        }
+      }
+      await onAdd(book)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

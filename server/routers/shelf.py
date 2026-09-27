@@ -134,6 +134,7 @@ def search_books(payload: SearchRequest):
             for c in outcome.results
         ],
         error=outcome.error,
+        unavailable=outcome.unavailable,
     )
 
 

@@ -3,9 +3,17 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { api } from '../api/client'
+import { searchBooksDirect } from '../api/openlibrary'
 import type { ShelfBook } from '../api/types'
 import ShelfPage from '../features/shelf/ShelfPage'
 import { I18nProvider } from '../i18n'
+
+// 浏览器直连那份也要替身：它的默认实现真的会去 fetch openlibrary.org（测试不联网）。
+vi.mock('../api/openlibrary', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/openlibrary')>()),
+  searchBooksDirect: vi.fn(),
+  fetchDetailDirect: vi.fn(),
+}))
 
 vi.mock('../api/client', async (importOriginal) => {
   // 真实导出照单全收——只把 `api` 换成假的。手写一份导出清单是脆的：
@@ -27,6 +35,8 @@ vi.mock('../api/client', async (importOriginal) => {
 })
 
 const mockedApi = vi.mocked(api)
+// 浏览器直连那条兜底路径（后端连不上 OpenLibrary 时才会用到）
+const mockedDirect = vi.mocked(searchBooksDirect)
 
 const CANDIDATE = {
   title: '活着',
@@ -152,7 +162,7 @@ describe('我的书架', () => {
 
 describe('联网检索加书', () => {
   it('输入书名检索，把候选列出来', async () => {
-    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '' })
+    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '', unavailable: false })
     renderShelf()
     await searchFor('活着')
 
@@ -162,7 +172,7 @@ describe('联网检索加书', () => {
   })
 
   it('检索可以带上作者', async () => {
-    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '' })
+    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '', unavailable: false })
     renderShelf()
     const user = userEvent.setup()
     await user.type(screen.getByLabelText('书名'), '活着')
@@ -173,7 +183,7 @@ describe('联网检索加书', () => {
   })
 
   it('搜不到时说的是"没有这本书"，并给一条改法', async () => {
-    mockedApi.searchBooks.mockResolvedValue({ results: [], error: '' })
+    mockedApi.searchBooks.mockResolvedValue({ results: [], error: '', unavailable: false })
     renderShelf()
     await searchFor('不存在的书')
 
@@ -185,6 +195,7 @@ describe('联网检索加书', () => {
     mockedApi.searchBooks.mockResolvedValue({
       results: [],
       error: '检索服务请求过于频繁，请稍后再试',
+      unavailable: false,
     })
     renderShelf()
     await searchFor('活着')
@@ -193,8 +204,52 @@ describe('联网检索加书', () => {
     expect(screen.queryByText('没有找到这本书')).not.toBeInTheDocument()
   })
 
+  it('后端连不上上游时，改由浏览器直连再试一次', async () => {
+    // 在线版的容器在境内、没有出海代理，后端到 openlibrary.org 的 TLS 会被掐断。
+    // `unavailable` 就是"后端没走到上游"这个信号——此时该让浏览器去取。
+    mockedApi.searchBooks.mockResolvedValue({
+      results: [],
+      error: '无法连接检索服务：TLS/SSL connection has been closed (EOF)',
+      unavailable: true,
+    })
+    mockedDirect.mockResolvedValue([CANDIDATE])
+    renderShelf()
+    await searchFor('活着')
+
+    expect(await screen.findByText('活着')).toBeInTheDocument()
+    expect(mockedDirect).toHaveBeenCalledWith('活着', '')
+    // 事已经办成了，那句"无法连接"不该再摆给用户看
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('浏览器那条路也走不通时，说清两边都没通', async () => {
+    mockedApi.searchBooks.mockResolvedValue({
+      results: [],
+      error: '无法连接检索服务：TLS/SSL connection has been closed (EOF)',
+      unavailable: true,
+    })
+    mockedDirect.mockRejectedValue(new Error('Failed to fetch'))
+    renderShelf()
+    await searchFor('活着')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('浏览器与服务器两条路都没通')
+  })
+
+  it('只在上游不可达时才走浏览器直连，业务错误不重试', async () => {
+    mockedApi.searchBooks.mockResolvedValue({
+      results: [],
+      error: '检索服务请求过于频繁，请稍后再试',
+      unavailable: false,
+    })
+    renderShelf()
+    await searchFor('活着')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('过于频繁')
+    expect(mockedDirect).not.toHaveBeenCalled()
+  })
+
   it('点"加入书架"把选中的候选原样回传', async () => {
-    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '' })
+    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '', unavailable: false })
     mockedApi.addShelfBook.mockResolvedValue(BOOK)
     renderShelf()
     const user = await searchFor('活着')
@@ -209,7 +264,7 @@ describe('联网检索加书', () => {
     // 同一本书搜两次很常见；不禁用的话用户会点第二次，
     // 然后收到一个"已经在书架里了"的错误——本该是显而易见的。
     mockedApi.listShelf.mockResolvedValue(shelfOf([BOOK]))
-    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '' })
+    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '', unavailable: false })
     renderShelf()
     await screen.findByRole('heading', { name: '活着' })
     await searchFor('活着')
@@ -219,7 +274,7 @@ describe('联网检索加书', () => {
   })
 
   it('加书失败时把原因显示出来', async () => {
-    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '' })
+    mockedApi.searchBooks.mockResolvedValue({ results: [CANDIDATE], error: '', unavailable: false })
     mockedApi.addShelfBook.mockRejectedValue(new Error('这本书已经在你的书架里了'))
     renderShelf()
     const user = await searchFor('活着')

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import urllib.error
+
 import pytest
 
 from server.routers import shelf as shelf_router
@@ -104,6 +106,82 @@ class TestSearch:
         body = client.post("/api/shelf/search", json={"title": "活着"}, headers=headers).json()
         assert body["results"] == []
         assert "频繁" in body["error"]
+
+    def test_unreachable_upstream_is_flagged(self, client, monkeypatch):
+        """后端**没走到上游**时要打上 `unavailable`，前端据此改走浏览器直连。
+
+        在线版容器在境内、没有出海代理，到 openlibrary.org 的 TLS 会被直接掐断。
+        那种失败不该让"找一本书"整个死掉——浏览器用的是访客自己的网络，而且
+        OpenLibrary 的接口放开了 CORS，那条路还通。
+        """
+        headers = sign_in(client, ALICE)
+        monkeypatch.setattr(
+            book_search, "search_books",
+            lambda title="", author="", **kw: SearchOutcome(
+                (), "无法连接检索服务：TLS/SSL connection has been closed (EOF)",
+                unavailable=True),
+        )
+        body = client.post("/api/shelf/search", json={"title": "活着"}, headers=headers).json()
+        assert body["results"] == []
+        assert body["unavailable"] is True
+
+    def test_business_error_is_not_flagged_unavailable(self, client, monkeypatch):
+        """上游答复了（限流、词太短）就不该打这个标记——换个路子重试没有意义。"""
+        headers = sign_in(client, ALICE)
+        monkeypatch.setattr(
+            book_search, "search_books",
+            lambda title="", author="", **kw: SearchOutcome((), "检索词太短，请把书名或作者写全一些"),
+        )
+        body = client.post("/api/shelf/search", json={"title": "活"}, headers=headers).json()
+        assert body["unavailable"] is False
+
+
+class TestUnavailableDetection:
+    """`book_search` 自己怎么分辨"没连上上游"与"上游说没有"。
+
+    这一层是整条兜底链路的判据：判粗了（把限流也算上）会让前端白跑一趟浏览器直连；
+    判漏了，在线版就永远只会说"无法连接检索服务"。
+    """
+
+    class _Fail:
+        """替身 opener：`open()` 直接抛指定异常。"""
+
+        def __init__(self, exc):
+            self.exc = exc
+
+        def open(self, *_args, **_kwargs):
+            raise self.exc
+
+    def test_connection_error_is_unavailable(self):
+        opener = self._Fail(urllib.error.URLError("TLS/SSL connection has been closed (EOF)"))
+        outcome = book_search.search_books("活着", opener=opener)
+        assert outcome.unavailable is True
+        assert "无法连接检索服务" in outcome.error
+
+    def test_socket_error_is_unavailable(self):
+        outcome = book_search.search_books(
+            "活着", opener=self._Fail(OSError("network is unreachable")))
+        assert outcome.unavailable is True
+
+    def test_gateway_error_is_unavailable(self):
+        """502/503/504 是网关替上游回的话，上游本身没通。"""
+        opener = self._Fail(
+            urllib.error.HTTPError("https://openlibrary.org", 503, "Service Unavailable", {}, None))
+        outcome = book_search.search_books("活着", opener=opener)
+        assert outcome.unavailable is True
+
+    def test_not_found_is_not_unavailable(self):
+        opener = self._Fail(
+            urllib.error.HTTPError("https://openlibrary.org", 404, "Not Found", {}, None))
+        outcome = book_search.search_books("活着", opener=opener)
+        assert outcome.unavailable is False
+
+    def test_rate_limit_is_not_unavailable(self):
+        opener = self._Fail(
+            urllib.error.HTTPError("https://openlibrary.org", 429, "Too Many Requests", {}, None))
+        outcome = book_search.search_books("活着", opener=opener)
+        assert outcome.unavailable is False
+        assert "频繁" in outcome.error
 
 
 class TestAddBook:

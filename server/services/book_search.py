@@ -62,7 +62,22 @@ MAX_SUMMARY = 1200
 
 
 class BookSearchError(RuntimeError):
-    """检索失败。消息是给用户看的中文。"""
+    """检索失败。消息是给用户看的中文。
+
+    ``unavailable`` 说的是**这次压根没走到上游**——DNS、TCP、TLS 任何一层断了，
+    而不是"上游答复了，只是没有这本书"。两种要分开：
+
+    部署容器（在线版）跑在境内、且没有出海代理，到 ``openlibrary.org`` 的 TLS
+    会被直接掐断，报的就是 ``TLS/SSL connection has been closed (EOF)``。这种
+    情况下**浏览器**那条路仍是通的——浏览器用的是访客自己的网络，而 OpenLibrary
+    的接口带 ``Access-Control-Allow-Origin: *``（封面图本来也是浏览器直连加载的）。
+    所以前端见到 ``unavailable`` 会改用浏览器直连再试一次，见
+    ``web/src/api/openlibrary.ts``。业务类错误（词太短、没有这本书）不该重试。
+    """
+
+    def __init__(self, message: str, *, unavailable: bool = False) -> None:
+        super().__init__(message)
+        self.unavailable = unavailable
 
 
 @dataclass(frozen=True)
@@ -89,6 +104,8 @@ class SearchOutcome:
 
     results: tuple[BookCandidate, ...] = ()
     error: str = ""
+    #: 错误属于"没连上上游"。前端据此决定要不要改走浏览器直连。
+    unavailable: bool = False
 
     @property
     def ok(self) -> bool:
@@ -110,13 +127,20 @@ def _get_json(url: str, opener: Optional[urllib.request.OpenerDirector] = None) 
             raise BookSearchError("检索服务请求过于频繁，请稍后再试") from exc
         if exc.code == 404:
             raise BookSearchError("没有找到这本书的详情") from exc
+        if exc.code in (502, 503, 504):
+            # 网关/代理替上游回了话，上游本身没通——仍属"没走到上游"
+            raise BookSearchError(
+                f"检索服务暂时不可用（HTTP {exc.code}）", unavailable=True
+            ) from exc
         raise BookSearchError(f"检索服务返回 HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
-        raise BookSearchError(f"无法连接检索服务：{exc.reason}") from exc
+        raise BookSearchError(
+            f"无法连接检索服务：{exc.reason}", unavailable=True
+        ) from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise BookSearchError("检索结果不是合法 JSON") from exc
     except OSError as exc:
-        raise BookSearchError(f"网络异常：{exc}") from exc
+        raise BookSearchError(f"网络异常：{exc}", unavailable=True) from exc
 
 
 def _text(value: Any) -> str:
@@ -191,7 +215,7 @@ def _query(params: Mapping[str, str], limit: int, opener: Optional[urllib.reques
     try:
         data = _get_json(url, opener)
     except BookSearchError as exc:
-        return SearchOutcome((), str(exc))
+        return SearchOutcome((), str(exc), unavailable=exc.unavailable)
 
     docs = data.get("docs") if isinstance(data, Mapping) else None
     if not isinstance(docs, list):

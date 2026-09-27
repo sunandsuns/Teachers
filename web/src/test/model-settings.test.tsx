@@ -214,4 +214,23 @@ describe('求教的模型来源', () => {
       model: '',
     })
   })
+
+  it('不在发布域名下时，没配过就用内置模型', async () => {
+    renderAskPage()
+
+    expect(await screen.findByRole('button', { name: /模型：默认/ })).toBeTruthy()
+  })
+
+  it('在发布域名下、还没配过时，默认就是云模型', async () => {
+    // 两档的取舍见 `useModelSettings.defaultSettings`：后端那档在部署容器里
+    // 时通时断（实测会回 `Ret!!!!…` 这样的碎片），而云模型在发布域名下既稳又快。
+    vi.stubGlobal('location', { origin: 'https://life-mentor-54743.app.workbuddy.host' })
+    try {
+      renderAskPage()
+
+      expect(await screen.findByRole('button', { name: /模型：WorkBuddy 云/ })).toBeTruthy()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

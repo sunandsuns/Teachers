@@ -40,6 +40,10 @@ class BookSearchResponse(BaseModel):
 
     results: list[CandidateIn]
     error: str = ""
+    #: ``error`` 属于"后端没连上上游"（而不是"上游说没这本书"）。为 true 时
+    #: 前端会改用浏览器直连 OpenLibrary 再试一次——部署容器在境内、境外站点被
+    #: 阻断是常态，而浏览器用的是访客自己的网络。见 ``web/src/api/openlibrary.ts``。
+    unavailable: bool = False
 
 
 class AddBookRequest(CandidateIn):
