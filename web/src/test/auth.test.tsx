@@ -9,15 +9,22 @@ import Login from '../pages/Login'
 import Register from '../pages/Register'
 import { I18nProvider } from '../i18n'
 
-vi.mock('../api/client', () => ({
-  api: {
-    me: vi.fn(),
-    login: vi.fn(),
-    register: vi.fn(),
-    logout: vi.fn(),
-    listShelf: vi.fn(),
-  },
-}))
+vi.mock('../api/client', async (importOriginal) => {
+  // 真实导出照单全收——只把 `api` 换成假的。手写一份导出清单是脆的：
+  // 模块新增一个导出（本轮的 `peek` 就是），十几个测试文件会一起挂，
+  // 而报出来的错（"mock 里没有 peek"）跟这些用例要测的事毫无关系。
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return {
+    ...actual,
+    api: {
+      me: vi.fn(),
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      listShelf: vi.fn(),
+    },
+  }
+})
 
 const mockedApi = vi.mocked(api)
 

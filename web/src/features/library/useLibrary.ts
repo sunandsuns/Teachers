@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { api } from '../../api/client'
+import { api, peek } from '../../api/client'
 import { useAsync } from '../../hooks/useAsync'
 
 /**
@@ -10,7 +10,9 @@ import { useAsync } from '../../hooks/useAsync'
  * 改版式也不必读筛选代码。
  */
 export function useLibrary() {
-  const { data: books, error, loading } = useAsync(() => api.listBooks(), [])
+  // 书目是随包发布的静态语料，切页回来时缓存里必然有——带上 `peek`，
+  // 首帧直接铺出书目，不再先闪一屏占位卡片。
+  const { data: books, error, loading } = useAsync(() => api.listBooks(), [], peek.listBooks)
   const [category, setCategory] = useState<string | null>(null)
 
   // 分类顺序按书目顺序首次出现决定，与后端注册表保持一致。

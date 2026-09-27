@@ -31,16 +31,23 @@ import type {
 import { api } from '../api/client'
 import { I18nProvider } from '../i18n'
 
-vi.mock('../api/client', () => ({
-  api: {
-    getProfile: vi.fn(),
-    extractProfile: vi.fn(),
-    evaluateFigure: vi.fn(),
-    setAvatar: vi.fn(),
-    deleteTrait: vi.fn(),
-    clearProfile: vi.fn(),
-  },
-}))
+vi.mock('../api/client', async (importOriginal) => {
+  // 真实导出照单全收——只把 `api` 换成假的。手写一份导出清单是脆的：
+  // 模块新增一个导出（本轮的 `peek` 就是），十几个测试文件会一起挂，
+  // 而报出来的错（"mock 里没有 peek"）跟这些用例要测的事毫无关系。
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return {
+    ...actual,
+    api: {
+      getProfile: vi.fn(),
+      extractProfile: vi.fn(),
+      evaluateFigure: vi.fn(),
+      setAvatar: vi.fn(),
+      deleteTrait: vi.fn(),
+      clearProfile: vi.fn(),
+    },
+  }
+})
 
 const mockedApi = vi.mocked(api)
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api } from '../../api/client'
+import { api, peek } from '../../api/client'
 import { useAsync } from '../../hooks/useAsync'
 
 /**
@@ -14,18 +14,29 @@ import { useAsync } from '../../hooks/useAsync'
  *
  * 最后一条尤其要注意：不短路的话会以 `theme = null` 发一次请求，
  * 后端要么 400、要么返回全量，两种都不是这里想要的。
+ *
+ * 前三条里，`dailyInsight` 与 `insightThemes` 都在 GET 缓存里，所以带上 `peek`：
+ * 切页回来首帧就有内容。`randomInsight` **刻意不带**——它的语义就是"每次给一条
+ * 别的"，缓存快照正好会毁掉这件事。
  */
 export function useInsights() {
   const [theme, setTheme] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
 
-  const { data: daily } = useAsync(() => api.dailyInsight(), [])
+  const { data: daily } = useAsync(() => api.dailyInsight(), [], peek.dailyInsight)
   const { data: randomItem } = useAsync(() => api.randomInsight(), [refreshKey])
-  const { data: themeData, error, loading } = useAsync(() => api.insightThemes(), [])
+  const { data: themeData, error, loading } = useAsync(
+    () => api.insightThemes(),
+    [],
+    peek.insightThemes,
+  )
 
   const { data: themeInsights } = useAsync(
     () => (theme ? api.insightsByTheme(theme) : Promise.resolve(null)),
     [theme],
+    // 未选主题时明确给 `undefined`（手上没有），而不是 `null`——那会被当成
+    // 有效命中，把上一个主题的条目留在屏上。
+    () => (theme ? peek.insightsByTheme(theme) : undefined),
   )
 
   return {

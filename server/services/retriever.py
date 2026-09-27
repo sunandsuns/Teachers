@@ -7,11 +7,21 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
+from . import index_cache
+
 try:
     import jieba
     _HAS_JIEBA = True
 except ImportError:
     _HAS_JIEBA = False
+
+
+#: 索引逻辑签名：**改了切段规则、停用词、噪声过滤、分词方式，就必须抹掉这里的
+#: 版本号**。落盘缓存（见 :mod:`services.index_cache`）靠它区分"这份索引是按哪套
+#: 规则算的"——那件事不在语料里，哈希多少内容都推不出来。语料本身变了不用管这里，
+#: 指纹里的内容哈希会自己失效。
+#: 末尾挂上分词器：没装 jieba 时走的是字符滑窗，两者算出来的 tokens 完全不同。
+INDEX_LOGIC = "retrieval-v1:" + ("jieba" if _HAS_JIEBA else "chars")
 
 
 #: 两类检索来源。
@@ -596,6 +606,54 @@ def build_retriever_from_loader(loader, *, include_source: bool = True) -> TFIDF
 _build_lock = threading.Lock()
 
 
+def _cache_fingerprint(loader) -> str:
+    """当前语料与索引逻辑的指纹（见 :mod:`services.index_cache`）。"""
+    return index_cache.corpus_fingerprint(loader, INDEX_LOGIC)
+
+
+def restore_from_cache(loader) -> Optional[TFIDFRetriever]:
+    """试着用落盘缓存恢复一份索引；没有可用缓存时返回 None。
+
+    **只给 :func:`ensure_retriever` 这条启动路径用。** 直接调
+    :func:`build_retriever_from_loader` 的调用方（测试、脚本）要的是"照我给的
+    loader 重新算一份"，不该被磁盘上某份碰巧指纹相同的缓存顶掉。
+    """
+    path = index_cache.cache_file()
+    payload = index_cache.read(path, _cache_fingerprint(loader))
+    if payload is None:
+        return None
+    try:
+        retriever = TFIDFRetriever()
+        retriever.documents = payload["documents"]
+        # JSON 里没有 Counter，读回来是普通 dict——补回类型，
+        # 后面的 ``df[term] += 1`` 之类才有默认工厂兜着。
+        retriever.tf = [Counter(counts) for counts in payload["tf"]]
+        retriever.df = Counter(payload["df"])
+        retriever.source_coverage = payload["source_coverage"]
+        # 倒排表与模长**不进缓存**：那是六十万个浮点数，存下来会让文件大一个
+        # 量级，而重算只要半秒——省这半秒不值得让每次启动多读一倍 IO。
+        retriever.build_index()
+    except Exception:  # noqa: BLE001 — 载荷缺字段、类型不对，一律当作没有缓存
+        return None
+    return retriever
+
+
+def persist_to_cache(retriever: TFIDFRetriever, loader) -> bool:
+    """把索引写进落盘缓存；返回是否写成功。
+
+    写不进去（目录不可写、磁盘满）不是错误——下次启动重建一遍而已。
+    """
+    payload = {
+        "version": index_cache.PAYLOAD_VERSION,
+        "fingerprint": _cache_fingerprint(loader),
+        "documents": retriever.documents,
+        "tf": retriever.tf,
+        "df": retriever.df,
+        "source_coverage": retriever.source_coverage,
+    }
+    return index_cache.write(index_cache.cache_file(), payload)
+
+
 def ensure_retriever(loader=None) -> TFIDFRetriever:
     """返回可用的检索器，尚未构建时惰性构建。
 
@@ -606,8 +664,15 @@ def ensure_retriever(loader=None) -> TFIDFRetriever:
     ``loader`` 省略时才去取全局单例，调用方（如应用启动流程）可以注入自己的
     加载器，便于测试替换。
 
+    构建之前先试一次**落盘缓存**（见 :mod:`services.index_cache`）：语料与索引
+    逻辑都没变时，直接读回上次算好的分词结果，十秒变成一秒。缓存对不上就当没有，
+    重建；建完顺手写回去。**这条路上任何一步失败都不会让启动失败**——最差的
+    结果只是回到"每次都重建"。
+
     幂等：已构建则原样返回，不会重建。
     """
+    global _retriever
+
     retriever = get_retriever()
     if retriever.documents:
         return retriever
@@ -622,4 +687,16 @@ def ensure_retriever(loader=None) -> TFIDFRetriever:
             from .content_loader import get_loader  # 局部导入，避免模块级循环依赖
 
             loader = get_loader()
-        return build_retriever_from_loader(loader)
+
+        restored = restore_from_cache(loader)
+        if restored is not None:
+            # 全局单例必须一并换掉：`get_retriever()` 在单例为 None 时会给一个
+            # 空索引，`/api/health` 之类的旁路读的正是它。
+            _retriever = restored
+            _report_progress(1.0, "就绪")
+            return restored
+
+        built = build_retriever_from_loader(loader)
+        if persist_to_cache(built, loader):
+            print("[人生导师] 索引已缓存，下次启动直接读回：%s" % index_cache.cache_file())
+        return built

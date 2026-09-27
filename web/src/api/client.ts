@@ -159,6 +159,40 @@ function invalidateAfterWrite(): void {
   for (const key of doomed) getCache.delete(key)
 }
 
+/** 同步读一个 GET 路径的缓存快照；没缓存过、已过期、这接口本来就不缓存 → `undefined`。
+ *
+ * 给 `useAsync` 的第三参数用：组件**挂载那一刻**就知道数据在不在手上，
+ * 于是可以直接出内容，不必先画一帧骨架屏再去请求（见 `hooks/useAsync.ts`）。
+ *
+ * 与 `request()` 里的命中判断共用同一份 `getCache` 与同一个 `ttlFor`——两处各
+ * 判一套的话，"peek 说没有、request 却命中"会让组件白等一帧，而反过来
+ * （peek 说有、拿到的却是过期数据）就是真的显示错东西了。
+ */
+export function peekApiCache<T>(path: string): T | undefined {
+  if (ttlFor(path) <= 0) return undefined
+  const hit = getCache.get(path)
+  return hit && hit.expires > Date.now() ? (hit.value as T) : undefined
+}
+
+/** `peek` 能用的那几条路径。**唯一一份**：`api`（发请求）与 `peek`（同步读
+ *  缓存）都从这里取。
+ *
+ * 为什么值得单列一张表：两处各写一遍路径的话，改了一处就会让 `peek` **永远
+ * 不命中**——不报错，只是"切回已经看过的页面仍要白闪一帧"又悄悄回来了。
+ *
+ * 表里只放**确实进了 GET 缓存**的接口（见上面的 `CACHE_TTL` / `CACHE_TTL_PREFIX`）。
+ * 后台管理那一批没有缓存规则，`peek` 恒为 `undefined`，收进来只是摆设。
+ */
+const READ_PATHS = {
+  books: () => '/books',
+  book: (bookId: string) => `/books/${bookId}`,
+  chapters: (bookId: string) => `/books/${bookId}/chapters`,
+  chapter: (bookId: string, chapterId: string) => `/books/${bookId}/chapters/${chapterId}`,
+  dailyInsight: (day?: string) => `/insight/daily${day ? `?day=${day}` : ''}`,
+  insightThemes: () => '/insight/themes',
+  insightsByTheme: (theme: string) => `/insight/by-theme/${encodeURIComponent(theme)}`,
+}
+
 /**
  * 接口报错。
  *
@@ -264,15 +298,14 @@ export interface AskContext {
 }
 
 export const api = {
-  listBooks: () => request<BookSummary[]>('/books'),
+  listBooks: () => request<BookSummary[]>(READ_PATHS.books()),
 
-  getBook: (bookId: string) => request<BookSummary>(`/books/${bookId}`),
+  getBook: (bookId: string) => request<BookSummary>(READ_PATHS.book(bookId)),
 
-  listChapters: (bookId: string) =>
-    request<ChapterSummary[]>(`/books/${bookId}/chapters`),
+  listChapters: (bookId: string) => request<ChapterSummary[]>(READ_PATHS.chapters(bookId)),
 
   getChapter: (bookId: string, chapterId: string) =>
-    request<ChapterDetail>(`/books/${bookId}/chapters/${chapterId}`),
+    request<ChapterDetail>(READ_PATHS.chapter(bookId, chapterId)),
 
   /** 原典分块：大书（如《资治通鉴》310 万字）需按 has_more 逐块取 */
   getSource: (bookId: string, offset = 0) =>
@@ -399,15 +432,14 @@ export const api = {
 
   clearHistory: () => request<DeleteResult>('/history', { method: 'DELETE' }),
 
-  dailyInsight: (day?: string) =>
-    request<InsightItem>(`/insight/daily${day ? `?day=${day}` : ''}`),
+  dailyInsight: (day?: string) => request<InsightItem>(READ_PATHS.dailyInsight(day)),
 
   randomInsight: () => request<InsightItem>('/insight/random'),
 
-  insightThemes: () => request<ThemeListResponse>('/insight/themes'),
+  insightThemes: () => request<ThemeListResponse>(READ_PATHS.insightThemes()),
 
   insightsByTheme: (theme: string) =>
-    request<InsightListResponse>(`/insight/by-theme/${encodeURIComponent(theme)}`),
+    request<InsightListResponse>(READ_PATHS.insightsByTheme(theme)),
 
   insightsByBook: (bookId: string) =>
     request<InsightListResponse>(`/insight/by-book/${bookId}`),
@@ -610,4 +642,32 @@ export const api = {
     ),
 
   adminAudit: (limit = 50) => request<AuditEntry[]>(`/admin/audit?limit=${limit}`),
+}
+
+/** `api` 同步读缓存的那一面：同名、同参，唯一区别是**不发请求**。
+ *
+ * 给 `useAsync` 的第三参数用，让"切回一个已经看过的页面"首帧就有内容
+ * （见 `hooks/useAsync.ts`）。拿不到就返回 `undefined`，调用方照常走 loading。
+ *
+ * 只列**真进了 GET 缓存**的接口，与 `READ_PATHS` 一一对应。不在这份名单里的
+ * 接口（后台那一批、历史记录、求教）本来就不缓存，`peek` 恒为 `undefined`——
+ * 那是对的：它们的语义就是"每次都要新的"。
+ */
+export const peek = {
+  listBooks: () => peekApiCache<BookSummary[]>(READ_PATHS.books()),
+
+  getBook: (bookId: string) => peekApiCache<BookSummary>(READ_PATHS.book(bookId)),
+
+  listChapters: (bookId: string) =>
+    peekApiCache<ChapterSummary[]>(READ_PATHS.chapters(bookId)),
+
+  getChapter: (bookId: string, chapterId: string) =>
+    peekApiCache<ChapterDetail>(READ_PATHS.chapter(bookId, chapterId)),
+
+  dailyInsight: (day?: string) => peekApiCache<InsightItem>(READ_PATHS.dailyInsight(day)),
+
+  insightThemes: () => peekApiCache<ThemeListResponse>(READ_PATHS.insightThemes()),
+
+  insightsByTheme: (theme: string) =>
+    peekApiCache<InsightListResponse>(READ_PATHS.insightsByTheme(theme)),
 }

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { api } from '../../api/client'
+import { api, peek } from '../../api/client'
 import { useAsync } from '../../hooks/useAsync'
 import { useSourceReader } from './useSourceReader'
 
@@ -29,13 +29,17 @@ export function useReader() {
   //: 深链定位。`|| 0` 兜住 "offset=abc" 这类脏参数，别让 NaN 流进请求
   const sourceOffset = Number(searchParams.get('offset') ?? 0) || 0
 
+  // 三处都带上 `peek`：书目、章节列表、章节正文都在 GET 缓存里，切回这本书时
+  // 首帧直接出内容，不必先闪一帧骨架屏。
   const { data: book, error: bookError, loading: bookLoading } = useAsync(
     () => api.getBook(bookId),
     [bookId],
+    () => peek.getBook(bookId),
   )
   const { data: chapters, error: chaptersError } = useAsync(
     () => api.listChapters(bookId),
     [bookId],
+    () => peek.listChapters(bookId),
   )
   //: 只有切到原典页签才真去拉正文——笔记页签不该为它付一次请求
   const source = useSourceReader(bookId, tab === 'source', sourceOffset)
@@ -47,6 +51,9 @@ export function useReader() {
   const { data: chapterDetail } = useAsync(
     () => (current ? api.getChapter(bookId, current.chapter_id) : Promise.resolve(null)),
     [bookId, current?.chapter_id],
+    // 没有选中章节时明确返回 `undefined`（"手上没有"），而不是 `null`（"查到了，
+    // 值是空"）——`null` 会被 useAsync 当成有效的缓存命中，把上一章的正文留下。
+    () => (current ? peek.getChapter(bookId, current.chapter_id) : undefined),
   )
 
   //: 只有篇幅超过一块的原典才需要显示翻页进度

@@ -33,6 +33,11 @@ sys.path.insert(0, SERVER_DIR)
 # HTTP 验证，不在这里覆盖。
 os.environ["RSDS_SERVE_FRONTEND"] = "0"
 
+# 落盘索引缓存默认关掉。测试里索引只建一次（`index` 夹具是 session 级），缓存省不下
+# 时间；而每个用例各有各的临时数据目录（见 `isolate_history`），写进去也没机会读到
+# ——那 8MB 纯属白写。要测缓存本身的用例自己把它打开（见 `test_index_cache.py`）。
+os.environ["RSDS_INDEX_CACHE"] = "0"
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server.main as main  # noqa: E402

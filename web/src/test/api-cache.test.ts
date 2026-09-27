@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { api, clearApiCache } from '../api/client'
+import { api, clearApiCache, peek, peekApiCache } from '../api/client'
 
 /** 造一个能数调用次数的 fetch 替身。 */
 function stubFetch(payload: unknown = { ok: true }) {
@@ -175,5 +175,69 @@ describe('写操作让读缓存作废', () => {
       (c: any[]) => ((c[1] as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'GET',
     )
     expect(gets).toHaveLength(1)
+  })
+})
+
+/** `peek` 是 GET 缓存的**同步**读口，给 `useAsync` 的第三参数用：
+ *  组件挂载那一刻就知道数据在不在手上，于是首帧直接出内容，不必先画骨架屏。
+ *
+ * 它必须与 `request()` 共用同一份缓存与同一个 TTL 判据——两处各判一套的话，
+ * "peek 说没有、request 却命中"会让组件白等一帧；反过来更糟：peek 说有、
+ * 拿到的其实是过期数据，屏幕上就是实打实的错内容。 */
+describe('peek：同步读缓存', () => {
+  it('从没请求过就是 undefined', () => {
+    expect(peek.listBooks()).toBeUndefined()
+  })
+
+  it('请求过之后能同步读到同一份数据', async () => {
+    stubFetch([{ book_id: '01' }])
+    await api.listBooks()
+    expect(peek.listBooks()).toEqual([{ book_id: '01' }])
+  })
+
+  it('带参数的口径与 api 一致：不同的书不串', async () => {
+    stubFetch({ book_id: '01' })
+    await api.getBook('01')
+    expect(peek.getBook('01')).toEqual({ book_id: '01' })
+    expect(peek.getBook('02')).toBeUndefined()
+  })
+
+  it('peek 不发请求', async () => {
+    const calls = stubFetch([{ book_id: '01' }])
+    await api.listBooks()
+    peek.listBooks()
+    peek.listBooks()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('过了 TTL 就返回 undefined（与 request 的判据同一个）', async () => {
+    vi.useFakeTimers()
+    try {
+      stubFetch([{ book_id: '01' }])
+      await api.listBooks()
+      expect(peek.listBooks()).toEqual([{ book_id: '01' }])
+
+      vi.advanceTimersByTime(5 * 60_000 + 1)
+      expect(peek.listBooks()).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('没进缓存清单的路径一律 undefined', async () => {
+    // 「回响」明确不缓存：刚问的那句必须立刻能看到。peek 不该"顺手"把它记住。
+    stubFetch({ records: [] })
+    await api.listTopics()
+    expect(peekApiCache('/history/topics?limit=20&offset=0')).toBeUndefined()
+  })
+
+  it('写操作作废缓存之后，peek 立刻读不到了', async () => {
+    // 与 request 共用同一份 Map，所以作废对两边同时生效。
+    stubFetch({ traits: [] })
+    await api.getProfile()
+    expect(peekApiCache('/profile')).toEqual({ traits: [] })
+
+    await api.clearProfile()
+    expect(peekApiCache('/profile')).toBeUndefined()
   })
 })
