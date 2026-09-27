@@ -111,8 +111,10 @@ def _check_environment() -> None:
     if problems:
         fail("当前 Python 环境缺少：%s" % "、".join(problems))
         print("        当前解释器：%s" % sys.executable)
-        print("        请改用打包专用环境运行，例如：")
-        print(r"          C:\Users\songc\.workbuddy\binaries\python\envs\rsds-build\Scripts\python.exe build_app.py")
+        print("        请改用打包专用环境运行（要 PyInstaller + pywebview + jieba）：")
+        print(r"          python -m venv <打包环境>")
+        print(r"          <打包环境>\Scripts\pip install -r server\requirements.txt pyinstaller pywebview")
+        print(r"          <打包环境>\Scripts\python.exe build_app.py")
         raise SystemExit(1)
     ok("打包环境就绪：%s" % sys.executable)
 

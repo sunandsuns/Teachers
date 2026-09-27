@@ -37,7 +37,7 @@ from .services.retriever import ensure_retriever, get_retriever, index_progress
 from .web_ui import mount_frontend
 
 #: 应用版本。发版时改这一处即可——FastAPI 的 OpenAPI 与根路径索引都读它。
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 #: ``/docs`` 上的分组说明与顺序。
 #: 不写这一段的话，Swagger 会按 tag 名的字母序把接口堆成一长条，而且只有
