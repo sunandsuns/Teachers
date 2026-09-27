@@ -29,7 +29,7 @@ export function useReader() {
   //: 深链定位。`|| 0` 兜住 "offset=abc" 这类脏参数，别让 NaN 流进请求
   const sourceOffset = Number(searchParams.get('offset') ?? 0) || 0
 
-  // 三处都带上 `peek`：书目、章节列表、章节正文都在 GET 缓存里，切回这本书时
+  // 下面三处带上 `peek`：书目、章节列表、章节正文都在 GET 缓存里，切回这本书时
   // 首帧直接出内容，不必先闪一帧骨架屏。
   const { data: book, error: bookError, loading: bookLoading } = useAsync(
     () => api.getBook(bookId),
@@ -41,7 +41,9 @@ export function useReader() {
     [bookId],
     () => peek.listChapters(bookId),
   )
-  //: 只有切到原典页签才真去拉正文——笔记页签不该为它付一次请求
+  //: 只有切到原典页签才真去拉正文——笔记页签不该为它付一次请求。
+  //: 它**自己**在内部接缓存快照（切回原典页签不再闪那一帧），所以这里没有
+  //: 第三参数可传：`text` 是分块累加出来的，不是一次拿到的。
   const source = useSourceReader(bookId, tab === 'source', sourceOffset)
 
   const current = useMemo(

@@ -574,6 +574,88 @@ def main() -> int:
         cdp.shot("ui-09-shelf-card.png")
 
         print()
+        print("=== 7b. 阅读页：切回「原典全文」不再闪一帧加载 ===")
+        # 原典正文是分块取的（`/books/14/source?offset=…` 一次 20000 字），而且
+        # 只有切到原典页签才真去拉——所以每次切过去都是一次"重新开始"，原先那
+        # 一下必然先画一帧「加载原典…」。缓存快照（`peek`）就是要让"上次读过、
+        # 现在切回来"直接出正文。
+        #
+        # 这一段**必须带对照**：只量"切回时 0 次"什么都证明不了——观察手法如果
+        # 根本抓不到东西，结果也永远是 0。所以先量一次缓存未命中的情形（那一帧
+        # 本来就该有），它是探针自身的体检。
+        #
+        # 也不能查末态：那一帧只活几十毫秒，"先置 loading 再在 effect 里改回来"
+        # 照样能让末态正确。所以埋一个 MutationObserver，把出现过的次数记下来。
+        WATCH_LOADING = """
+        (function () {
+          var marks = window.__marks || (window.__marks = { loading: 0 });
+          if (window.__obs) window.__obs.disconnect();
+          window.__obs = new MutationObserver(function (records) {
+            records.forEach(function (r) {
+              if (r.type === 'childList') {
+                Array.prototype.forEach.call(r.addedNodes, function (n) {
+                  if (n.nodeType === 1 &&
+                      (n.textContent || '').indexOf('加载原典') >= 0) marks.loading++;
+                });
+              } else if (r.type === 'characterData') {
+                if ((r.target.data || '').indexOf('加载原典') >= 0) marks.loading++;
+              }
+            });
+          });
+          window.__obs.observe(document.body,
+            { childList: true, subtree: true, characterData: true });
+          return marks.loading;
+        })()
+        """
+        # 原典正文的判据：`SourceView` 的 `<pre>` 是页面上唯一带 font-serif 的那个
+        SOURCE_TEXT = ("(function () { var p = document.querySelector('pre.font-serif');"
+                       "  return !!(p && p.textContent.length > 100); })()")
+
+        def click_text(label):
+            """点一个文案含 `label` 的按钮（页签是 button，不是链接）。"""
+            return cdp.evaluate(
+                "(function (label) {"
+                "  var b = Array.prototype.slice.call(document.querySelectorAll('button'))"
+                "    .filter(function (x) { return (x.textContent || '').indexOf(label) >= 0; })[0];"
+                "  if (!b) return false; b.click(); return true;"
+                "})(%s)" % json.dumps(label))
+
+        cdp.goto("/books/14")
+        check("阅读页打开（《资治通鉴》带原典全文页签）",
+              cdp.wait_for("document.body.innerText.indexOf('原典全文') >= 0", timeout=20))
+        check("笔记页签下没有原典正文", not cdp.evaluate(SOURCE_TEXT))
+        cdp.evaluate(WATCH_LOADING)
+        cdp.pump(0.3)
+
+        cdp.evaluate("window.__marks.loading = 0")
+        click_text("原典全文")
+        check("原典正文读出来了", cdp.wait_for(SOURCE_TEXT, timeout=20))
+        first_seen = cdp.evaluate("window.__marks.loading")
+        # 探针体检：首次要等后端返回第一块，那一帧本来就有。这里是 0 的话，
+        # 下面那条"0 次"就没有任何意义。
+        check("首次切过去确实经过了「加载原典…」（探针有效）", first_seen >= 1,
+              "记到 %s 次" % first_seen)
+
+        click_text("理解笔记")
+        check("切回笔记页签，原典正文撤下",
+              cdp.wait_for("!(" + SOURCE_TEXT + ")", timeout=10))
+        cdp.evaluate("window.__marks.loading = 0")
+        events_before = len(cdp.events)
+        click_text("原典全文")
+        check("切回原典页签，正文立刻回来", cdp.wait_for(SOURCE_TEXT, timeout=10))
+        back_seen = cdp.evaluate("window.__marks.loading")
+        cdp.pump(1.0)
+        source_calls = [
+            e for e in cdp.events[events_before:]
+            if e.get("method") == "Network.requestWillBeSent"
+            and "/source" in (e.get("params", {}).get("request", {}).get("url", ""))
+        ]
+        check("切回时没有「加载原典…」那一帧", back_seen == 0, "记到 %s 次" % back_seen)
+        check("切回时没有重新请求原典（命中缓存）", not source_calls,
+              "; ".join(r["params"]["request"]["url"] for r in source_calls))
+        cdp.shot("ui-10-reader-source.png")
+
+        print()
         print("=== 8. 换模块的转场 ===")
         # jsdom 不跑 CSS 动画，单元测试只能验证"类名挂对了"。这里量真实曲线：
         # 点一下导航，然后按 ~50ms 一档采 `transform` / `opacity`，

@@ -188,6 +188,9 @@ const READ_PATHS = {
   book: (bookId: string) => `/books/${bookId}`,
   chapters: (bookId: string) => `/books/${bookId}/chapters`,
   chapter: (bookId: string, chapterId: string) => `/books/${bookId}/chapters/${chapterId}`,
+  /** 原典正文的一块。**offset 是路径的一部分**——它按整串做缓存键，所以
+   *  第 0 块与第 12 万字那块互不干扰，正是原典翻页需要的行为。 */
+  source: (bookId: string, offset = 0) => `/books/${bookId}/source?offset=${offset}`,
   dailyInsight: (day?: string) => `/insight/daily${day ? `?day=${day}` : ''}`,
   insightThemes: () => '/insight/themes',
   insightsByTheme: (theme: string) => `/insight/by-theme/${encodeURIComponent(theme)}`,
@@ -307,9 +310,13 @@ export const api = {
   getChapter: (bookId: string, chapterId: string) =>
     request<ChapterDetail>(READ_PATHS.chapter(bookId, chapterId)),
 
-  /** 原典分块：大书（如《资治通鉴》310 万字）需按 has_more 逐块取 */
+  /** 原典分块：大书（如《资治通鉴》310 万字）需按 has_more 逐块取。
+   *
+   * 走 `/books/` 前缀那条 5 分钟的 TTL——正文来自随包发布的语料文件，
+   * 一次会话里不会变。所以翻页取过的块、以及切回原典页签要的那一块，
+   * 都在缓存里（`peek.getSource` 有对应的同步读口）。 */
   getSource: (bookId: string, offset = 0) =>
-    request<SourceChunk>(`/books/${bookId}/source?offset=${offset}`),
+    request<SourceChunk>(READ_PATHS.source(bookId, offset)),
 
   search: (q: string, topK = 5, kind: SearchKind = 'all') =>
     request<SearchResponse>(
@@ -663,6 +670,11 @@ export const peek = {
 
   getChapter: (bookId: string, chapterId: string) =>
     peekApiCache<ChapterDetail>(READ_PATHS.chapter(bookId, chapterId)),
+
+  /** 原典正文的一块。`offset` 参与缓存键，所以「切回原典页签」与「翻到下一块」
+   *  各读各的那一份，不会互相顶掉。 */
+  getSource: (bookId: string, offset = 0) =>
+    peekApiCache<SourceChunk>(READ_PATHS.source(bookId, offset)),
 
   dailyInsight: (day?: string) => peekApiCache<InsightItem>(READ_PATHS.dailyInsight(day)),
 

@@ -240,4 +240,23 @@ describe('peek：同步读缓存', () => {
     await api.clearProfile()
     expect(peekApiCache('/profile')).toBeUndefined()
   })
+
+  it('原典分块：peek 与 api 的路径口径一致（同一份 READ_PATHS）', async () => {
+    // 这条盯的是"两处各写一遍路径"这个错法：写歪不会报错，只会让 peek **永远
+    // 不命中**——表现成"切回原典页签还是白闪一帧"，谁也不会联想到路径模板上。
+    // 默认参数（`offset = 0`）也要一致，否则 `getSource('14')` 与 `getSource('14', 0)`
+    // 会变成两条缓存键。
+    stubFetch({ content: '卷一 周纪一', offset: 0 })
+    await api.getSource('14')
+    expect(peek.getSource('14')).toEqual({ content: '卷一 周纪一', offset: 0 })
+    expect(peek.getSource('14', 0)).toEqual({ content: '卷一 周纪一', offset: 0 })
+  })
+
+  it('原典分块的 offset 参与缓存键：第 0 块与第 12 万字那块不串', async () => {
+    // 翻页要的正是这个：`loadMore` 取下一块时，不该读回上一块。
+    stubFetch({ content: '卷一 周纪一' })
+    await api.getSource('14', 0)
+    expect(peek.getSource('14', 0)).toBeDefined()
+    expect(peek.getSource('14', 120000)).toBeUndefined()
+  })
 })
