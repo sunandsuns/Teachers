@@ -128,6 +128,9 @@ class TestSession:
     def test_tampered_token_rejected(self, client):
         register(client)
         token = client.cookies.get("rsds_session")
+        # 先清掉 cookie：这条测的是 **token 本身**。不清的话，那枚 cookie 会被
+        # 正确地优先采信（见 TestCredentialPriority），测到的就不是这里想问的事。
+        client.cookies.clear()
         assert me(client, token[:-4] + "AAAA").json()["user"] is None
 
     def test_token_signed_with_another_secret_rejected(self, client, monkeypatch):
@@ -136,11 +139,13 @@ class TestSession:
         token = client.cookies.get("rsds_session")
         monkeypatch.setenv("RSDS_SECRET_KEY", "a-completely-different-secret")
         auth_module.reset_auth_store()
+        client.cookies.clear()  # 同上：把 cookie 排除掉，单独验 token
         assert me(client, token).json()["user"] is None
 
     @pytest.mark.parametrize("bad", ["abc", "a.b", "1.2.3.4", "..", "x.y.z", "1.2"])
     def test_garbage_token_rejected(self, client, bad):
         """畸形 token 一律当成未登录，不抛 500。"""
+        client.cookies.clear()  # 同上：这条只针对 Authorization 里的 token
         resp = me(client, bad)
         assert resp.status_code == 200
         assert resp.json()["user"] is None
@@ -173,6 +178,67 @@ class TestSession:
             "/api/auth/password",
             json={"old_password": "x" * 10, "new_password": "brandnew456"},
         ).status_code == 401
+
+
+class TestCredentialPriority:
+    """cookie 与 ``Authorization`` 谁说了算。
+
+    线上那个"登录成功却被当成匿名"的 bug 就出在这里：部署平台的网关会往每个
+    进入后端的请求里注入它自己的 ``Authorization: Bearer <JWT>``，而原先写成
+    "header 优先"，于是后端一直去验网关那串东西，用户自己的 cookie **一次都
+    没被看过**。token 明明送达了，只是被另一条头挤掉——所以这一组测试盯的是
+    顺序，而不是某一种凭据能不能用。
+    """
+
+    #: 网关注入的那条头的真身：``Bearer`` 后面是个 JWT，三段长 43.298.43。
+    #: 第一段是真值（``{"alg":"HS256","typ":"JWT"}`` 的 base64），足够像了。
+    GATEWAY_JWT = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        + "A" * 298
+        + "." + "B" * 43
+    )
+
+    def test_cookie_wins_over_a_foreign_authorization_header(self, client):
+        """同时带着 cookie 和外来的 Authorization 时，认 cookie。"""
+        register(client)
+        assert client.cookies.get("rsds_session")
+        resp = client.get(
+            "/api/auth/me", headers={"Authorization": "Bearer " + self.GATEWAY_JWT}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["user"]["email"] == EMAIL
+
+    def test_gateway_token_alone_is_not_a_credential(self, anon_client):
+        """只剩网关注入的那串时，就是未登录——绝不能把它当凭据放行。"""
+        resp = anon_client.get(
+            "/api/auth/me", headers={"Authorization": "Bearer " + self.GATEWAY_JWT}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["user"] is None
+
+    def test_gateway_token_does_not_break_protected_routes(self, anon_client):
+        """外来头要被安静地忽略，受保护的接口照常回 401，而不是 500。"""
+        resp = anon_client.get(
+            "/api/books", headers={"Authorization": "Bearer " + self.GATEWAY_JWT}
+        )
+        assert resp.status_code == 401
+
+    def test_our_bearer_still_works_when_there_is_no_cookie(self, client):
+        """没有 cookie 时，形状正确的 Bearer 照旧顶用（脚本与冒烟测试靠它）。"""
+        register(client)
+        token = client.cookies.get("rsds_session")
+        client.cookies.clear()
+        resp = client.get("/api/auth/me", headers={"Authorization": "Bearer " + token})
+        assert resp.json()["user"]["email"] == EMAIL
+
+    def test_bearer_that_is_not_our_shape_is_ignored(self, client):
+        """形状不像本应用 token 的 Bearer 一律不看。"""
+        register(client)
+        client.cookies.clear()
+        for bad in ("", "x" * 20, "1.2.3", "1.2." + "z" * 42, self.GATEWAY_JWT):
+            resp = client.get("/api/auth/me", headers={"Authorization": "Bearer " + bad})
+            assert resp.status_code == 200
+            assert resp.json()["user"] is None
 
 
 class TestBuiltinAdmin:
