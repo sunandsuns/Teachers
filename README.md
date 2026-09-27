@@ -591,14 +591,17 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RSDS_DATA_DIR` | 程序目录下的 `data/` | 指定数据库位置（测试用它指向临时目录） |
+| `RSDS_DATA_DIR` | 程序目录下的 `data/` | 指定数据库位置（测试用它指向临时目录）。**发布到线上时须指向项目之外**，否则每次发布都会覆盖线上数据，见「发布成在线版」 |
 | `RSDS_HISTORY_RETENTION_DAYS` | `15` | 保留天数，设 `0` 即不留存 |
 | `RSDS_INDEX_CACHE` | `1` | 设 `0` 关掉检索索引的落盘缓存（怀疑"用了过期索引"时可一键排除） |
 | `RSDS_ADMIN_EMAIL` | `admin@renshengdaoshi.local` | 内置管理员邮箱，**仅首次启动建号时生效** |
-| `RSDS_ADMIN_PASSWORD` | `admin123456` | 内置管理员初始密码。默认值是公开的，只适合本机开发 |
+| `RSDS_ADMIN_PASSWORD` | `admin123456` | 内置管理员初始密码。默认值是公开的，**线上发布时必须覆盖掉** |
 
 > 改 `RSDS_ADMIN_PASSWORD` **不会**改掉已存在的账号——密码要在后台「用户」页点
 > 「重置密码」。这条容易误会，所以启动时会往日志里打一行提示。
+>
+> 线上换密码时这反而好办：把 `RSDS_DATA_DIR` 指到一个**新的空目录**，首次建号就会用
+> 环境变量里那组凭据。
 
 ---
 
@@ -767,13 +770,24 @@ python packaging/make_release_zip.py
 在线版就是同一份后端跑在容器里，发布命令：
 
 ```bash
-cd web && npm run build                    # 产出 web/dist
+cd web && npm run build                       # 产出 web/dist
 cd .. && python packaging/prepare_webapp.py   # 复制一份到 webapp/
-# 发布：python，端口 8000，启动 RSDS_WEB_DIST=webapp python -m server.main
+# 发布：python，端口 8000，启动命令
+#   RSDS_DATA_DIR=/data RSDS_ADMIN_PASSWORD=<你的强密码> RSDS_WEB_DIST=webapp python -m server.main
 ```
 
-三个非显然的点：
+几个非显然的点：
 
+- **数据目录必须落在项目之外**，否则**每次发布都会抹掉线上数据**。发布工具上传的是
+  **整个项目目录**，而且**不看 `.gitignore`**——`/data/` 虽写在 `.gitignore` 里，
+  照样会被传上去。默认数据目录恰恰就是项目里的 `data/`，于是每次发布都**用本机的库
+  覆盖线上那份**：线上注册的账号、加的书、问过的话，下次发布时全部消失。
+  加上 `RSDS_DATA_DIR=/data` 把它挪出项目即可（容器本身是复用的，项目外的东西不受
+  上传影响）。实测：线上注册一个账号 → 原样再发一次 → 账号仍在、`meta.auth_secret`
+  一字不变。
+- **`RSDS_ADMIN_PASSWORD` 在线上必须换掉**。默认值 `admin123456` 就写在本文档里，
+  线上不换等于**任何人都能从 `/admin` 进后台**看改全部用户数据。同样只在**首次建号**
+  时生效（新数据目录会触发这一次）。
 - **`web/dist` 不能直接发**。发布工具按目录名排除构建输出，`dist` / `build` 这类名字会被
   滤掉——直接把 `web/dist` 发上去，线上 `/` 返回的是 API 信息而不是页面。换成不带这些名字的
   `webapp/` 就绕开了。
