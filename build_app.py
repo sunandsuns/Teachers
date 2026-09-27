@@ -25,6 +25,7 @@ PyInstaller 只解决"把 Python 打成 exe"，但一个**能直接交给别人�
 from __future__ import annotations
 
 import argparse
+import http.cookiejar
 import json
 import os
 import shutil
@@ -366,13 +367,57 @@ def _report_size() -> None:
 # ── 实机自检 ────────────────────────────────────────────────────────────
 
 
+def _read_env_file(path: Path) -> dict[str, str]:
+    """读一个 ``.env``，只为取管理员凭据；读不到就返回空表。"""
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return values
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _admin_credentials() -> tuple[str, str]:
+    """内置管理员的凭据：环境变量优先，其次产物里的 ``.env``，最后是默认值。
+
+    与 ``smoke.py`` 取同一份配置（``RSDS_ADMIN_*``）。产物里放的是打包时复制进去的
+    那份 ``.env``，所以这里读到什么，产物的 exe 启动时就按什么建号。
+    """
+    values = _read_env_file(APP_DIR / ".env")
+    return (
+        os.environ.get("RSDS_ADMIN_EMAIL")
+        or values.get("RSDS_ADMIN_EMAIL")
+        or "admin@renshengdaoshi.local",
+        os.environ.get("RSDS_ADMIN_PASSWORD")
+        or values.get("RSDS_ADMIN_PASSWORD")
+        or "admin123456",
+    )
+
+
+#: 自检期间共用的 cookie jar——登录状态靠它传递（见 ``_http``）。
+_COOKIE_JAR = http.cookiejar.CookieJar()
+
+
 def _http(url: str, *, timeout: float = 20.0, payload=None):
-    """直连本机服务。
+    """直连本机服务，并带上自检期间登录换来的 cookie。
 
     必须用空代理 opener：本机若配了 http_proxy 而 no_proxy 没白名单 127.0.0.1，
     走系统代理会得到 502，自检会误报为"产物有问题"。
+
+    必须带 cookie jar：账号体系上线后**每个数据接口都要登录**（只有 ``/api/auth/*``
+    与 ``/api/health`` 例外），裸 opener 会一路拿到 401——而 401 长得像"接口坏了"，
+    会把排查方向带偏。``_selftest`` 开头先登一次，后续请求共用这个 jar。
     """
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPCookieProcessor(_COOKIE_JAR),
+    )
     data = json.dumps(payload).encode() if payload is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
     request = urllib.request.Request(url, data=data, headers=headers)
@@ -431,7 +476,8 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
     - ``.env`` 读不到 → AI 问答悄悄降级
     - 前端产物没进包 → 窗口一片空白
     - jieba 词典没进包 → 检索悄悄变差
-    - sqlite3 没打进包 / 程序目录不可写 → 历史记录一直空的
+    - sqlite3 没打进包 / 密码哈希不可用 → 建不了号，登录不了
+    - 程序目录不可写 → 历史记录一直空的
 
     自检结束后会把 exe 建出来的 ``data/`` 与 ``启动日志.txt`` 一起挪出产物，
     免得"自检用的求教记录"和本机路径跟着分发包到用户手里。
@@ -476,6 +522,18 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
                   health["books_loaded"], health["total_chapters"], health["total_passages"]))
         check("原典已入检索库（jieba 词典生效）", health["source_indexed"] >= 10,
               "source_indexed=%s" % health["source_indexed"])
+
+        # 先拿到身份再往下走——账号体系上线后每个数据接口都要登录（只有
+        # `/api/auth/*` 与 `/api/health` 例外）。这一步本身也是一项产物级检查：
+        # 库建不出来、密码哈希算不了、内置管理员没建号，都会在这里先暴露，
+        # 而不是伪装成后面十几条"接口 401"。
+        email, password = _admin_credentials()
+        status, _, body = _http(base + "/api/auth/login",
+                                payload={"email": email, "password": password})
+        check("账号体系随包可用（内置管理员能登录）", status == 200,
+              "%s / %s" % (status, email))
+        if status != 200:
+            return SelfTestResult(False, (), ("无法登录（%s），后续接口都会是 401" % status,))
 
         status, content_type, body = _http(base + "/")
         check("前端页面由后端托管", status == 200 and "text/html" in content_type

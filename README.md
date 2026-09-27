@@ -640,7 +640,7 @@ python packaging/export_openapi.py     # 写到根目录 openapi.json（已 giti
 
 ```bash
 python smoke.py        # API 层：194 项，走真实 HTTP + vite 代理
-python ui_check.py     # 界面层：75 项，CDP 驱动真实 Chrome
+python ui_check.py     # 界面层：83 项，CDP 驱动真实 Chrome
 ```
 
 > 两个脚本跑完都会在自己的结论行报项数（"共 N 项，失败 M 项"）。
@@ -793,6 +793,7 @@ cd .. && python packaging/prepare_webapp.py   # 复制一份到 webapp/
 | 深链刷新回退 | SPA 回退路由被注册在 API 之前 |
 | 寻章有结果 / 原典分块可读 | 索引或分块接口在冻结态失效 |
 | `.env` 被读取 | 配置没跟着走，AI 问答悄悄降级 |
+| 内置管理员能登录 | sqlite3 或密码哈希没打进包，建不了号 |
 | 求教在预算内返回且 `llm_used=true` | 内置 Key 根本调不通上游 |
 
 ### 窗口起不来怎么办
