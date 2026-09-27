@@ -14,7 +14,7 @@ env/
 
 # 前端
 web/node_modules/
-web/dist/
+web/dist*/
 web/.vite/
 # 发布用的前端副本：web/dist 一份拷贝，由 packaging/prepare_webapp.py 生成。
 # 发布工具会按目录名排除 dist/build，所以不能直接把 web/dist 发上去。
