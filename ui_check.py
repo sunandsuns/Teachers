@@ -49,6 +49,16 @@ NOISE = ("[vite]", "Download the React DevTools", "favicon", "ERR_ABORTED")
 # 那支 401 是我们想看到的结果，不该被算成"页面报错"。
 EXPECTED_401 = "/api/auth/login"
 
+# 第 6 段会**故意**驱动浏览器直连 OpenLibrary（线上后端出境被阻断时，联网检索
+# 改由浏览器自己走，见 CONVENTIONS「书架联网检索」）。本机与容器都出不去，
+# 那条请求必然超时——而"如实报错"恰恰是第 6 段要验收的结果之一（它断言的是
+# "要么给候选、要么给一句能读懂的错"），所以不该在末段被算成页面故障。
+#
+# 但也不能给整条链路开绿灯：只放行 `expect_net()` / `end_net()` **那一小段窗口
+# 里**出现的 openlibrary 失败，别处的同类失败照旧要报出来。不然"书架检索坏了"
+# 这类真问题会被这条豁免一起吞掉。
+EXPECTED_NET = "openlibrary.org"
+
 
 class CDP:
     """极简 CDP 客户端：发一条命令、等它回来，路上收到的通知先攒着。"""
@@ -59,6 +69,17 @@ class CDP:
         self.ws = connect(url, max_size=64 * 1024 * 1024)
         self.next_id = 0
         self.events: list[dict] = []
+        # 预期内网络失败的**事件下标区间**（半开），见 EXPECTED_NET。默认空区间
+        # = 什么都不豁免。
+        self.net_window: tuple[int, int] = (0, 0)
+
+    def expect_net(self) -> None:
+        """从这里开始记：窗口内出现的 OpenLibrary 直连失败算预期（见 EXPECTED_NET）。"""
+        self.net_window = (len(self.events), 10 ** 9)
+
+    def end_net(self) -> None:
+        """关上窗口。留出 `pump()` 的余量再关，别把还在路上的失败漏到窗口外。"""
+        self.net_window = (self.net_window[0], len(self.events))
 
     def send(self, method: str, params: dict | None = None) -> dict:
         self.next_id += 1
@@ -119,35 +140,57 @@ class CDP:
         (OUT / name).write_bytes(base64.b64decode(data))
 
     def console_problems(self) -> list[str]:
-        problems = []
-        for event in self.events:
+        # `Network.loadingFailed` 只带 `requestId`、**不带 URL**。少了下面这张
+        # 表，失败会以「network: Fetch net::ERR_CONNECTION_TIMED_OUT」的面目报
+        # 出来——既没法定定位是哪支请求，也没法按 URL 豁免（第 6 段的
+        # OpenLibrary 直连就栽在这上面）。所以先从 `requestWillBeSent` 攒一张
+        # id→url 的对照表，再拿它给失败补上出处。
+        urls: dict[str, str] = {}
+        found: list[tuple[int, str]] = []   # (事件下标, 描述)，下标用于窗口豁免
+        for index, event in enumerate(self.events):
             method = event.get("method")
             params = event.get("params", {})
+            if method == "Network.requestWillBeSent":
+                rid = params.get("requestId")
+                if rid:
+                    urls[rid] = params.get("request", {}).get("url", "")
+                continue
             if method == "Runtime.consoleAPICalled" and params.get("type") == "error":
                 text = " ".join(
                     str(a.get("value", a.get("description", "")))
                     for a in params.get("args", [])
                 )
-                problems.append("console: " + text)
+                found.append((index, "console: " + text))
             elif method == "Log.entryAdded":
                 entry = params.get("entry", {})
                 if entry.get("level") == "error":
                     # 带上 URL 与状态码：只报"401"没法定位是哪支请求，
                     # 而"哪支请求在匿名状态下被打了 401"才是要判断的事。
-                    problems.append("log: %s %s %s" % (
+                    found.append((index, "log: %s %s %s" % (
                         entry.get("url", ""), entry.get("text", ""),
-                        entry.get("source", "")))
+                        entry.get("source", ""))))
             elif method == "Network.loadingFailed":
-                problems.append("network: %s %s" % (
-                    params.get("type"), params.get("errorText")))
+                found.append((index, "network: %s %s %s" % (
+                    params.get("type"), params.get("errorText"),
+                    urls.get(params.get("requestId"), ""))))
             elif method == "Network.responseReceived":
                 response = params.get("response", {})
                 status = response.get("status", 0)
                 if status >= 400:
-                    problems.append("http %d %s" % (status, response.get("url", "")))
-        return [p for p in problems
-                if not any(n in p for n in NOISE)
-                and not (EXPECTED_401 in p and "401" in p)]
+                    found.append((index, "http %d %s" % (status, response.get("url", ""))))
+
+        low, high = self.net_window
+        problems = []
+        for index, text in found:
+            if any(n in text for n in NOISE):
+                continue
+            if EXPECTED_401 in text and "401" in text:
+                continue
+            # 窗口内的 OpenLibrary 直连失败是第 6 段刻意造的，理由见 EXPECTED_NET。
+            if low <= index < high and EXPECTED_NET in text:
+                continue
+            problems.append(text)
+        return problems
 
 
 def read_env_file() -> dict:
@@ -406,9 +449,18 @@ def main() -> int:
         })(%s)
         """
 
+        # 每个页签的"内容出现了"用什么认？
+        #
+        # 「用户」这一格原先认的是「设为管理员」按钮。那是**误打误撞**通过的：
+        # 只有**非管理员**的行才会长那个按钮，而库里当时堆了三十来个冒烟脚本
+        # 留下的垃圾账号，于是它总在。② 把垃圾账号清干净之后（库里只剩管理员
+        # 自己），这个页签上一行都长不出那个按钮，断言当场变红——它认的从来
+        # 不是"这一页渲染了"，而是"库里有别人"。改成认**管理员自己的邮箱**：
+        # 他必然在列表里，而这个邮箱只出现在用户卡片上（顶栏不显示邮箱），
+        # 所以它在＝这一页真的把人列出来了。
         for tab, marker, probe, expected in (
             ("新书审核", "待审", None, None),
-            ("用户", "设为管理员", None, None),
+            ("用户", admin_email, None, None),
             ("数据库", "rowid", "#main .animate-fade-up", "fade-up"),
             ("总览", "今日问答", "#main .animate-rise", "rise"),
         ):
@@ -434,9 +486,12 @@ def main() -> int:
             })()
             """)
             check("「%s」成为选中项" % tab, selected == tab, selected)
+            # **等**它出现，不是点完立刻采：「用户」「数据库」这两个页签的内容
+            # 都要等一次接口回来才画（列表 / 表清单），点完就查只会扑到
+            # `Loading` 上，红的是采样时机而不是页面。
             check("「%s」显示了本页内容" % tab,
-                  cdp.evaluate("document.body.innerText.indexOf(%s) >= 0"
-                               % json.dumps(marker)))
+                  cdp.wait_for("document.body.innerText.indexOf(%s) >= 0"
+                               % json.dumps(marker), timeout=12), marker)
             if probe:
                 # 要**等目标元素出现**再采，不能点完就采：「数据库」这一页先渲染
                 # 一个 `Loading`（它要等 `/admin/tables` 回来才画表格），
@@ -698,6 +753,80 @@ def main() -> int:
                   expanded and cdp.wait_for("document.body.innerText.indexOf(%s) >= 0"
                                             % json.dumps(PROBE_A), timeout=6))
             shoot_detail("ui-06c-admin-detail-filled.png")
+
+            # —— 4c. 用户列表的搜索
+            #
+            # 这一页在此之前只能靠人眼从长列表里翻（冒烟脚本每跑一次多两个账号）。
+            # 搜索走**后端**（`/api/admin/users?q=`），于是这里同时证三件事：
+            # 防抖真的生效、"找到几个"说得清、以及"一个都没搜到"与"还没有用户"
+            # 是**两句不同的话**（前者让人换个词，后者让人去把人注册进来）。
+            SEARCH = "'input[type=search]'"
+            check("用户页有搜索框", cdp.evaluate("!!document.querySelector(%s)" % SEARCH))
+
+            # 一次把 14 个字符的 input 事件连着发出去，模拟"手快打字"——没有防抖
+            # 的话这就是 14 次请求。**不走 `SET_VALUE`**：它只发一个事件，
+            # 那样等于绕开了这一段要测的东西。
+            typed = cdp.evaluate("""
+            (function (sel, text) {
+              var el = document.querySelector(sel);
+              if (!el) return false;
+              var setter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+              var q = '';
+              for (var i = 0; i < text.length; i++) {
+                q += text[i];
+                setter.call(el, q);
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              return true;
+            })(%s, %s)
+            """ % (SEARCH, json.dumps("uidetail-probe")))
+            check("能往搜索框里连敲一串字符", typed)
+
+            # 探针账号只造了一个（4b 造的，`finally` 里才删），此刻一定在库里。
+            check("搜索命中，且结果数说得清（找到 1 个用户）",
+                  cdp.wait_for("document.body.innerText.indexOf('找到 1 个用户') >= 0",
+                               timeout=10))
+
+            # 列表里每张卡片都有一个「详情」按钮，所以数它就等于数人。
+            CARDS = ("Array.prototype.slice.call(document.querySelectorAll('button'))"
+                     ".filter(function (b) { return (b.textContent || '').trim() === '详情'; })"
+                     ".length")
+            check("列表真的被筛到只剩那一个", cdp.evaluate(CARDS) == 1, cdp.evaluate(CARDS))
+
+            # **防抖的硬证据**：读浏览器自己记下的请求，而不是信代码里的
+            # `setTimeout`。查出每个 `q=` 的值，判据落在"**有没有出现过前缀**"上：
+            # 没有防抖时这里是 'u' / 'ui' / … 一长串，有防抖则只有完整那一串。
+            #
+            # 不断言"恰好 1 次"——开发态开着 `React.StrictMode`，它会把 effect
+            # 跑两遍（同一串会发两次相同的请求）。次数会被框架行为左右，前缀不会。
+            queries = cdp.evaluate("""
+            (function () {
+              return performance.getEntriesByType('resource')
+                .filter(function (e) {
+                  return e.name.indexOf('/api/admin/users?q=') >= 0; })
+                .map(function (e) {
+                  var m = /[?&]q=([^&]*)/.exec(e.name);
+                  return m ? decodeURIComponent(m[1]) : null;
+                })
+                .filter(function (v) { return v !== null; });
+            })()
+            """) or []
+            check("连敲 14 个字符，请求带的都是完整那一串（防抖生效）",
+                  bool(queries) and set(queries) == {"uidetail-probe"},
+                  "%d 次：%s" % (len(queries), queries))
+
+            cdp.evaluate(SET_VALUE % (SEARCH, json.dumps("no-such-user-zzz")))
+            check("搜不到时说的是「没有匹配的用户」",
+                  cdp.wait_for("document.body.innerText.indexOf('没有匹配的用户') >= 0",
+                               timeout=10))
+            check("搜不到时列表里一个人也不剩", cdp.evaluate(CARDS) == 0, cdp.evaluate(CARDS))
+            cdp.pump(0.4)
+            cdp.shot("ui-06d-admin-search.png")
+
+            check("点「清空」能把搜索撤掉", click_button("清空"))
+            check("清空之后列表又回到全部人",
+                  cdp.wait_for("%s > 1" % CARDS, timeout=10), cdp.evaluate(CARDS))
         finally:
             cleanup_detail(ids)
 
@@ -745,6 +874,10 @@ def main() -> int:
 
         print()
         print("=== 6. 联网检索：上游成败都要给出明确反馈 ===")
+        # 这一段是本脚本里**唯一**故意让浏览器去撞一堵墙的地方：末端那条
+        # "全程没有报错"要把它造成的超时摘出来，否则换个出不去网的机器就翻脸。
+        # 豁免范围只限这一段（见 EXPECTED_NET），出了这段照旧算故障。
+        cdp.expect_net()
         cdp.goto("/shelf")
         cdp.wait_for("!!document.querySelector('input')")
         cdp.evaluate(SET_VALUE % ("'input'", "'活着'"))
@@ -779,6 +912,7 @@ def main() -> int:
               not (has_alert and cdp.evaluate(
                   "document.body.innerText.indexOf('没有找到这本书') >= 0")))
         cdp.pump(0.5)
+        cdp.end_net()
         cdp.shot("ui-08-search-feedback.png")
 
         print()

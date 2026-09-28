@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { api } from '../api/client'
+import { api, type AdminUserRow } from '../api/client'
 import AdminPage from '../features/admin/AdminPage'
 import { AuthProvider } from '../features/auth/AuthProvider'
 import { I18nProvider } from '../i18n'
@@ -273,6 +273,71 @@ describe('用户管理', () => {
     await openUsers()
     expect(screen.getByText('admin@test.local')).toBeInTheDocument()
     expect(screen.getByText('（你）')).toBeInTheDocument()
+  })
+
+  it('搜索停手之后才发请求——中间那些字不各发一次', async () => {
+    // 30 个账号之后这一页需要"找"人了。逐字发请求在本地看不出问题，但它让
+    // 每次输入都产生一串请求，且最后一个到得最晚——防抖后只发一次。
+    const user = await openUsers()
+    mockedApi.adminUsers.mockClear()
+
+    await user.type(screen.getByLabelText('搜索邮箱、昵称或 id'), 'bob')
+
+    await waitFor(() => expect(mockedApi.adminUsers).toHaveBeenCalledWith('bob'), {
+      timeout: 2000,
+    })
+    // 没有防抖时这里是 ['b', 'bo', 'bob']
+    expect(mockedApi.adminUsers.mock.calls.map(call => call[0])).toEqual(['bob'])
+  })
+
+  it('搜到几个就说几个，清空按钮把搜索撤掉', async () => {
+    const user = await openUsers()
+    mockedApi.adminUsers.mockResolvedValue([PLAIN])
+
+    const box = screen.getByLabelText('搜索邮箱、昵称或 id')
+    await user.type(box, 'bob')
+    expect(await screen.findByText('找到 1 个用户')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '清空' }))
+    expect(box).toHaveValue('')
+    await waitFor(() => expect(mockedApi.adminUsers).toHaveBeenLastCalledWith(''), {
+      timeout: 2000,
+    })
+  })
+
+  it('搜不到时说"没有匹配的用户"，而不是"还没有用户"', async () => {
+    // 这两句话指向完全不同的下一步：一个是"换个人名再搜"，一个是"去把人注册进来"。
+    mockedApi.adminUsers.mockResolvedValue([])
+    renderAdmin()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '用户' }))
+
+    expect(await screen.findByText('还没有别的用户')).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('搜索邮箱、昵称或 id'), 'zzz')
+
+    expect(await screen.findByText('没有匹配的用户')).toBeInTheDocument()
+    expect(screen.queryByText('还没有别的用户')).not.toBeInTheDocument()
+  })
+
+  it('搜索期间列表不整块换成骨架屏——输入框得留在原地', async () => {
+    // 早先这一页是"loading 就整块换成 Loading"，加上搜索之后那意味着**每敲一个
+    // 字，输入框被卸载一次、焦点丢一次**。现在只有"一行数据都还没有"才是骨架屏。
+    const user = await openUsers()
+    let release: ((rows: AdminUserRow[]) => void) | undefined
+    mockedApi.adminUsers.mockImplementation(
+      () => new Promise(resolve => { release = resolve }),
+    )
+
+    const box = screen.getByLabelText('搜索邮箱、昵称或 id')
+    await user.type(box, 'bob')
+    await waitFor(() => expect(release).toBeDefined(), { timeout: 2000 })
+
+    expect(screen.getByLabelText('搜索邮箱、昵称或 id')).toBeInTheDocument()
+    expect(screen.getByText('bob@example.com')).toBeInTheDocument()
+
+    release?.([PLAIN])
+    await waitFor(() => expect(screen.queryByText('admin@test.local')).not.toBeInTheDocument())
   })
 
   it('不能取消自己的管理员——按钮直接禁用', async () => {

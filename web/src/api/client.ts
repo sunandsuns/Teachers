@@ -590,7 +590,14 @@ export const api = {
 
   adminOverview: () => request<AdminOverview>('/admin/overview'),
 
-  adminUsers: () => request<AdminUserRow[]>('/admin/users'),
+  /** 用户列表（含各自藏书数）。`q` 非空时按邮箱 / 昵称 / 用户 id 过滤。
+   *
+   * 空串**不带** `?q=`：不搜索时发出的请求与从前逐字相同，免得给缓存和日志
+   * 多出一堆"看起来有两种请求其实一样"的分支。 */
+  adminUsers: (q = '') =>
+    request<AdminUserRow[]>(
+      q.trim() ? `/admin/users?q=${encodeURIComponent(q.trim())}` : '/admin/users',
+    ),
 
   /** 某个用户的完整档案：资料、统计、最近的问答、书架、画像。
    *

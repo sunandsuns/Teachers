@@ -3,6 +3,7 @@ import { api } from '../../api/client'
 import { Badge, Empty, PageHeader, Segmented } from '../../components/ui'
 import { ErrorBox, Loading } from '../../components/Status'
 import { useAsync } from '../../hooks/useAsync'
+import { useDebounced } from '../../hooks/useDebounced'
 import { useI18n } from '../../i18n'
 import { useAuth } from '../auth/AuthProvider'
 import DatabasePanel from './DatabasePanel'
@@ -28,6 +29,10 @@ export default function AdminPage() {
   const { t } = useI18n()
   const { user } = useAuth()
   const [tab, setTab] = useState<AdminTab>('overview')
+  /** 搜索框里此刻**打出来**的内容：输入框绑它，所以每敲一个字都立刻回显。 */
+  const [search, setSearch] = useState('')
+  /** 稳定下来之后才拿它去请求。中间那一串字不会各发一次请求。 */
+  const query = useDebounced(search, 300)
 
   // 三个面板的数据都在这里拿：切页签不该重新请求一遍。
   // 非管理员时这些请求会各自收到 403——所以下面先判断身份，别白跑三趟。
@@ -36,7 +41,10 @@ export default function AdminPage() {
     () => (isAdmin ? api.adminOverview() : Promise.resolve(null)),
     [isAdmin],
   )
-  const users = useAsync(() => (isAdmin ? api.adminUsers() : Promise.resolve(null)), [isAdmin])
+  const users = useAsync(
+    () => (isAdmin ? api.adminUsers(query) : Promise.resolve(null)),
+    [isAdmin, query],
+  )
   const review = useAsync(
     () => (isAdmin ? api.adminReviewQueue() : Promise.resolve(null)),
     [isAdmin],
@@ -105,6 +113,8 @@ export default function AdminPage() {
           loading={users.loading}
           error={users.error}
           onChanged={refreshAll}
+          search={search}
+          onSearch={setSearch}
         />
       )}
 

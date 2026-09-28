@@ -862,6 +862,17 @@ def main():
         check("用户列表标出管理员",
               any(u["is_admin"] for u in users), [u["email"] for u in users])
 
+        # 搜索（后台那一页在账号多起来之后要靠它找人）。这里只守**接口**：
+        # 页面上的防抖与空态文案由 `ui_check.py` 实测。
+        hits = admin.call("/api/admin/users?q=" + urllib.parse.quote(email))[1]
+        check("按邮箱搜得到，且只剩匹配的那些",
+              [u["email"] for u in hits] == [email], [u["email"] for u in hits])
+        check("搜索不分大小写",
+              [u["email"] for u in admin.call(
+                  "/api/admin/users?q=" + urllib.parse.quote(email.upper()))[1]] == [email])
+        check("通配符被转义（`%` 不是\"列出所有人\"）",
+              admin.call("/api/admin/users?q=" + urllib.parse.quote("%"))[1] == [])
+
         # 用户详情：一次把"这个人是谁 + 干了什么"取回来。这里只守**接口契约**，
         # 页面渲染交给 `ui_check.py`（jsdom 里那一步是 mock 的，看不见真东西）。
         alice_row = next((u for u in users if u["email"] == email), None)

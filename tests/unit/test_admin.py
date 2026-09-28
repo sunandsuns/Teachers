@@ -247,6 +247,78 @@ class TestUserManagement:
                             headers=admin).status_code == 404
 
 
+class TestUserSearch:
+    """用户列表的搜索（`GET /api/admin/users?q=`）。
+
+    背景很朴素：冒烟脚本每跑一次就注册两个账号，本地攒到 30 个之后，后台这一页
+    已经需要**找**人了。筛选放在后端：数据在这边，而且先筛后算——藏书数要按人
+    查一次库，把不匹配的筛掉就不必为他们各查一遍。
+    """
+
+    def _emails(self, client, headers, q):
+        resp = client.get("/api/admin/users", params={"q": q}, headers=headers)
+        assert resp.status_code == 200, resp.text
+        return [row["email"] for row in resp.json()]
+
+    def test_matches_email_without_caring_about_case(self, client, offline):
+        admin = as_admin(client)
+        identity(client, ALICE)
+        identity(client, BOB)
+
+        assert self._emails(client, admin, "bob@") == [BOB]
+        assert self._emails(client, admin, "BOB@EXAMPLE.COM") == [BOB]
+
+    def test_matches_display_name(self, client, offline):
+        """昵称也要能搜——邮箱是账号，但管理员脑子里记的往往是名字。"""
+        admin = as_admin(client)
+        client.post("/api/auth/register", json={
+            "email": ALICE, "password": PASSWORD, "display_name": "张三",
+        })
+        identity(client, BOB)
+
+        hits = self._emails(client, admin, "张三")
+        assert hits == [ALICE]
+        assert self._emails(client, admin, "李四") == []
+
+    def test_pure_number_matches_that_user_id(self, client, offline):
+        """纯数字额外按**恰好等于**的用户 id 匹配。
+
+        审计与数据库页都用 `user:35` 这种口径说话，管理员照着它想知道"35 是谁"
+        时，不该只能去翻列表。
+        """
+        admin = as_admin(client)
+        _, alice_id = identity(client, ALICE)
+
+        assert ALICE in self._emails(client, admin, str(alice_id))
+
+    def test_wildcards_are_escaped(self, client, offline):
+        """`%` 不是通配符：搜索框里打一个百分号，不该等于"列出所有人"。
+
+        转义没做的话，这条会返回全部用户，而界面上完全看不出发生过什么。
+        """
+        admin = as_admin(client)
+        identity(client, ALICE)
+
+        assert self._emails(client, admin, "%") == []
+        assert self._emails(client, admin, "_") == []
+
+    def test_empty_query_still_returns_everyone(self, client, offline):
+        """不填搜索框 = 与从前完全一样（这个参数是**追加**的，不改变旧行为）。"""
+        admin = as_admin(client)
+        identity(client, ALICE)
+        identity(client, BOB)
+
+        for query in ("", "   "):
+            emails = self._emails(client, admin, query)
+            assert ADMIN_EMAIL in emails
+            assert ALICE in emails and BOB in emails
+
+    def test_needs_admin(self, client, offline):
+        alice = sign_in(client, ALICE)
+        assert client.get("/api/admin/users", params={"q": "a"},
+                           headers=alice).status_code == 403
+
+
 class TestUserDetail:
     """用户详情：把一个人散在四张表里的东西聚到一处，且一样都不串到别人头上。
 

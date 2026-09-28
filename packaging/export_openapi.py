@@ -28,12 +28,19 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# 必须在导入 server.main **之前**设：是否挂载前端产物是**导入时**决定的。
+# 仓库里存在 `web/dist` 时 `/` 归 SPA 回退接管，不存在时 `main.py` 才注册根路径
+# 那个 API 索引——快照于是会随"本机构建没构建过前端"多一条少一条。定住它，
+# 口径与 `tests/conftest.py` 一致（契约守卫看到的就是这一份）。
+os.environ["RSDS_SERVE_FRONTEND"] = "0"
 
 from server.main import app  # noqa: E402
 

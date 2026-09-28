@@ -8,7 +8,7 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 1068 项）+ Vitest（前端 287 项）
+- **测试**：pytest（后端 1074 项）+ Vitest（前端 291 项）
 
 ---
 
@@ -504,7 +504,7 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | GET | `/api/admin/overview` | 总览：今日问答 / 今日新增 / 待审 / 用户数 / 藏书数 / 库大小 / 语料规模 |
 | GET | `/api/admin/review` | 待审队列（含提交人邮箱） |
 | POST | `/api/admin/review/{book_id}` | 批准或驳回 `{approve, note?, category?}`。批准后进公共书架，书号加 `u` 前缀（`u01`…），**不与内置的 `01`–`15` 撞车** |
-| GET | `/api/admin/users` | 用户列表（含各自藏书数） |
+| GET | `/api/admin/users` | 用户列表（含各自藏书数）。可带 `?q=` 按邮箱 / 昵称模糊搜（数字则顺带按 id 精确匹配） |
 | GET | `/api/admin/users/{id}` | **单个用户的详情**：账号资料 + 四个统计数 + 最近的问答 / 书架 / 画像（每段都截断，各自的总数另给）。不存在的 id 是 **404**，不是一份空档案 |
 | PATCH | `/api/admin/users/{id}` | 授予/取消管理员。**不能操作自己**，400 |
 | POST | `/api/admin/users/{id}/password` | 重置他人密码 |
@@ -655,7 +655,7 @@ python packaging/export_openapi.py     # 写到根目录 openapi.json（已 giti
 
 ```bash
 python smoke.py        # API 层：202 项，走真实 HTTP + vite 代理
-python ui_check.py     # 界面层：104 项，CDP 驱动真实 Chrome
+python ui_check.py     # 界面层：113 项，CDP 驱动真实 Chrome
 ```
 
 > 两个脚本跑完都会在自己的结论行报项数（"共 N 项，失败 M 项"）。
@@ -665,13 +665,14 @@ python ui_check.py     # 界面层：104 项，CDP 驱动真实 Chrome
 > **探针数据谁造谁收。** `ui_check.py` 造的东西（探针书、探针问答、探针画像、临时账号）
 > 跑完一律删掉——原先留着的那本「UI 检查之书」实测攒到 22 本，把后台用户详情的书架
 > 撑满、真书被挤出 50 本的截断线。`smoke.py` 注册的 `smoke+<时间戳>@example.com`
-> 账号目前**没有**清理，是已知遗留（跑多次之后后台用户列表会很长）。
+> 账号同样在收尾时清掉（判据是邮箱前缀 `smoke+`，落库的四张表一起删），跑完只剩管理员。
 
 `smoke.py` 逐项检查：后端书目/章节/检索单元数与原典索引规模、前端页面可编译、vite 代理转发、
 寻章检索（含 `kind` 过滤与命中偏移定位）、原典分块与按偏移跳读、求教在时间预算内返回、
 感悟当日稳定性，以及**账号 → 加书 → 申请公开 → 管理员审核 → 进公共书架 → 别的用户可检索到**
 这整条链路（含越权与权限边界），外加后台**用户详情**的接口契约（四格统计与用户列表口径必须
-一致、`history_limit` 只截列表不动总数、不存在的 id 是 404 而不是一份全零档案）。
+一致、`history_limit` 只截列表不动总数、不存在的 id 是 404 而不是一份全零档案），以及用户列表
+**搜索**的三条口径（按邮箱搜得到、不分大小写、`%` 被当成普通字符而不是通配符）。
 全部通过退出码为 0。
 
 > 它**第一件事就是登录**（管理员，凭据取 `.env` 的 `RSDS_ADMIN_EMAIL` /

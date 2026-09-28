@@ -167,18 +167,35 @@ def overview(admin: User = Depends(require_admin)):
 
 
 @router.get("/users", response_model=list[UserRow])
-def list_users(admin: User = Depends(require_admin)):
-    """所有用户，附带各自的藏书数。
+def list_users(
+    q: str = Query(
+        "",
+        max_length=64,
+        description="按邮箱、昵称或用户 id 过滤；空字符串返回全部",
+    ),
+    admin: User = Depends(require_admin),
+):
+    """所有用户，附带各自的藏书数。``q`` 为空时就是"全部"，行为与从前一致。
+
+    **过滤放在这里而不是前端**：一是数据在这边，二是先筛后算——藏书数要按人
+    查一次库，把不匹配的人筛掉就不必为他们各查一遍。``q`` 只认邮箱、昵称，
+    以及纯数字时**恰好等于**的用户 id；``%`` 之类通配符会被转义
+    （`server/services/auth.py` 的 `_escape_like`），搜索框里打一个 `%`
+    不会变成"列出所有人"。
 
     ***原先这个接口在库不可用时会 500***：``auth.list_users()`` 不吞
     ``DatabaseUnavailable``，而它当时写在 try 之外——只有取藏书数那一步被包住。
     现在整条路径都交给全局出口，库挂了就是干净的 503。
+
+    出参仍是**裸列表**（不是 `{items, total}` 那种分页信封）：调用方只有后台
+    这一页，它要的就是"拿到这些人的卡片"。真要分页时再改信封，那时一并把
+    前端的翻页做出来，比现在先塞一个没人用的 `total` 干净。
     """
     auth = get_auth_store()
     shelf = get_user_book_store()
     return [
         _user_row(user, shelf_books=shelf.counts_for_user(user.id).get("total", 0))
-        for user in auth.list_users()
+        for user in auth.list_users(query=q)
     ]
 
 

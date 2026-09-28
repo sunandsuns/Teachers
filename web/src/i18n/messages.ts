@@ -455,6 +455,13 @@ const ZH = {
   'admin.detailTraitsEmpty': '还没有归纳出画像',
   'admin.detailEvidence': '依据：{text}',
   'admin.detailTruncated': '共 {total} 条，这里列出最近 {shown} 条',
+  'admin.searchUsers': '搜索邮箱、昵称或 id',
+  'admin.searchClear': '清空',
+  'admin.searchFound': '找到 {count} 个用户',
+  'admin.searchEmpty': '没有匹配的用户',
+  'admin.searchEmptyHint': '换个邮箱、昵称或用户 id 试试',
+  'admin.empty': '还没有别的用户',
+  'admin.emptyHint': '有人注册之后就会出现在这里',
 
   // ── 通用（补充） ────────────────────────────────────────────
   'common.save': '保存',
@@ -897,6 +904,13 @@ const EN: Record<MessageKey, string> = {
   'admin.detailTraitsEmpty': 'No traits extracted yet',
   'admin.detailEvidence': 'Based on: {text}',
   'admin.detailTruncated': '{total} in total, latest {shown} listed',
+  'admin.searchUsers': 'Search email, name or id',
+  'admin.searchClear': 'Clear',
+  'admin.searchFound': '{count} users found',
+  'admin.searchEmpty': 'No matching users',
+  'admin.searchEmptyHint': 'Try another email, name or user id',
+  'admin.empty': 'No other users yet',
+  'admin.emptyHint': 'Accounts show up here once people sign up',
 
   'common.save': 'Save',
   'common.edit': 'Edit',

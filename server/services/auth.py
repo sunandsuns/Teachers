@@ -45,7 +45,7 @@ import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from . import meta
 from .db import Database, DatabaseUnavailable
@@ -135,6 +135,17 @@ def _b64(raw: bytes) -> str:
 
 def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _escape_like(text: str) -> str:
+    """把 ``LIKE`` 的通配符转义掉（配合 ``ESCAPE '\\'`` 使用）。
+
+    不加这一步，"搜索框里打一个 ``%``"就等于"列出所有人"，打 ``_`` 会命中
+    一堆无关的账号——而这两件事在界面上完全看不出发生过。
+    """
+    for ch in ("\\", "%", "_"):
+        text = text.replace(ch, "\\" + ch)
+    return text
 
 
 def validate_email(email: str) -> str:
@@ -241,11 +252,31 @@ class AuthStore(StoreBase):
             return None
         return _row_to_user(row) if row is not None else None
 
-    def list_users(self) -> list[User]:
+    def list_users(self, *, query: str = "") -> list[User]:
+        """按注册时间倒序列出用户；``query`` 非空时只留匹配的那些。
+
+        匹配三样东西：**邮箱**、**昵称**（都按 SQLite 的 `LIKE`，ASCII 不分大小写），
+        以及当 query 是个纯数字时**恰好等于它的用户 id**。id 这一条是给后台的
+        另外两处配的：审计与数据库页都用 `user:35` 这种口径说话，管理员照着它
+        想知道"35 是谁"时，不该只能去翻列表。
+
+        ``%`` 与 ``_`` 一律转义（见 :func:`_escape_like`）——搜索框里打一个 `%`
+        不该等于"返回所有人"。
+        """
+        sql = "SELECT * FROM users"
+        params: list[Any] = []
+        cleaned = (query or "").strip()
+        if cleaned:
+            clauses = ["email LIKE ? ESCAPE '\\'", "display_name LIKE ? ESCAPE '\\'"]
+            like = "%" + _escape_like(cleaned) + "%"
+            params += [like, like]
+            if cleaned.isdigit():
+                clauses.append("id = ?")
+                params.append(int(cleaned))
+            sql += " WHERE (" + " OR ".join(clauses) + ")"
+        sql += " ORDER BY created_ts DESC, id DESC"
         with self._db.session() as conn:
-            rows = conn.execute(
-                "SELECT * FROM users ORDER BY created_ts DESC, id DESC"
-            ).fetchall()
+            rows = conn.execute(sql, tuple(params)).fetchall()
         return [_row_to_user(r) for r in rows]
 
     def count_users(self) -> int:
