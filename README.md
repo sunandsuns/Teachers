@@ -8,7 +8,7 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 1074 项）+ Vitest（前端 291 项）
+- **测试**：pytest（后端 1077 项）+ Vitest（前端 300 项）
 
 ---
 
@@ -654,7 +654,7 @@ python packaging/export_openapi.py     # 写到根目录 openapi.json（已 giti
 这条真实链路，先 `python run.py` 起服务，再另开一个终端：
 
 ```bash
-python smoke.py        # API 层：202 项，走真实 HTTP + vite 代理
+python smoke.py        # API 层：205 项，走真实 HTTP + vite 代理
 python ui_check.py     # 界面层：113 项，CDP 驱动真实 Chrome
 ```
 

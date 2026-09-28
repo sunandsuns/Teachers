@@ -302,6 +302,67 @@ class TestUserSearch:
         assert self._emails(client, admin, "%") == []
         assert self._emails(client, admin, "_") == []
 
+    def test_backslash_and_percent_together_are_both_literal(self, client, offline):
+        r"""`\` 与 `%` 同时出现时，两个都得当普通字符。
+
+        这条专治 `_escape_like` 的**转义顺序**：反斜杠必须**先**转义。反过来的话，
+        刚给 `%` 插进去的那个反斜杠会被再转一遍（`\%` → `\\%`），于是 `%` 从
+        "普通字符"又变回通配符——搜 `a\%b` 会把 `a\Xb` 一起捞出来。
+
+        上面那条（只搜 `%`）看不出顺序错没错：两种顺序下它都是"一个人也不命中"。
+        所以这条非有不可。
+        """
+        admin = as_admin(client)
+        client.post("/api/auth/register", json={
+            "email": ALICE, "password": PASSWORD, "display_name": r"a\%b",
+        })
+        client.post("/api/auth/register", json={
+            "email": BOB, "password": PASSWORD, "display_name": r"a\Xb",
+        })
+        # 注册会给响应下发会话 cookie，而**令牌层是先 cookie 后 Authorization**：
+        # 不清掉的话，上面那两次注册已经把客户端从管理员换成了刚注册的人，
+        # 下面这句会拿到 403（报错长得像"管理员权限没了"，与搜索毫无关系）。
+        client.cookies.clear()
+
+        assert self._emails(client, admin, r"a\%b") == [ALICE]
+
+    def test_a_too_long_query_is_rejected(self, client, offline):
+        """搜索词上限 64 字符（`docs/API.md` 的 422 一节写了）。
+
+        这条拦的不是攻击，是"把整个搜索框原样塞进 URL"这条路。上限既然写进了
+        契约，就得有人在动它时被绊一下。
+        """
+        admin = as_admin(client)
+
+        assert client.get("/api/admin/users", params={"q": "a" * 64},
+                          headers=admin).status_code == 200
+        assert client.get("/api/admin/users", params={"q": "a" * 65},
+                          headers=admin).status_code == 422
+
+    def test_a_hit_still_carries_its_shelf_count(self, client, offline):
+        """筛出来的人，藏书数要和"整份列表里那个人"一模一样。
+
+        藏书数是**逐人另查一次库**得来的（路由里的 `shelf.counts_for_user`）。
+        "先筛后算"的意思只是"不匹配的人不必各查一遍"——顺手把匹配的那些也算漏，
+        界面上就是"搜到的人个个 0 本"，而这一页看起来完全正常。
+        """
+        admin = as_admin(client)
+        alice = sign_in(client, ALICE)
+        added = client.post("/api/shelf/books", json={
+            "title": "活着", "author": "余华", "year": "2012",
+            "cover_url": "", "source_key": "", "source": "",
+            "summary": "", "subjects": [],
+        }, headers=alice)
+        assert added.status_code in (200, 201), added.text
+
+        def shelf_books(query):
+            resp = client.get("/api/admin/users", params={"q": query}, headers=admin)
+            assert resp.status_code == 200, resp.text
+            return {row["email"]: row["shelf_books"] for row in resp.json()}
+
+        full = shelf_books("")
+        assert full[ALICE] == 1, full
+        assert shelf_books("alice@")[ALICE] == full[ALICE]
     def test_empty_query_still_returns_everyone(self, client, offline):
         """不填搜索框 = 与从前完全一样（这个参数是**追加**的，不改变旧行为）。"""
         admin = as_admin(client)

@@ -340,6 +340,34 @@ describe('用户管理', () => {
     await waitFor(() => expect(screen.queryByText('admin@test.local')).not.toBeInTheDocument())
   })
 
+  it('搜索出错时不留旧结果——那份结果已经不能代表"此刻这一步查询"', async () => {
+    // 把两行摆在一条错误下面，读到的就是"搜到的就是这些"。而真相是这一步查
+    // 失败了、什么也没查到。错误与结果**只能二选一**。
+    const user = await openUsers()
+    mockedApi.adminUsers.mockRejectedValue(new Error('库连不上'))
+
+    await user.type(screen.getByLabelText('搜索邮箱、昵称或 id'), 'bob')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('库连不上')
+    expect(screen.queryByText('bob@example.com')).not.toBeInTheDocument()
+    expect(screen.queryByText('admin@test.local')).not.toBeInTheDocument()
+    // 但搜索框得留在原地：搜错了想改一个字母，不该先无路可走
+    expect(screen.getByLabelText('搜索邮箱、昵称或 id')).toBeInTheDocument()
+  })
+
+  it('一开始就读不到用户时说实话，不谎称"还没有别的用户"', async () => {
+    // "一个用户都没有"和"读不到用户"是两句完全不同的话——后者更危险：
+    // 管理员会以为数据没了，而其实只是这一趟没读到。
+    mockedApi.adminUsers.mockRejectedValue(new Error('库连不上'))
+    renderAdmin()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '用户' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('库连不上')
+    expect(screen.queryByText('还没有别的用户')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('搜索邮箱、昵称或 id')).toBeInTheDocument()
+  })
+
   it('不能取消自己的管理员——按钮直接禁用', async () => {
     // 后端也会挡（400），但让用户点到一个注定失败的按钮、再看一条错误，
     // 不如一开始就不给这个选项。
