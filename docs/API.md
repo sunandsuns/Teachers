@@ -1,6 +1,6 @@
 # 人生导师 · 接口文档
 
-> 应用版本 **1.5.3**。本文件由 `packaging/gen_api_docs.py` 从 `app.openapi()` 生成，**请勿手工编辑**。
+> 应用版本 **1.5.4**。本文件由 `packaging/gen_api_docs.py` 从 `app.openapi()` 生成，**请勿手工编辑**。
 
 ## 怎么用这份文档
 
