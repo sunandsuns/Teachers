@@ -956,6 +956,30 @@ def main():
         code = exc.code
     check("未知接口返回 404 而非前端页面", code == 404, code)
 
+    # 收尾：把本脚本造出来的账号收干净。
+    #
+    # `smoke+…@example.com` 只可能由本脚本注册，留着没用，而且**每跑一次多两个**
+    # ——实测本地已攒到 30 个，后台用户列表被它们淹掉，真账号要翻半天。判据用
+    # 邮箱前缀（不是本次的时间戳），顺手把早先跑剩的一并带走。
+    #
+    # 删用户是级联的（会话、书架、问答、画像一起走），所以不必再逐个清他名下的
+    # 东西。清不掉不改变本脚本的结论，但要**把条数打出来**：静默清场看着像成功，
+    # 最坏的情况是"一个也没删"而没人发现——ui_check.py 那边的探针书就这么栽过。
+    try:
+        code, users = admin.call("/api/admin/users")
+        if code != 200 or not isinstance(users, list):
+            print("清理冒烟账号：跳过（拿不到用户列表，code=%s）" % code)
+        else:
+            swept = 0
+            for user in users:
+                if not str(user.get("email", "")).startswith("smoke+"):
+                    continue
+                if admin.call("/api/admin/users/%s" % user["id"], "DELETE")[0] == 200:
+                    swept += 1
+            print("清理冒烟账号：%d 个（还剩 %d 个账号）" % (swept, len(users) - swept))
+    except Exception as exc:  # noqa: BLE001 — 收尾失败不该把检查结论说成失败
+        print("清理冒烟账号失败：%s" % exc)
+
     print()
     # 把项数打出来：README 里写着"API 层 N 项"，那个数字靠人肉维护迟早会飘，
     # 让它自己报数，对不上了一眼就能看出来。

@@ -222,7 +222,11 @@ def reset_password(
 
 @router.delete("/users/{user_id}", response_model=OkResponse)
 def delete_user(user_id: int, admin: User = Depends(require_admin)):
-    """删除用户（连带他的会话与私人书架）。"""
+    """删除用户，连带他的会话、私人书架、问答记录与画像。
+
+    **不可撤销，且不碰匿名那一份**（`user_id IS NULL` 是未登录访客的公共数据）。
+    不能删自己——那会让最后一个管理员把自己锁在门外。
+    """
     if user_id == admin.id:
         raise HTTPException(
             status_code=400,

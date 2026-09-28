@@ -8,7 +8,7 @@
 
 - **后端**：Python 3.13+ / FastAPI / 自研 TF-IDF 检索（jieba 分词，无向量库依赖）
 - **前端**：React 18 + TypeScript + Vite + Tailwind（中式书卷配色）
-- **测试**：pytest（后端 1058 项）+ Vitest（前端 284 项）
+- **测试**：pytest（后端 1068 项）+ Vitest（前端 287 项）
 
 ---
 
@@ -508,7 +508,7 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | GET | `/api/admin/users/{id}` | **单个用户的详情**：账号资料 + 四个统计数 + 最近的问答 / 书架 / 画像（每段都截断，各自的总数另给）。不存在的 id 是 **404**，不是一份空档案 |
 | PATCH | `/api/admin/users/{id}` | 授予/取消管理员。**不能操作自己**，400 |
 | POST | `/api/admin/users/{id}/password` | 重置他人密码 |
-| DELETE | `/api/admin/users/{id}` | 删用户。**不能删自己**，400 |
+| DELETE | `/api/admin/users/{id}` | 删用户，**级联**清掉他的会话 / 书架 / 问答记录 / 画像。**不能删自己**，400。匿名那一格（`user_id IS NULL`）不属于任何人，不动 |
 | GET · DELETE | `/api/admin/public` · `/api/admin/public/{id}` | 公共书架列表 / 从公共书架撤下 |
 | GET | `/api/admin/db/tables` | 可操作的表。**不暴露 `sqlite_*` 内部表** |
 | GET | `/api/admin/db/tables/{table}` | 表结构 + 分页数据；`password_hash` / `salt` 标为 `protected` |

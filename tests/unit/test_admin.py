@@ -218,6 +218,28 @@ class TestUserManagement:
         assert client.delete(f"/api/admin/users/{alice_id}", headers=admin).status_code == 200
         assert client.get("/api/admin/overview", headers=admin).json()["shelf_books"] == 0
 
+    def test_delete_user_takes_his_questions_and_portrait_with_him(self, client, offline):
+        """删人要删干净：问答与画像一起走，别在库里留没人认领的行。
+
+        早先这里只删会话与书架。实测清一次冒烟账号，就在 ``history`` 里留下
+        15 条孤儿——它们谁也读不到（自增 id 不会复用），只是白占着库，而后台
+        的数据库页还看得见，像是"删了个寂寞"。
+
+        但**匿名那一格不能顺手带走**：``user_id IS NULL`` 是访客共用的公共
+        数据，不属于被删的这个人。
+        """
+        admin = as_admin(client)
+        alice, alice_id = identity(client, ALICE)
+        client.post("/api/ask", json={"question": "我最近很焦虑"}, headers=alice)
+        get_profile_store().upsert([TRAIT], user_id=alice_id)
+        get_history_store().save("匿名的困惑", "答", user_id=None)
+
+        assert client.delete(f"/api/admin/users/{alice_id}", headers=admin).status_code == 200
+
+        assert get_history_store().list(user_id=alice_id)[0] == 0
+        assert get_profile_store().list(user_id=alice_id) == []
+        assert get_history_store().list(user_id=None)[0] == 1
+
     def test_unknown_user_is_404(self, client):
         admin = as_admin(client)
         assert client.delete("/api/admin/users/99999", headers=admin).status_code == 404

@@ -280,14 +280,22 @@ class AuthStore(StoreBase):
             return changed
 
     def delete_user(self, user_id: int) -> bool:
-        """删除用户，并清掉他的会话与个人书库。
+        """删除用户，连同他的会话、私人书架、问答记录与画像。
 
-        历史与画像**不删**：那两张表可能还留着别的用户的数据，而按 user_id
-        删是另一个动作。这里只保证"人走了，登录入口与他的书没了"。
+        **四张表一次删干净。** `users.id` 是自增的，删掉之后这个 id 不会再被
+        复用，所以留在库里的行既没人读得到、也不会被后来者覆盖，只会一直占着
+        位——而"后台把人删了，他的问答原文还躺在 `history` 里"是管理员想不通
+        的事（后台的数据库页一眼就能看到）。早先这里只删会话与书架，实测一次
+        冒烟清理就留下 15 条孤儿问答记录。
+
+        每一句 DELETE 都显式带 `user_id = ?`：`user_id IS NULL` 那一份是
+        匿名访客的公共数据，**不属于这个用户**，不做无条件删除。
         """
         with self._db.session() as conn:
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM user_books WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM history WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM traits WHERE user_id = ?", (user_id,))
             cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
             return cursor.rowcount > 0
 

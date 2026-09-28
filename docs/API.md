@@ -1,6 +1,6 @@
 # 人生导师 · 接口文档
 
-> 应用版本 **1.5.2**。本文件由 `packaging/gen_api_docs.py` 从 `app.openapi()` 生成，**请勿手工编辑**。
+> 应用版本 **1.5.3**。本文件由 `packaging/gen_api_docs.py` 从 `app.openapi()` 生成，**请勿手工编辑**。
 
 ## 怎么用这份文档
 
@@ -60,7 +60,7 @@
 - [知识库](#知识库) · 4 个接口
 - [感悟](#感悟) · 6 个接口
 - [后台管理](#后台管理) · 16 个接口
-- [系统](#系统) · 1 个接口
+- [系统](#系统) · 2 个接口
 - [附录：数据模型](#附录数据模型)
 
 ## 账号与登录
@@ -1990,7 +1990,10 @@
 
 ### `DELETE` `/api/admin/users/{user_id}`
 
-删除用户（连带他的会话与私人书架）。
+删除用户，连带他的会话、私人书架、问答记录与画像。
+
+**不可撤销，且不碰匿名那一份**（`user_id IS NULL` 是未登录访客的公共数据）。
+不能删自己——那会让最后一个管理员把自己锁在门外。
 
 **参数**
 
@@ -2549,6 +2552,18 @@
 | `source_indexed` | integer | 是 |  |
 | `source_skipped` | string[] | 是 |  |
 | `categories` | string[] | 是 |  |
+
+### `GET` `/`
+
+根路径：无前端产物时退化为 API 索引（开发态请走 Vite 的 :5173）。
+
+**响应 `200`** 成功
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `name` | string | 是 |  |
+| `version` | string | 是 |  |
+| `endpoints` | object<string, string> | 是 |  |
 
 ## 附录：数据模型
 
@@ -3240,6 +3255,16 @@
 | `visibility` | string | 是 |  |
 | `review_note` | string | 是 |  |
 | `created_at` | string | 是 |  |
+
+### `RootResponse`
+
+没有前端产物时的根路径索引（开发态页面走 Vite 的 5173，这里不出现）。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `name` | string | 是 |  |
+| `version` | string | 是 |  |
+| `endpoints` | object<string, string> | 是 |  |
 
 ### `RowMutationResponse`
 
