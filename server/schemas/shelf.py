@@ -19,7 +19,11 @@ class CandidateIn(BaseModel):
     year: str = Field("", max_length=20)
     cover_url: str = Field("", max_length=500)
     source_key: str = Field("", max_length=100)
-    source: str = Field("openlibrary", max_length=50, description="数据源标识，目前只有 openlibrary")
+    source: str = Field(
+        "", max_length=50,
+        description="数据源标识：weread（微信读书）/ douban（豆瓣）/ openlibrary。"
+                    "决定加书时要不要再联网补简介——只有 openlibrary 需要",
+    )
     summary: str = Field("", max_length=4000)
     subjects: list[str] = Field(default_factory=list, max_length=20)
 
@@ -40,9 +44,10 @@ class BookSearchResponse(BaseModel):
 
     results: list[CandidateIn]
     error: str = ""
-    #: ``error`` 属于"后端没连上上游"（而不是"上游说没这本书"）。为 true 时
-    #: 前端会改用浏览器直连 OpenLibrary 再试一次——部署容器在境内、境外站点被
-    #: 阻断是常态，而浏览器用的是访客自己的网络。见 ``web/src/api/openlibrary.ts``。
+    #: ``error`` 属于"所有书源都没连上"（而不是"上游说没这本书"）。**现役前端
+    #: 不据此分支**——它把 ``error`` 原样显示。留着这个字段是因为"没连上"与
+    #: "没有"对任何调用方都是两件事。书源清单与顺序见
+    #: ``server/services/book_search.py`` 的 ``SOURCES``。
     unavailable: bool = False
 
 

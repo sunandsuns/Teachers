@@ -3,17 +3,9 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { api } from '../api/client'
-import { searchBooksDirect } from '../api/openlibrary'
 import type { ShelfBook } from '../api/types'
 import ShelfPage from '../features/shelf/ShelfPage'
 import { I18nProvider } from '../i18n'
-
-// 浏览器直连那份也要替身：它的默认实现真的会去 fetch openlibrary.org（测试不联网）。
-vi.mock('../api/openlibrary', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../api/openlibrary')>()),
-  searchBooksDirect: vi.fn(),
-  fetchDetailDirect: vi.fn(),
-}))
 
 vi.mock('../api/client', async (importOriginal) => {
   // 真实导出照单全收——只把 `api` 换成假的。手写一份导出清单是脆的：
@@ -35,18 +27,16 @@ vi.mock('../api/client', async (importOriginal) => {
 })
 
 const mockedApi = vi.mocked(api)
-// 浏览器直连那条兜底路径（后端连不上 OpenLibrary 时才会用到）
-const mockedDirect = vi.mocked(searchBooksDirect)
 
 const CANDIDATE = {
   title: '活着',
   author: '余华',
   year: '2012',
   cover_url: '',
-  source_key: 'OL25129388W',
-  source: 'openlibrary',
+  source_key: '834464',
+  source: 'weread',
   summary: '一个人和他命运之间的友情。',
-  subjects: ['Fiction', 'China'],
+  subjects: [],
 }
 
 const BOOK = {
@@ -55,7 +45,7 @@ const BOOK = {
   author: '余华',
   year: '2012',
   cover_url: '',
-  source_key: 'OL25129388W',
+  source_key: '834464',
   summary: '',
   subjects: [],
   guide: '## 这本书在讲什么\n\n一个人和他命运之间的友情。',
@@ -204,48 +194,31 @@ describe('联网检索加书', () => {
     expect(screen.queryByText('没有找到这本书')).not.toBeInTheDocument()
   })
 
-  it('后端连不上上游时，改由浏览器直连再试一次', async () => {
-    // 在线版的容器在境内、没有出海代理，后端到 openlibrary.org 的 TLS 会被掐断。
-    // `unavailable` 就是"后端没走到上游"这个信号——此时该让浏览器去取。
+  it('所有书源都没连上时如实报原因，且**只发一次请求**', async () => {
+    // 这条是这次改动的判据。以前后端回 `unavailable` 之后，前端会再往
+    // openlibrary.org 打一次"浏览器直连"——而现役书源（微信读书 / 豆瓣）都不发
+    // CORS 头，那次请求注定失败，唯一的效果是让用户**再**多等 20 秒，然后收到
+    // 一句"浏览器与服务器两条路都没通"。
     mockedApi.searchBooks.mockResolvedValue({
       results: [],
-      error: '无法连接检索服务：TLS/SSL connection has been closed (EOF)',
+      error: '无法连接检索服务：timed out',
       unavailable: true,
     })
-    mockedDirect.mockResolvedValue([CANDIDATE])
     renderShelf()
     await searchFor('活着')
 
-    expect(await screen.findByText('活着')).toBeInTheDocument()
-    expect(mockedDirect).toHaveBeenCalledWith('活着', '')
-    // 事已经办成了，那句"无法连接"不该再摆给用户看
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('无法连接检索服务')
+    expect(mockedApi.searchBooks).toHaveBeenCalledTimes(1)
+    // 连不上**不能**说成"世上没这本书"——那会让用户去改书名而不是重试
+    expect(screen.queryByText('没有找到这本书')).not.toBeInTheDocument()
   })
 
-  it('浏览器那条路也走不通时，说清两边都没通', async () => {
-    mockedApi.searchBooks.mockResolvedValue({
-      results: [],
-      error: '无法连接检索服务：TLS/SSL connection has been closed (EOF)',
-      unavailable: true,
-    })
-    mockedDirect.mockRejectedValue(new Error('Failed to fetch'))
+  it('后端整个请求都失败时，也要说点什么而不是静默', async () => {
+    mockedApi.searchBooks.mockRejectedValue(new Error('Failed to fetch'))
     renderShelf()
     await searchFor('活着')
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('浏览器与服务器两条路都没通')
-  })
-
-  it('只在上游不可达时才走浏览器直连，业务错误不重试', async () => {
-    mockedApi.searchBooks.mockResolvedValue({
-      results: [],
-      error: '检索服务请求过于频繁，请稍后再试',
-      unavailable: false,
-    })
-    renderShelf()
-    await searchFor('活着')
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('过于频繁')
-    expect(mockedDirect).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to fetch')
   })
 
   it('点"加入书架"把选中的候选原样回传', async () => {

@@ -49,16 +49,6 @@ NOISE = ("[vite]", "Download the React DevTools", "favicon", "ERR_ABORTED")
 # 那支 401 是我们想看到的结果，不该被算成"页面报错"。
 EXPECTED_401 = "/api/auth/login"
 
-# 第 6 段会**故意**驱动浏览器直连 OpenLibrary（线上后端出境被阻断时，联网检索
-# 改由浏览器自己走，见 CONVENTIONS「书架联网检索」）。本机与容器都出不去，
-# 那条请求必然超时——而"如实报错"恰恰是第 6 段要验收的结果之一（它断言的是
-# "要么给候选、要么给一句能读懂的错"），所以不该在末段被算成页面故障。
-#
-# 但也不能给整条链路开绿灯：只放行 `expect_net()` / `end_net()` **那一小段窗口
-# 里**出现的 openlibrary 失败，别处的同类失败照旧要报出来。不然"书架检索坏了"
-# 这类真问题会被这条豁免一起吞掉。
-EXPECTED_NET = "openlibrary.org"
-
 
 class CDP:
     """极简 CDP 客户端：发一条命令、等它回来，路上收到的通知先攒着。"""
@@ -69,17 +59,6 @@ class CDP:
         self.ws = connect(url, max_size=64 * 1024 * 1024)
         self.next_id = 0
         self.events: list[dict] = []
-        # 预期内网络失败的**事件下标区间**（半开），见 EXPECTED_NET。默认空区间
-        # = 什么都不豁免。
-        self.net_window: tuple[int, int] = (0, 0)
-
-    def expect_net(self) -> None:
-        """从这里开始记：窗口内出现的 OpenLibrary 直连失败算预期（见 EXPECTED_NET）。"""
-        self.net_window = (len(self.events), 10 ** 9)
-
-    def end_net(self) -> None:
-        """关上窗口。留出 `pump()` 的余量再关，别把还在路上的失败漏到窗口外。"""
-        self.net_window = (self.net_window[0], len(self.events))
 
     def send(self, method: str, params: dict | None = None) -> dict:
         self.next_id += 1
@@ -142,12 +121,11 @@ class CDP:
     def console_problems(self) -> list[str]:
         # `Network.loadingFailed` 只带 `requestId`、**不带 URL**。少了下面这张
         # 表，失败会以「network: Fetch net::ERR_CONNECTION_TIMED_OUT」的面目报
-        # 出来——既没法定定位是哪支请求，也没法按 URL 豁免（第 6 段的
-        # OpenLibrary 直连就栽在这上面）。所以先从 `requestWillBeSent` 攒一张
-        # id→url 的对照表，再拿它给失败补上出处。
+        # 出来——既没法定定位是哪支请求，也就没法判断它该不该算问题。所以先从
+        # `requestWillBeSent` 攒一张 id→url 的对照表，再拿它给失败补上出处。
         urls: dict[str, str] = {}
-        found: list[tuple[int, str]] = []   # (事件下标, 描述)，下标用于窗口豁免
-        for index, event in enumerate(self.events):
+        found: list[str] = []
+        for event in self.events:
             method = event.get("method")
             params = event.get("params", {})
             if method == "Network.requestWillBeSent":
@@ -160,34 +138,30 @@ class CDP:
                     str(a.get("value", a.get("description", "")))
                     for a in params.get("args", [])
                 )
-                found.append((index, "console: " + text))
+                found.append("console: " + text)
             elif method == "Log.entryAdded":
                 entry = params.get("entry", {})
                 if entry.get("level") == "error":
                     # 带上 URL 与状态码：只报"401"没法定位是哪支请求，
                     # 而"哪支请求在匿名状态下被打了 401"才是要判断的事。
-                    found.append((index, "log: %s %s %s" % (
+                    found.append("log: %s %s %s" % (
                         entry.get("url", ""), entry.get("text", ""),
-                        entry.get("source", ""))))
+                        entry.get("source", "")))
             elif method == "Network.loadingFailed":
-                found.append((index, "network: %s %s %s" % (
+                found.append("network: %s %s %s" % (
                     params.get("type"), params.get("errorText"),
-                    urls.get(params.get("requestId"), ""))))
+                    urls.get(params.get("requestId"), "")))
             elif method == "Network.responseReceived":
                 response = params.get("response", {})
                 status = response.get("status", 0)
                 if status >= 400:
-                    found.append((index, "http %d %s" % (status, response.get("url", ""))))
+                    found.append("http %d %s" % (status, response.get("url", "")))
 
-        low, high = self.net_window
         problems = []
-        for index, text in found:
+        for text in found:
             if any(n in text for n in NOISE):
                 continue
             if EXPECTED_401 in text and "401" in text:
-                continue
-            # 窗口内的 OpenLibrary 直连失败是第 6 段刻意造的，理由见 EXPECTED_NET。
-            if low <= index < high and EXPECTED_NET in text:
                 continue
             problems.append(text)
         return problems
@@ -874,10 +848,10 @@ def main() -> int:
 
         print()
         print("=== 6. 联网检索：上游成败都要给出明确反馈 ===")
-        # 这一段是本脚本里**唯一**故意让浏览器去撞一堵墙的地方：末端那条
-        # "全程没有报错"要把它造成的超时摘出来，否则换个出不去网的机器就翻脸。
-        # 豁免范围只限这一段（见 EXPECTED_NET），出了这段照旧算故障。
-        cdp.expect_net()
+        # 这一段**不再**刻意制造网络故障。以前这里会让浏览器直连 openlibrary.org
+        # 去撞墙，才需要一套"窗口内豁免"来让末段的"全程没有报错"不翻脸；那条路
+        # 已经删掉（现役书源都不发 CORS 头，浏览器直连不可能成功），豁免也随之
+        # 撤掉——现在这一段跑出来的任何控制台/网络错误都是**真**问题。
         cdp.goto("/shelf")
         cdp.wait_for("!!document.querySelector('input')")
         cdp.evaluate(SET_VALUE % ("'input'", "'活着'"))
@@ -885,9 +859,8 @@ def main() -> int:
             "(function(){var b=Array.from(document.querySelectorAll('button'))"
             ".find(e=>e.textContent.trim().indexOf('联网检索')>=0); if(b) b.click();})()")
         # 断言的是**不变量**：点完之后界面必须说点什么——要么候选列表，
-        # 要么一句能读懂的错误。上游通不通由网络决定，两种都实测遇到过
-        # （走代理时 502 落进错误分支；网络正常时 OpenLibrary 会返回候选），
-        # 所以断言不能押在其中一支上，否则换台机器就翻脸。
+        # 要么一句能读懂的错误。上游通不通由网络决定，所以断言不能押在其中
+        # 一支上，否则换台机器就翻脸。
         #
         # 判据一律用**结构**，不用文案：
         #
@@ -911,8 +884,12 @@ def main() -> int:
         check("上游失败时不谎称「没有找到」",
               not (has_alert and cdp.evaluate(
                   "document.body.innerText.indexOf('没有找到这本书') >= 0")))
+        # 书源换过一轮了，页面上不许还挂着旧书源的名字——那是用户唯一能看到的
+        # 线索，写错了会让人去排查一个根本不存在的依赖。
+        check("页面上不再提已下线的书源名",
+              not cdp.evaluate(
+                  "document.body.innerText.indexOf('OpenLibrary') >= 0"))
         cdp.pump(0.5)
-        cdp.end_net()
         cdp.shot("ui-08-search-feedback.png")
 
         print()

@@ -749,7 +749,7 @@ def main():
         "year": "2026",
         "cover_url": "",
         "source_key": "",
-        "source": "openlibrary",
+        "source": "",
         "summary": "这本书只为验证链路而存在。",
         "subjects": ["测试"],
     }

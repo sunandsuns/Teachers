@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react'
 import { api, type BookCandidate } from '../../api/client'
-import { fetchDetailDirect, searchBooksDirect } from '../../api/openlibrary'
 import { Button, Card, Empty } from '../../components/ui'
 import Spinner from '../../components/ui/Spinner'
 import { useI18n } from '../../i18n'
@@ -16,9 +15,15 @@ interface BookFinderProps {
  * 「找一本书加进来」。
  *
  * 流程刻意分成两步：**先检索、再由用户挑**。一步到位的做法（输入书名就直接
- * 把第一条塞进书架）看着省事，但同一本书在 OpenLibrary 里可能有十几个版本
- * （不同译者、不同年份、甚至不同作者的重名书），挑错一次用户还得自己去删。
- * 把选择权交回去，多一次点击，少一次返工。
+ * 把第一条塞进书架）看着省事，但同一本书可能有十几个版本（不同译者、不同年份、
+ * 甚至不同作者的重名书），挑错一次用户还得自己去删。把选择权交回去，多一次点击，
+ * 少一次返工。
+ *
+ * 检索**只走后端**。曾经有过一条"后端连不上就改用浏览器直连"的兜底，是给
+ * OpenLibrary 开的——那个接口发 CORS 头，且当时假设访客的浏览器出得去。现在
+ * 现役书源（微信读书 / 豆瓣）都不发 CORS 头，浏览器直连**不可能**成功，那条路
+ * 已经删掉：它唯一的效果是在后端失败之后**再**白等 20 秒。书源与顺序见
+ * `server/services/book_search.py`。
  *
  * 检索是**需要登录**的：加书是写操作，而搜索本身也贴着用户身份（将来要按
  * 用户的书架去重）。未登录时这个组件根本不会渲染——「我的书架」整条路由
@@ -32,9 +37,6 @@ export default function BookFinder({ onShelf, onAdd }: BookFinderProps) {
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
   const [addingKey, setAddingKey] = useState('')
-  // 这批候选是不是**浏览器直连**取回来的（后端那条路当时走不通）。加书时要据此
-  // 决定要不要在浏览器里自己补简介——那种情况下后端同样补不到。
-  const [direct, setDirect] = useState(false)
 
   async function onSearch(event: FormEvent) {
     event.preventDefault()
@@ -44,28 +46,10 @@ export default function BookFinder({ onShelf, onAdd }: BookFinderProps) {
     setError('')
     try {
       const data = await api.searchBooks(trimmed, author.trim())
-      if (!data.unavailable) {
-        setDirect(false)
-        setResults(data.results)
-        // 上游说"这次没搜成"（限流、词太短）时，`results` 是空的、`error` 有话说。
-        // 两者都空才是真的"没有这本书"。
-        setError(data.error)
-        return
-      }
-
-      // `unavailable` = 后端**没走到上游**，而不是"上游说没有这本书"。在线版的
-      // 容器在境内、没有出海代理，到 openlibrary.org 的 TLS 会被掐断——这在部署
-      // 环境里是常态，不是故障。浏览器用的是访客自己的网络，多数时候还出得去，
-      // 且 OpenLibrary 的接口放开了 CORS。
-      setDirect(true)
-      try {
-        setResults(await searchBooksDirect(trimmed, author.trim()))
-        setError('')
-      } catch {
-        setDirect(false)
-        setResults(null)
-        setError(t('shelf.networkBlocked'))
-      }
+      setResults(data.results)
+      // 上游说"这次没搜成"（限流、词太短）或所有书源都没连上时，`results` 是空的、
+      // `error` 有话说。两者都空才是真的"没有这本书"。
+      setError(data.error)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setResults(null)
@@ -79,21 +63,9 @@ export default function BookFinder({ onShelf, onAdd }: BookFinderProps) {
     setAddingKey(key)
     setError('')
     try {
-      let book = candidate
-      // 候选若是浏览器直连拿回来的，后端在 `POST /shelf/books` 里补简介那一步
-      // 同样走不出去（同一个网络原因），所以在这里补上，别让在线版的书少这一段。
-      // 拿不到就用现有的——详情是锦上添花，不该挡住"加入书架"。
-      if (direct && !book.summary && book.source_key) {
-        const detail = await fetchDetailDirect(book.source_key)
-        if (detail) {
-          book = {
-            ...book,
-            summary: detail.summary || book.summary,
-            subjects: detail.subjects.length > 0 ? detail.subjects : book.subjects,
-          }
-        }
-      }
-      await onAdd(book)
+      // 简介该由后端在 `POST /shelf/books` 里补——微信读书的简介在检索响应里
+      // 就已经带上了，所以多数情况下这一步是白送的。
+      await onAdd(candidate)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

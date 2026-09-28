@@ -69,7 +69,10 @@ def _to_candidate(payload: CandidateIn) -> BookCandidate:
         year=payload.year.strip(),
         cover_url=payload.cover_url.strip(),
         source_key=payload.source_key.strip(),
-        source=payload.source.strip() or "openlibrary",
+        # **不做兜底**。缺省成某个具体源会让"客户端没说是哪个源"被当成"这是
+        # OpenLibrary 的书"，于是 `fetch_detail` 拿一串微信读书的 bookId 去拼
+        # `/works/…`，白等一次超时。空串就是"不知道"，那边直接返回 None。
+        source=payload.source.strip(),
         summary=payload.summary.strip(),
         subjects=tuple(s.strip() for s in payload.subjects if s.strip())[:20],
     )
@@ -170,9 +173,10 @@ def add_book(payload: AddBookRequest, background: BackgroundTasks, user: User = 
             status_code=400, detail={"code": "bad_title", "message": "书名不能为空"}
         )
 
-    # 补详情：列表阶段只带了书名/作者/主题，简介要单独取。拿不到就用现有的。
+    # 补详情：只有 OpenLibrary 的书需要单独取简介（微信读书的简介在搜索响应里
+    # 就带上了，豆瓣不提供）。`fetch_detail` 对不支持的源直接返回 None，不白跑。
     if candidate.source_key:
-        detail = book_search.fetch_detail(candidate.source_key)
+        detail = book_search.fetch_detail(candidate.source, candidate.source_key)
         if detail is not None:
             candidate = BookCandidate(
                 title=candidate.title,

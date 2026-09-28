@@ -1,10 +1,11 @@
-"""个人书架：加书、列表、改状态、删除、申请公开、用户隔离。
+"""个人书架：加书、列表、改状态、删除、申请公开、用户隔离、多书源检索。
 
-联网检索与详情一律换成固定数据——测试绝不真的去打 OpenLibrary。
+联网检索与详情一律喂固定数据——测试绝不真的去打线上书源。
 """
 
 from __future__ import annotations
 
+import json
 import urllib.error
 
 import pytest
@@ -47,7 +48,7 @@ def offline(monkeypatch):
     monkeypatch.setattr(
         book_search, "search_books", lambda title="", author="", **kw: SearchOutcome((BOOK,))
     )
-    monkeypatch.setattr(book_search, "fetch_detail", lambda key, **kw: None)
+    monkeypatch.setattr(book_search, "fetch_detail", lambda source, key, **kw: None)
 
 
 def add(client, headers, **overrides):
@@ -139,8 +140,8 @@ class TestSearch:
 class TestUnavailableDetection:
     """`book_search` 自己怎么分辨"没连上上游"与"上游说没有"。
 
-    这一层是整条兜底链路的判据：判粗了（把限流也算上）会让前端白跑一趟浏览器直连；
-    判漏了，在线版就永远只会说"无法连接检索服务"。
+    这一层是给用户措辞的判据：判粗了（把限流也算上）会说成"连不上"；判漏了，
+    真断网时又会说成"没有这本书"，让人去改书名而不是重试。
     """
 
     class _Fail:
@@ -182,6 +183,206 @@ class TestUnavailableDetection:
         outcome = book_search.search_books("活着", opener=opener)
         assert outcome.unavailable is False
         assert "频繁" in outcome.error
+
+
+class _FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+
+class _Routes:
+    """按 URL 里的片段返回假响应的 opener。
+
+    比"把整个 opener 换成抛异常的桩"更接近真实：一次检索会**依次问好几个源**，
+    得能分别给它们不同的答复。没配到片段的 URL 一律抛网络错——这样"这事只该在那
+    种情况下才发生"的判据才立得住（比如"不该去问境外那个源"）。
+    """
+
+    def __init__(self, routes: dict) -> None:
+        self.routes = routes
+        self.hits: list[str] = []
+
+    def open(self, request, timeout=None):
+        url = request.full_url
+        self.hits.append(url)
+        for fragment, payload in self.routes.items():
+            if fragment in url:
+                if isinstance(payload, Exception):
+                    raise payload
+                return _FakeResponse(json.dumps(payload).encode("utf-8"))
+        raise urllib.error.URLError("测试没给这个地址配应答：%s" % url)
+
+    def hit(self, fragment: str) -> bool:
+        return any(fragment in url for url in self.hits)
+
+
+class TestBookSources:
+    """多书源：按序试、谁先给出结果用谁、字段怎么映射、什么时候不再往下试。
+
+    全部离线——假 opener 喂固定响应，一次真网络都不打。
+    """
+
+    WEREAD_HIT = {
+        "books": [
+            {
+                "bookInfo": {
+                    "bookId": "834464",
+                    "title": "活着",
+                    "author": "余华",
+                    "cover": "https://cdn.weread.qq.com/cover/x.jpg",
+                    "intro": "  一个人和他命运之间的友情。  ",
+                }
+            }
+        ]
+    }
+
+    DOUBAN_HIT = [
+        {
+            "title": "活着",
+            "author_name": "余华",
+            "year": "2012",
+            "pic": "https://img3.doubanio.com/x.jpg",
+            "type": "b",
+            "id": "4913064",
+        }
+    ]
+
+    OPENLIBRARY_HIT = {
+        "docs": [
+            {
+                "title": "Sapiens",
+                "author_name": ["Yuval Noah Harari"],
+                "first_publish_year": 2011,
+                "key": "/works/OL17075760W",
+                "cover_i": 8231856,
+                "subject": ["History", "Civilization"],
+            }
+        ]
+    }
+
+    def test_weread_fields_are_mapped(self):
+        routes = _Routes({"weread.qq.com": self.WEREAD_HIT})
+        out = book_search.search_books("活着", opener=routes)
+
+        assert out.ok and len(out.results) == 1
+        book = out.results[0]
+        assert (book.title, book.author, book.source_key) == ("活着", "余华", "834464")
+        assert book.source == "weread"
+        assert book.cover_url == "https://cdn.weread.qq.com/cover/x.jpg"
+        # 首尾空白被剪掉——直接存进去会让卡片上多出一段莫名的缩进
+        assert book.summary == "一个人和他命运之间的友情。"
+        # **第一个源命中就不该再问第二个**，否则每次检索都白打一轮请求
+        assert not routes.hit("douban.com")
+
+    def test_irrelevant_hits_are_filtered_out(self):
+        """微信读书是模糊全文检索，**永不返回空**。
+
+        实测搜「zzqq 不存在的书 xyz」它照样回《第一推动丛书》《不存在的骑士》。
+        不拦的话界面上**永远不可能**出现"没有找到这本书"，用户会以为系统坏了。
+        """
+        routes = _Routes({
+            "weread.qq.com": {"books": [{"bookInfo": {"bookId": "1", "title": "第一推动丛书"}}]},
+            "douban.com": [],
+        })
+        out = book_search.search_books("zzqq 不存在的书 xyz", opener=routes)
+
+        assert out.ok, out.error
+        assert out.results == ()
+
+    def test_title_gate_also_accepts_an_author_match(self):
+        """用户常把作者名敲进书名框——闸门只看书名会把他的书全判成不相关。"""
+        routes = _Routes({"weread.qq.com": {"books": [
+            {"bookInfo": {"bookId": "1", "title": "活着", "author": "余华"}},
+            {"bookInfo": {"bookId": "2", "title": "无关的书", "author": "某人"}},
+        ]}})
+        out = book_search.search_books("余华", opener=routes)
+
+        assert [c.title for c in out.results] == ["活着"]
+
+    def test_domestic_sources_answer_means_skip_the_overseas_one(self):
+        """境内源答复过之后就**不再**去撞境外那个。
+
+        OpenLibrary 在国内是必然超时；前面已经有源明确答复过"我这儿没有"时还去
+        撞它，只是把一次 0.2 秒的检索拖成十几秒。
+        """
+        routes = _Routes({
+            "weread.qq.com": {"books": [{"bookInfo": {"bookId": "1", "title": "不相干的书"}}]},
+            "douban.com": self.DOUBAN_HIT,
+        })
+        out = book_search.search_books("活着", opener=routes)
+
+        assert [c.source for c in out.results] == ["douban"]
+        assert not routes.hit("openlibrary.org")
+
+    def test_douban_cover_is_dropped_but_year_kept(self):
+        """豆瓣封面有防盗链（无 Referer 回 418、外域 Referer 回 403），取回来是裂图。"""
+        routes = _Routes({
+            "weread.qq.com": urllib.error.URLError("connection refused"),
+            "douban.com": self.DOUBAN_HIT,
+        })
+        out = book_search.search_books("活着", opener=routes)
+
+        assert out.results[0].source == "douban"
+        assert out.results[0].cover_url == ""
+        assert out.results[0].year == "2012"
+
+    def test_douban_movies_and_music_are_skipped(self):
+        """同一个补全接口也混影视/音乐，`type` 不是 `b` 的一律不收。"""
+        routes = _Routes({
+            "weread.qq.com": urllib.error.URLError("nope"),
+            "douban.com": [dict(self.DOUBAN_HIT[0], type="m", title="活着（电影）")],
+        })
+        out = book_search.search_books("活着", opener=routes)
+
+        assert out.results == ()
+
+    def test_overseas_source_is_used_when_domestic_ones_all_fail(self):
+        """境内两条都没答复时才轮到 OpenLibrary——给能出去的机器兜英文书。"""
+        routes = _Routes({
+            "weread.qq.com": urllib.error.URLError("unreachable"),
+            "douban.com": urllib.error.URLError("unreachable"),
+            "openlibrary.org/search.json": self.OPENLIBRARY_HIT,
+        })
+        out = book_search.search_books("Sapiens", opener=routes)
+
+        assert [c.source for c in out.results] == ["openlibrary"]
+        book = out.results[0]
+        assert (book.year, book.source_key) == ("2011", "OL17075760W")
+        assert book.subjects == ("History", "Civilization")
+
+    def test_all_sources_down_flags_unavailable_and_reports_the_first(self):
+        routes = _Routes({
+            "weread.qq.com": urllib.error.URLError("timed out"),
+            "douban.com": urllib.error.URLError("timed out"),
+            "openlibrary.org": urllib.error.URLError("timed out"),
+        })
+        out = book_search.search_books("活着", opener=routes)
+
+        assert out.results == ()
+        assert out.unavailable is True
+        assert "无法连接检索服务" in out.error
+
+    def test_fetch_detail_only_serves_openlibrary(self):
+        """别的源直接返回 None，**一次网络都不发**。
+
+        微信读书的简介在检索响应里就带上了，豆瓣不提供详情——拿它们的 id 去拼
+        `/works/…` 只会换来一次超时，把"加入书架"这个动作拖慢十几秒。
+        """
+        routes = _Routes({})
+        assert book_search.fetch_detail("weread", "834464", opener=routes) is None
+        assert book_search.fetch_detail("douban", "4913064", opener=routes) is None
+        # 空 source（老客户端不发这个字段）同样不猜、不请求
+        assert book_search.fetch_detail("", "OL1W", opener=routes) is None
+        assert routes.hits == []
 
 
 class TestAddBook:

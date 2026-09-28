@@ -65,7 +65,7 @@ def offline(monkeypatch):
     monkeypatch.setattr(
         book_search, "search_books", lambda title="", author="", **kw: SearchOutcome((BOOK,))
     )
-    monkeypatch.setattr(book_search, "fetch_detail", lambda key, **kw: None)
+    monkeypatch.setattr(book_search, "fetch_detail", lambda source, key, **kw: None)
 
 
 def add_book(client, headers, **overrides):

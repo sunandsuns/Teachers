@@ -17,7 +17,7 @@ export interface AddBookRequest {
   year?: string
   cover_url?: string
   source_key?: string
-  /** 数据源标识，目前只有 openlibrary */
+  /** 数据源标识：weread（微信读书）/ douban（豆瓣）/ openlibrary。决定加书时要不要再联网补简介——只有 openlibrary 需要 */
   source?: string
   summary?: string
   subjects?: string[]
@@ -262,7 +262,7 @@ export interface BookCandidate {
   year: string
   cover_url: string
   source_key: string
-  /** 数据源标识，目前只有 openlibrary */
+  /** 数据源标识：weread（微信读书）/ douban（豆瓣）/ openlibrary。决定加书时要不要再联网补简介——只有 openlibrary 需要 */
   source: string
   summary: string
   subjects: string[]
