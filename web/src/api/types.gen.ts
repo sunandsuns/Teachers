@@ -27,6 +27,20 @@ export interface AddBookRequest {
   with_guide?: boolean
 }
 
+/** 这个人问过的一次。 */
+export interface AdminHistoryItem {
+  id: number
+  /** 用户问的那一句话 */
+  question: string
+  /** 当时的回答全文 */
+  answer: string
+  /** 产出回答的模型；空串表示这次是本地检索降级 */
+  model: string
+  /** 这次检索命中了多少段经典 */
+  retrieved_count: number
+  created_at: string
+}
+
 /**
  * 数据总览。
  *
@@ -55,6 +69,60 @@ export interface AdminOverview {
   server_time: string
 }
 
+/** 这个人书架上的一本。 */
+export interface AdminShelfItem {
+  id: number
+  title: string
+  author: string
+  year: string
+  /** 阅读状态：wish / reading / done */
+  status: string
+  /** private / pending / public / rejected */
+  visibility: string
+  /** 驳回原因，只有被驳回的书才有 */
+  review_note: string
+  created_at: string
+}
+
+/** 画像里的一条。``evidence`` 是依据——用户说过的哪句话让模型这么判断。 */
+export interface AdminTraitItem {
+  id: number
+  /** 分类，如「性格」「喜好」 */
+  category: string
+  /** 归纳出来的那一句话 */
+  content: string
+  /** 依据——用户说过的哪句话让模型这么判断 */
+  evidence: string
+  /** 把握，0–1 */
+  confidence: number
+  updated_at: string
+}
+
+/**
+ * 一个人的完整档案：资料、统计、最近的问答、书架、画像。
+ *
+ * ``history`` 与 ``books`` 都是**截断过的**（见 ``services/admin.py`` 的
+ * ``HISTORY_LIMIT`` / ``BOOK_LIMIT``），各自的总数在 ``stats`` 里。分开
+ * 给这两个数是有意的：总数说明"这个人真用过"，列表说明"他最近在做什么"，
+ * 而把几万条问答塞进一个调试用的页面没有意义。
+ *
+ * 这个接口**不做降级**：库读不到就是 503。给管理员看一份空档案，
+ * 比报错危险得多——他会以为这个人的东西全没了（同 ``routers/admin.py``
+ * 开头那条理由）。
+ */
+export interface AdminUserDetail {
+  /** 这个人的账号资料 */
+  user: AdminUserRow
+  /** 四个统计数 */
+  stats: AdminUserStats
+  /** 最近的问答，条数由 history_limit 决定 */
+  history: AdminHistoryItem[]
+  /** 书架上的书，最多 50 本 */
+  books: AdminShelfItem[]
+  /** 全部画像，按把握降序 */
+  traits: AdminTraitItem[]
+}
+
 export interface AdminUserRow {
   id: number
   email: string
@@ -64,6 +132,24 @@ export interface AdminUserRow {
   created_at: string
   /** 这个人的藏书数 */
   shelf_books: number
+}
+
+/**
+ * 一个人名下有多少东西。四个数都按 ``user_id`` 精确匹配。
+ *
+ * 不看 ``IS NULL`` 那一份：``user_id IS NULL`` 是**匿名访客**共用的一格，
+ * 不是"所有用户"，也不是"没有归属"。把它算进某个人名下，会让管理员
+ * 看到一份凭空多出来的问答。
+ */
+export interface AdminUserStats {
+  /** 问答条数 */
+  history: number
+  /** 私人书架上的书 */
+  shelf_books: number
+  /** 画像特征条数 */
+  traits: number
+  /** 已进入公共书架的贡献 */
+  public_books: number
 }
 
 /** 检索结果与组装好的提示词。 */

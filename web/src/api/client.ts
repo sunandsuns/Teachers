@@ -6,6 +6,7 @@
 import { activeLang, tCurrent, type Lang } from '../i18n/messages'
 import type {
   AdminOverview,
+  AdminUserDetail,
   AdminUserRow,
   AskPlan,
   AskResponse,
@@ -590,6 +591,13 @@ export const api = {
   adminOverview: () => request<AdminOverview>('/admin/overview'),
 
   adminUsers: () => request<AdminUserRow[]>('/admin/users'),
+
+  /** 某个用户的完整档案：资料、统计、最近的问答、书架、画像。
+   *
+   * 问答与书架都是**截断过的**（各自的总数在 `stats` 里），`historyLimit`
+   * 只影响问答那一段。 */
+  adminUserDetail: (userId: number, historyLimit = 20) =>
+    request<AdminUserDetail>(`/admin/users/${userId}?history_limit=${historyLimit}`),
 
   /** 授予或取消管理员。**不能取消自己**（会把自己锁在门外）。 */
   adminSetAdmin: (userId: number, isAdmin: boolean) =>

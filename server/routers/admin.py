@@ -22,12 +22,16 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
 
 from ..deps import require_admin
 from ..errors import ADMIN_DB
 from ..formatting import iso_time
 from ..schemas.admin import (
+    AdminHistoryItem,
+    AdminShelfItem,
+    AdminTraitItem,
+    AdminUserStats,
     AuditRow,
     OverviewResponse,
     PublicBookRow,
@@ -38,6 +42,7 @@ from ..schemas.admin import (
     TableDetailResponse,
     TableInfo,
     UpdateUserRequest,
+    UserDetailResponse,
     UserRow,
 )
 from ..schemas.common import MessageResponse, OkResponse, RowMutationResponse
@@ -86,6 +91,51 @@ def _review_row(book, user_email: str) -> ReviewRow:
         visibility=book.visibility,
         review_note=book.review_note,
         created_at=iso_time(book.created_ts) or "",
+    )
+
+
+def _text(value: Any) -> str:
+    """库里的可空文本 → 接口里的空串。
+
+    ``NULL`` 与空串在这个页面上看不出区别，但 pydantic 会在 ``NULL`` 上直接
+    校验失败——把一次正常的读取变成 500。``history.model``（本地检索降级）、
+    ``user_books.author`` 这些列都允许为 NULL。
+    """
+    return "" if value is None else str(value)
+
+
+def _history_item(row: dict[str, Any]) -> AdminHistoryItem:
+    return AdminHistoryItem(
+        id=int(row["id"]),
+        question=_text(row["question"]),
+        answer=_text(row["answer"]),
+        model=_text(row["model"]),
+        retrieved_count=int(row["retrieved_count"] or 0),
+        created_at=iso_time(row["created_ts"]) or "",
+    )
+
+
+def _shelf_item(row: dict[str, Any]) -> AdminShelfItem:
+    return AdminShelfItem(
+        id=int(row["id"]),
+        title=_text(row["title"]),
+        author=_text(row["author"]),
+        year=_text(row["year"]),
+        status=_text(row["status"]),
+        visibility=_text(row["visibility"]),
+        review_note=_text(row["review_note"]),
+        created_at=iso_time(row["created_ts"]) or "",
+    )
+
+
+def _trait_item(row: dict[str, Any]) -> AdminTraitItem:
+    return AdminTraitItem(
+        id=int(row["id"]),
+        category=_text(row["category"]),
+        content=_text(row["content"]),
+        evidence=_text(row["evidence"]),
+        confidence=float(row["confidence"] or 0.0),
+        updated_at=iso_time(row["updated_ts"]) or "",
     )
 
 
@@ -182,6 +232,35 @@ def delete_user(user_id: int, admin: User = Depends(require_admin)):
         raise _not_found("user_not_found", "用户不存在")
     get_admin_store().audit(user_id=admin.id, action="delete_user", target=f"user:{user_id}")
     return OkResponse()
+
+
+@router.get("/users/{user_id}", response_model=UserDetailResponse)
+def user_detail(
+    user_id: int = Path(..., description="用户的 id"),
+    history_limit: int = Query(
+        20, ge=1, le=100, description="返回多少条问答；书架固定最多 50 本"
+    ),
+    admin: User = Depends(require_admin),
+):
+    """某个用户的档案：资料、统计、最近的问答、书架、画像。
+
+    **先判存在、再取数据。** ``user_detail`` 那边是按 ``user_id`` 精确匹配的，
+    一个不存在的 id 会安静地返回一份"全零档案"——管理员看到的是"这个人什么
+    都没干过"，而真相是"没这个人"。这两件事的处置完全不同（一个是去翻库，
+    一个是他给错了 id），所以宁可多一次查询把话说准。
+    """
+    owner = get_auth_store().get_user(user_id)
+    if owner is None:
+        raise _not_found("user_not_found", "用户不存在")
+
+    data = get_admin_store().user_detail(user_id, history_limit=history_limit)
+    return UserDetailResponse(
+        user=_user_row(owner, shelf_books=data["stats"]["shelf_books"]),
+        stats=AdminUserStats(**data["stats"]),
+        history=[_history_item(row) for row in data["history"]],
+        books=[_shelf_item(row) for row in data["books"]],
+        traits=[_trait_item(row) for row in data["traits"]],
+    )
 
 
 # ── 新书审核 ────────────────────────────────────────────────────────────────

@@ -40,6 +40,12 @@ PROTECTED_COLUMNS: frozenset[tuple[str, str]] = frozenset({
 #: 单次查询审计记录的条数
 AUDIT_LIMIT = 100
 
+#: 用户详情里最多列几条问答 / 几本书。这是给人看的排查页面，不是导出——
+#: 一个人真用过几天就是几百条，全塞进页面只会让"最近在做什么"看不见。
+#: 各自的总数仍然照给（在 ``stats`` 里）。
+HISTORY_LIMIT = 20
+BOOK_LIMIT = 50
+
 
 class AdminError(DomainError):
     """可预期的管理操作错误（表不存在、列不存在、动了保护列）。"""
@@ -88,6 +94,72 @@ class AdminStore(StoreBase):
                 "db_bytes": self._db.size_bytes(),
                 "tables": len(self._table_names(conn)),
             }
+
+    # ── 用户详情 ────────────────────────────────────────────────────
+
+    def user_detail(
+        self,
+        user_id: int,
+        *,
+        history_limit: int = HISTORY_LIMIT,
+        book_limit: int = BOOK_LIMIT,
+    ) -> dict[str, Any]:
+        """某个人的档案：四个统计数 + 最近的问答、书架、全部画像。
+
+        四条查询共用一次 session。分成四次只是多三次开销；更要紧的是中途
+        库坏了会给出"一半有一半没有"的画面——那种半份档案比干脆报错更误导。
+
+        ``user_id`` 一律**精确匹配**，不碰 ``IS NULL`` 那一份：那是匿名访客
+        共用的一格，不是"所有人"，更不是"没有归属"。把它算进某个人名下，
+        管理员会看到一份凭空多出来的问答（同 ``routers/history.py`` 的口径）。
+        """
+        queried = int(user_id)
+        hist_cap = max(1, min(int(history_limit), MAX_ROWS))
+        book_cap = max(1, min(int(book_limit), MAX_ROWS))
+
+        with self._db.session() as conn:
+
+            def count(sql: str, params: Sequence[Any]) -> int:
+                return int(conn.execute(sql, tuple(params)).fetchone()["n"])
+
+            stats = {
+                "history": count(
+                    "SELECT COUNT(*) AS n FROM history WHERE user_id = ?", (queried,)
+                ),
+                "shelf_books": count(
+                    "SELECT COUNT(*) AS n FROM user_books WHERE user_id = ?", (queried,)
+                ),
+                "traits": count(
+                    "SELECT COUNT(*) AS n FROM traits WHERE user_id = ?", (queried,)
+                ),
+                "public_books": count(
+                    "SELECT COUNT(*) AS n FROM public_books WHERE from_user_id = ?", (queried,)
+                ),
+            }
+            history = conn.execute(
+                "SELECT id, question, answer, model, retrieved_count, created_ts "
+                "FROM history WHERE user_id = ? ORDER BY created_ts DESC, id DESC LIMIT ?",
+                (queried, hist_cap),
+            ).fetchall()
+            books = conn.execute(
+                "SELECT id, title, author, year, status, visibility, review_note, created_ts "
+                "FROM user_books WHERE user_id = ? ORDER BY created_ts DESC, id DESC LIMIT ?",
+                (queried, book_cap),
+            ).fetchall()
+            # 画像按把握大小排，不按时间：管理员想知道"这个人被看准了什么"，
+            # 一条 confidence 0.9 的比十条 0.3 的更该先看到。
+            traits = conn.execute(
+                "SELECT id, category, content, evidence, confidence, updated_ts "
+                "FROM traits WHERE user_id = ? ORDER BY confidence DESC, id DESC",
+                (queried,),
+            ).fetchall()
+
+        return {
+            "stats": stats,
+            "history": [dict(row) for row in history],
+            "books": [dict(row) for row in books],
+            "traits": [dict(row) for row in traits],
+        }
 
     # ── 直接操作数据库 ──────────────────────────────────────────────
 

@@ -456,6 +456,252 @@ def main() -> int:
             cdp.shot("ui-06-admin-%s.png" % tab)
 
         print()
+        print("=== 4b. 后台用户详情：点开一个人，四块内容都要看得见 ===")
+        # 这一段要证的是 jsdom 证不了的事：**点开某一行之后**还能不能渲染。
+        # 详情是"按需展开 + 按需拉数据"的分支，单元测试里那一步是 mock 出来的，
+        # 而 mock 正好看不见"字段对不上"和"展开之后才炸"这两类问题。
+        #
+        # 数据自己造、自己收。刻意造**两种**档案：
+        #
+        #   · 一份全空的（临时注册的新账号）——空态文案只有真的打开一份空档案才
+        #     看得见，而"空着不留一片白"正是这一页最容易悄悄坏掉的地方
+        #     （少写一句提示，谁都不会报错）；
+        #   · 一份有内容的（挂在自己名下：一条问答 + 一条画像 + 一本书）。
+        #
+        # 造数据走页面里的 fetch，不直接摸 sqlite：本脚本的定位是"从外面敲门"，
+        # 而且这样带的是**真实会话 cookie**。注册那一步必须 `credentials: 'omit'`
+        # ——注册接口会给响应下发 Set-Cookie，不 omit 的话浏览器会顺手把我从
+        # 管理员换成刚注册的那个人，后面几段全会莫名其妙地掉权限。
+        PROBE_EMAIL = "uidetail-probe@example.com"
+        PROBE_PASSWORD = "probe-pass-2026"
+        PROBE_Q = "【探针】详情面板要把这句话显示出来"
+        PROBE_A = "【探针】回答正文——展开之后这一段要能被读到。"
+        PROBE_EVIDENCE = "【探针】依据：他说过想早睡"
+        PROBE_TRAIT = "【探针】偏好早起读书"
+        PROBE_BOOK = "【探针】详情面板之书"
+
+        click_detail = """
+        (function (email) {
+          var btns = Array.prototype.slice.call(document.querySelectorAll('button'))
+            .filter(function (b) { return (b.textContent || '').trim() === '详情'; });
+          for (var i = 0; i < btns.length; i++) {
+            var p = btns[i].parentElement;
+            while (p && p !== document.body) {
+              var text = p.innerText || '';
+              // 认"只含一个 @ 的最近祖先"：一张卡片里只有一个邮箱，而列表容器
+              // 里装着全部人的。按跳数判会随布局层数变化而失效，这个判据不会。
+              if (text.indexOf(email) >= 0 && (text.match(/@/g) || []).length === 1) {
+                btns[i].click();
+                return true;
+              }
+              p = p.parentElement;
+            }
+          }
+          return false;
+        })(%s)
+        """
+
+        def click_button(label):
+            """点一个文案**完全等于** `label` 的按钮。"""
+            return cdp.evaluate(
+                "(function (label) {"
+                "  var b = Array.prototype.slice.call(document.querySelectorAll('button'))"
+                "    .filter(function (x) { return (x.textContent || '').trim() === label; })[0];"
+                "  if (!b) return false; b.click(); return true;"
+                "})(%s)" % json.dumps(label))
+
+        def stat_of(label):
+            """读详情里某一格统计的数字。`None` = 那一格没渲染出来。
+
+            统计格是两个相邻的 `<p>`（标签 + 数字），所以按标签找到它、再看它
+            的兄弟节点——比"在整页里找一个数字"稳得多。
+            """
+            value = cdp.evaluate("""
+            (function (label) {
+              var ps = Array.prototype.slice.call(document.querySelectorAll('p'));
+              for (var i = 0; i < ps.length; i++) {
+                if ((ps[i].textContent || '').trim() !== label) continue;
+                var sib = ps[i].nextElementSibling;
+                return sib ? (sib.textContent || '').trim() : null;
+              }
+              return null;
+            })(%s)
+            """ % json.dumps(label))
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def shoot_detail(name):
+            """截一张详情面板的图。
+
+            拍之前先把它滚进视口：详情是**贴着那一行**展开的，而这一页很长的
+            列表里人越多、自己排得越靠后——不滚的话截出来是一屏别人的卡片，
+            而断言明明是绿的。那种截图比没有更有害，它看着像"详情没渲染"。
+            """
+            cdp.evaluate("""
+            (function () {
+              var b = document.querySelector('button[aria-expanded="true"]');
+              if (b) b.scrollIntoView({ block: 'start' });
+            })()
+            """)
+            cdp.pump(0.35)
+            cdp.shot(name)
+
+        def cleanup_detail(ids):
+            """把这一段造的东西删干净。**清理失败不改变检查结论**，但要打出来：
+            留在库里的是探针数据，下次跑就会看到两条。"""
+            statuses = cdp.evaluate("""
+            (async function (ids) {
+              const del = (path) => fetch(path, {
+                method: 'DELETE', credentials: 'same-origin' });
+              const out = [];
+              if (ids.history) out.push(['history', (await del(
+                '/api/admin/db/tables/history/rows/' + ids.history)).status]);
+              if (ids.trait) out.push(['traits', (await del(
+                '/api/admin/db/tables/traits/rows/' + ids.trait)).status]);
+              if (ids.book) out.push(['book', (await del(
+                '/api/shelf/books/' + ids.book)).status]);
+              if (ids.user) out.push(['user', (await del(
+                '/api/admin/users/' + ids.user)).status]);
+              return out;
+            })(%s)
+            """ % json.dumps(ids))
+            print("   清理：%s" % (statuses,))
+
+        ids: dict = {}
+        try:
+            seeded = cdp.evaluate("""
+            (async function () {
+              const r = await fetch('/api/admin/users', { credentials: 'same-origin' });
+              const rows = await r.json();
+              const me = rows.find(u => u.email === %s);
+              if (!me) return null;
+              const now = Date.now() / 1000;
+              const post = async (path, body) => {
+                const res = await fetch(path, {
+                  method: 'POST', credentials: 'same-origin',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(body),
+                });
+                return { status: res.status, data: await res.json() };
+              };
+              const h = await post('/api/admin/db/tables/history/rows', {
+                user_id: me.id, question: %s, answer: %s,
+                model: 'probe-model', retrieved_count: 7, created_ts: now,
+              });
+              const t = await post('/api/admin/db/tables/traits/rows', {
+                user_id: me.id, category: '喜好', content: %s, evidence: %s,
+                confidence: 0.87, created_ts: now, updated_ts: now,
+              });
+              const b = await post('/api/shelf/books', {
+                title: %s, author: '检查者', year: '2026', cover_url: '',
+                source_key: '', source: 'ui_check_detail', summary: '探针',
+                subjects: ['测试'], with_guide: false,
+              });
+              return {
+                id: me.id,
+                history: h.data.rowid, history_status: h.status,
+                trait: t.data.rowid, trait_status: t.status,
+                book: b.data.id, book_status: b.status,
+              };
+            })()
+            """ % (json.dumps(admin_email), json.dumps(PROBE_Q), json.dumps(PROBE_A),
+                   json.dumps(PROBE_TRAIT), json.dumps(PROBE_EVIDENCE),
+                   json.dumps(PROBE_BOOK)))
+            seeded = seeded or {}
+            ids = {k: seeded.get(k) for k in ("history", "trait", "book")}
+            check("造出一份有内容的档案（问答 + 画像 + 书架各一条）",
+                  seeded.get("history_status") == 201
+                  and seeded.get("trait_status") == 201
+                  and seeded.get("book_status") == 201,
+                  "history=%s traits=%s shelf=%s" % (
+                      seeded.get("history_status"),
+                      seeded.get("trait_status"),
+                      seeded.get("book_status")))
+
+            registered = cdp.evaluate("""
+            (async function () {
+              const r = await fetch('/api/auth/register', {
+                method: 'POST', credentials: 'omit',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: %s, password: %s, display_name: '探针' }),
+              });
+              return r.status;
+            })()
+            """ % (json.dumps(PROBE_EMAIL), json.dumps(PROBE_PASSWORD)))
+            # 409 = 上一次跑留下的（脚本被中断过）。复用它继续测，别因此报失败。
+            check("有一个全新的空账号可供对照", registered in (201, 409), registered)
+            probe_id = cdp.evaluate("""
+            (async function () {
+              const r = await fetch('/api/admin/users', { credentials: 'same-origin' });
+              const rows = await r.json();
+              const u = rows.find(x => x.email === %s);
+              return u ? u.id : null;
+            })()
+            """ % json.dumps(PROBE_EMAIL))
+            check("空账号出现在后台用户列表里", isinstance(probe_id, int), probe_id)
+            ids["user"] = probe_id
+
+            cdp.goto("/admin")
+            check("后台加载出总览", cdp.wait_for("document.body.innerText.indexOf('今日问答') >= 0"))
+            check("能切到「用户」页签", click_button("用户"))
+            check("用户列表渲染出来",
+                  cdp.wait_for("document.body.innerText.indexOf('设为管理员') >= 0"))
+
+            # —— 空档案：四块都要有话说
+            check("能点开空账号的「详情」",
+                  cdp.evaluate(click_detail % json.dumps(PROBE_EMAIL)))
+            check("详情面板打开（显示「注册于」）",
+                  cdp.wait_for("document.body.innerText.indexOf('注册于') >= 0", timeout=10))
+            for text in ("这个人还没问过什么", "书架是空的", "还没有归纳出画像"):
+                check("空档案里「%s」有话说" % text,
+                      cdp.evaluate("document.body.innerText.indexOf(%s) >= 0"
+                                   % json.dumps(text)))
+            check("空档案不显示「看回答」（没有回答可展开）",
+                  cdp.evaluate("document.body.innerText.indexOf('看回答') < 0"))
+            check("空档案的问答数是 0", stat_of("问答记录") == 0, stat_of("问答记录"))
+            shoot_detail("ui-06b-admin-detail-empty.png")
+            check("点「收起」能关掉详情",
+                  click_button("收起")
+                  and cdp.wait_for("document.body.innerText.indexOf('注册于') < 0", timeout=6))
+
+            # —— 有内容的档案：三块都要真的渲染出来
+            check("能点开自己的「详情」",
+                  cdp.evaluate(click_detail % json.dumps(admin_email)))
+            check("详情里显示探针问的那句话",
+                  cdp.wait_for("document.body.innerText.indexOf(%s) >= 0"
+                               % json.dumps(PROBE_Q), timeout=10))
+            check("详情里的问答数 ≥ 1", (stat_of("问答记录") or 0) >= 1, stat_of("问答记录"))
+            check("书架那一块列出了探针那本书",
+                  cdp.evaluate("document.body.innerText.indexOf(%s) >= 0"
+                               % json.dumps(PROBE_BOOK)))
+            check("画像那一块列出了探针那条特征，并带上依据",
+                  cdp.evaluate("document.body.innerText.indexOf(%s) >= 0 && "
+                               "document.body.innerText.indexOf('依据：') >= 0"
+                               % json.dumps(PROBE_TRAIT)))
+            check("长回答默认收起（有「看回答」可点）",
+                  cdp.evaluate("document.body.innerText.indexOf('看回答') >= 0"))
+            # 展开之后才断言正文可见：`innerText` 只算渲染出来的文本，折叠的
+            # `<details>` 里那段读不到——展开前断言"看不见"也一样成立，但那条
+            # 断言依赖浏览器的折叠实现细节，脆弱；只留"展开后读得到"这一半。
+            expanded = cdp.evaluate("""
+            (function () {
+              var s = Array.prototype.slice.call(document.querySelectorAll('summary'))
+                .filter(function (x) { return (x.textContent || '').trim() === '看回答'; })[0];
+              if (!s) return false;
+              s.click();
+              return true;
+            })()
+            """)
+            check("点「看回答」能读到回答全文",
+                  expanded and cdp.wait_for("document.body.innerText.indexOf(%s) >= 0"
+                                            % json.dumps(PROBE_A), timeout=6))
+            shoot_detail("ui-06c-admin-detail-filled.png")
+        finally:
+            cleanup_detail(ids)
+
+        print()
         print("=== 5. 登录之后：书架首页与我的书架都进来了 ===")
         # 这一段是第 2 段的反面。少了它，第 2 段全绿也证明不了任何事——
         # 整站都坏在登录页上时，同样"每一个路径都把人送到登录页"。
@@ -880,6 +1126,34 @@ def main() -> int:
               problems[:4] if problems else "")
 
     finally:
+        # 把探针数据收干净。
+        #
+        # 第 7 段那本「UI 检查之书」原先留着不删（"反正是测试库"），代价是每跑
+        # 一次就多一本——实测本地已攒到 20 本，把后台详情页的书架撑满，真书会被
+        # 挤到 50 本的截断线外。所以这里顺手把早先跑剩下的也一并带走。
+        #
+        # 判据用**书名**，不能用 `source`：POST 时写进去的那个字段，
+        # `ShelfBookOut` **不回传**（它是入库时的来源标记，不是给界面看的）。
+        # 第一版按 `b.source === 'ui_check'` 筛，结果永远筛出 0 本——那种
+        # "静默地什么也没做"最难发现，所以这里把清掉的条数打出来。
+        # 清不掉也不改变检查结论，打一声就行。
+        try:
+            removed = cdp.evaluate("""
+            (async function () {
+              const r = await fetch('/api/shelf', { credentials: 'same-origin' });
+              const data = await r.json();
+              const mine = (data.books || []).filter(
+                b => b.title === 'UI 检查之书' || b.title === '【探针】详情面板之书');
+              for (const b of mine) {
+                await fetch('/api/shelf/books/' + b.id, {
+                  method: 'DELETE', credentials: 'same-origin' });
+              }
+              return mine.length;
+            })()
+            """)
+            print("清理探针书：%s 本" % removed)
+        except Exception as exc:  # noqa: BLE001 — 收尾失败不该把检查结论说成失败
+            print("清理探针书失败：%s" % exc)
         process.terminate()
 
     print()

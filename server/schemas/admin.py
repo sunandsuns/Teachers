@@ -31,6 +31,90 @@ class ResetPasswordRequest(BaseModel):
     new_password: str = Field(..., max_length=200)
 
 
+# ── 用户详情 ────────────────────────────────────────────────────────────────
+
+
+class AdminUserStats(BaseModel):
+    """一个人名下有多少东西。四个数都按 ``user_id`` 精确匹配。
+
+    不看 ``IS NULL`` 那一份：``user_id IS NULL`` 是**匿名访客**共用的一格，
+    不是"所有用户"，也不是"没有归属"。把它算进某个人名下，会让管理员
+    看到一份凭空多出来的问答。
+    """
+
+    model_config = ConfigDict(title="AdminUserStats")
+
+    history: int = Field(..., description="问答条数")
+    shelf_books: int = Field(..., description="私人书架上的书")
+    traits: int = Field(..., description="画像特征条数")
+    public_books: int = Field(..., description="已进入公共书架的贡献")
+
+
+class AdminHistoryItem(BaseModel):
+    """这个人问过的一次。"""
+
+    model_config = ConfigDict(title="AdminHistoryItem")
+
+    id: int
+    question: str = Field(..., description="用户问的那一句话")
+    answer: str = Field(..., description="当时的回答全文")
+    model: str = Field("", description="产出回答的模型；空串表示这次是本地检索降级")
+    retrieved_count: int = Field(..., description="这次检索命中了多少段经典")
+    created_at: str
+
+
+class AdminShelfItem(BaseModel):
+    """这个人书架上的一本。"""
+
+    model_config = ConfigDict(title="AdminShelfItem")
+
+    id: int
+    title: str
+    author: str
+    year: str
+    status: str = Field(..., description="阅读状态：wish / reading / done")
+    visibility: str = Field(..., description="private / pending / public / rejected")
+    review_note: str = Field(..., description="驳回原因，只有被驳回的书才有")
+    created_at: str
+
+
+class AdminTraitItem(BaseModel):
+    """画像里的一条。``evidence`` 是依据——用户说过的哪句话让模型这么判断。"""
+
+    model_config = ConfigDict(title="AdminTraitItem")
+
+    id: int
+    category: str = Field(..., description="分类，如「性格」「喜好」")
+    content: str = Field(..., description="归纳出来的那一句话")
+    evidence: str = Field(..., description="依据——用户说过的哪句话让模型这么判断")
+    confidence: float = Field(..., description="把握，0–1")
+    updated_at: str
+
+
+class UserDetailResponse(BaseModel):
+    """一个人的完整档案：资料、统计、最近的问答、书架、画像。
+
+    ``history`` 与 ``books`` 都是**截断过的**（见 ``services/admin.py`` 的
+    ``HISTORY_LIMIT`` / ``BOOK_LIMIT``），各自的总数在 ``stats`` 里。分开
+    给这两个数是有意的：总数说明"这个人真用过"，列表说明"他最近在做什么"，
+    而把几万条问答塞进一个调试用的页面没有意义。
+
+    这个接口**不做降级**：库读不到就是 503。给管理员看一份空档案，
+    比报错危险得多——他会以为这个人的东西全没了（同 ``routers/admin.py``
+    开头那条理由）。
+    """
+
+    model_config = ConfigDict(title="AdminUserDetail")
+
+    user: UserRow = Field(..., description="这个人的账号资料")
+    stats: AdminUserStats = Field(..., description="四个统计数")
+    history: list[AdminHistoryItem] = Field(
+        ..., description="最近的问答，条数由 history_limit 决定"
+    )
+    books: list[AdminShelfItem] = Field(..., description="书架上的书，最多 50 本")
+    traits: list[AdminTraitItem] = Field(..., description="全部画像，按把握降序")
+
+
 class ReviewRow(BaseModel):
     id: int = Field(..., description="用户书架里那条记录的 id")
     user_id: int

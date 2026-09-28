@@ -18,6 +18,7 @@ vi.mock('../api/client', async (importOriginal) => {
       me: vi.fn(),
       adminOverview: vi.fn(),
       adminUsers: vi.fn(),
+      adminUserDetail: vi.fn(),
       adminReviewQueue: vi.fn(),
       adminReview: vi.fn(),
       adminPublicBooks: vi.fn(),
@@ -88,6 +89,44 @@ const REVIEW_ROW = {
   created_at: '2026-09-24T10:00:00+00:00',
 }
 
+/** 一个用户的完整档案。字段与 `AdminUserDetail` 一一对应——少一个 tsc 就拦下。 */
+const DETAIL = {
+  user: PLAIN,
+  stats: { history: 1, shelf_books: 1, traits: 1, public_books: 0 },
+  history: [
+    {
+      id: 1,
+      question: '我最近很焦虑',
+      answer: '先说说是哪一件事让你睡不好。',
+      model: 'kimi-k3',
+      retrieved_count: 2,
+      created_at: '2026-09-24T11:00:00+00:00',
+    },
+  ],
+  books: [
+    {
+      id: 1,
+      title: '活着',
+      author: '余华',
+      year: '2012',
+      status: 'reading',
+      visibility: 'private',
+      review_note: '',
+      created_at: '2026-09-24T10:30:00+00:00',
+    },
+  ],
+  traits: [
+    {
+      id: 1,
+      category: '性格',
+      content: '做事偏谨慎',
+      evidence: '我说我总要犹豫很久',
+      confidence: 0.7,
+      updated_at: '2026-09-24T10:40:00+00:00',
+    },
+  ],
+}
+
 function renderAdmin() {
   return render(
     <I18nProvider>
@@ -104,6 +143,7 @@ function renderAdmin() {
 function stubAdmin() {
   mockedApi.adminOverview.mockResolvedValue(OVERVIEW)
   mockedApi.adminUsers.mockResolvedValue([ADMIN, PLAIN])
+  mockedApi.adminUserDetail.mockResolvedValue(DETAIL)
   mockedApi.adminReviewQueue.mockResolvedValue([])
   mockedApi.adminPublicBooks.mockResolvedValue([])
   mockedApi.adminTables.mockResolvedValue([{ name: 'users', rows: 3 }])
@@ -273,6 +313,37 @@ describe('用户管理', () => {
 
     await user.type(input, 'enough123')
     expect(save).toBeEnabled()
+  })
+
+  it('点开详情，问答、书架、画像都聚在这一处', async () => {
+    const user = await openUsers()
+    // 列表顺序是 [自己, bob]，详情就跟在 bob 那一行下面
+    await user.click(screen.getAllByRole('button', { name: '详情' })[1])
+
+    expect(await screen.findByText('我最近很焦虑')).toBeInTheDocument()
+    expect(screen.getByText('活着')).toBeInTheDocument()
+    expect(screen.getByText('做事偏谨慎')).toBeInTheDocument()
+    expect(mockedApi.adminUserDetail).toHaveBeenCalledWith(5)
+  })
+
+  it('一次只展开一个人的详情', async () => {
+    const user = await openUsers()
+    await user.click(screen.getAllByRole('button', { name: '详情' })[1])
+    await waitFor(() => expect(mockedApi.adminUserDetail).toHaveBeenCalledWith(5))
+    expect(screen.getAllByRole('button', { name: '收起' })).toHaveLength(1)
+
+    await user.click(screen.getAllByRole('button', { name: '详情' })[0])
+    await waitFor(() => expect(mockedApi.adminUserDetail).toHaveBeenCalledWith(1))
+    // 上一个已经收起了：几个人的问答同时铺开，这一页就没法看了
+    expect(screen.getAllByRole('button', { name: '收起' })).toHaveLength(1)
+  })
+
+  it('详情读不到时如实说，而不是显示成"这个人什么都没干过"', async () => {
+    mockedApi.adminUserDetail.mockRejectedValue(new Error('数据库暂不可用，请稍后再试'))
+    const user = await openUsers()
+    await user.click(screen.getAllByRole('button', { name: '详情' })[1])
+
+    expect(await screen.findByText('数据库暂不可用，请稍后再试')).toBeInTheDocument()
   })
 })
 

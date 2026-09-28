@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { api, type AdminUserRow } from '../../api/client'
-import { Badge, Button, Card, ConfirmBar } from '../../components/ui'
+import { Badge, Button, Card, Collapse, ConfirmBar } from '../../components/ui'
 import { ErrorBox, Loading } from '../../components/Status'
 import { useAuth } from '../auth/AuthProvider'
 import { useI18n } from '../../i18n'
+import UserDetailPanel from './UserDetailPanel'
 import { shortTime } from './constants'
 
 interface UsersPanelProps {
@@ -34,6 +35,9 @@ export default function UsersPanel({ rows, loading, error, onChanged }: UsersPan
   const [failure, setFailure] = useState('')
   const [resetting, setResetting] = useState<AdminUserRow | null>(null)
   const [deleting, setDeleting] = useState<AdminUserRow | null>(null)
+  /** 正在展开详情的那个人。**一次只开一个**——同时铺开几个人的问答，
+   *  这页就没法看了，而且他多半也只需要比着看某一个。 */
+  const [detailOf, setDetailOf] = useState<number | null>(null)
 
   if (error) return <ErrorBox message={error} />
   if (loading) return <Loading />
@@ -95,48 +99,69 @@ export default function UsersPanel({ rows, loading, error, onChanged }: UsersPan
       <div className="space-y-2">
         {users.map(row => {
           const isMe = me?.id === row.id
+          const opened = detailOf === row.id
           return (
-            <Card key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
-              <span className="font-mono text-xs text-ink-300 tabular-nums">#{row.id}</span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm text-ink-800">
-                  {row.email}
-                  {isMe && <span className="ml-1.5 text-xs text-ink-400">（{t('admin.you')}）</span>}
+            // 外层这一层只为"卡片 + 它自己的详情"成一组：详情要贴着这一行展开，
+            // 而不是飘到列表末尾去。
+            <div key={row.id} className="space-y-2">
+              <Card className="flex flex-wrap items-center gap-x-3 gap-y-2 p-3">
+                <span className="font-mono text-xs text-ink-300 tabular-nums">#{row.id}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm text-ink-800">
+                    {row.email}
+                    {isMe && <span className="ml-1.5 text-xs text-ink-400">（{t('admin.you')}）</span>}
+                  </span>
+                  <span className="block text-xs text-ink-400">
+                    {[row.name, t('admin.shelfCount', { count: row.shelf_books }), shortTime(row.created_at)]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
                 </span>
-                <span className="block text-xs text-ink-400">
-                  {[row.name, t('admin.shelfCount', { count: row.shelf_books }), shortTime(row.created_at)]
-                    .filter(Boolean)
-                    .join(' · ')}
+
+                {row.is_admin && <Badge tone="brand">{t('admin.stat.admins')}</Badge>}
+
+                <span className="flex shrink-0 items-center gap-1">
+                  {/* 读操作排在写操作前面：点进来看一眼是最常做的事，
+                      而"取消管理员""删除"点错了不好收场。 */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-expanded={opened}
+                    onClick={() => setDetailOf(opened ? null : row.id)}
+                  >
+                    {t('admin.detail')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={isMe || busy === row.id}
+                    title={isMe ? t('admin.you') : undefined}
+                    onClick={() => void toggleAdmin(row)}
+                  >
+                    {row.is_admin ? t('admin.revokeAdmin') : t('admin.grantAdmin')}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setResetting(row)}>
+                    {t('admin.resetPassword')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-ink-400 hover:text-cinnabar-600"
+                    disabled={isMe}
+                    title={isMe ? t('admin.you') : undefined}
+                    onClick={() => setDeleting(row)}
+                  >
+                    {t('admin.deleteUser')}
+                  </Button>
                 </span>
-              </span>
+              </Card>
 
-              {row.is_admin && <Badge tone="brand">{t('admin.stat.admins')}</Badge>}
-
-              <span className="flex shrink-0 items-center gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={isMe || busy === row.id}
-                  title={isMe ? t('admin.you') : undefined}
-                  onClick={() => void toggleAdmin(row)}
-                >
-                  {row.is_admin ? t('admin.revokeAdmin') : t('admin.grantAdmin')}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setResetting(row)}>
-                  {t('admin.resetPassword')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-ink-400 hover:text-cinnabar-600"
-                  disabled={isMe}
-                  title={isMe ? t('admin.you') : undefined}
-                  onClick={() => setDeleting(row)}
-                >
-                  {t('admin.deleteUser')}
-                </Button>
-              </span>
-            </Card>
+              {opened && (
+                <Collapse>
+                  <UserDetailPanel userId={row.id} onClose={() => setDetailOf(null)} />
+                </Collapse>
+              )}
+            </div>
           )
         })}
       </div>

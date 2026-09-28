@@ -428,8 +428,13 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 这条规则反过来约束了写法：**偏离默认的地方必须自己 `try/except`**，于是"哪里在降级"在代码里
 一眼可见。声明里也一致：降级的那两组不声明 503。
 
-> 想看完整契约：跑起来之后开 `/docs`（Swagger UI），或 `python packaging/export_openapi.py`
-> 导出一份 `openapi.json`。
+> 完整契约有三种形态，各有各的用处：**人读的 [`docs/API.md`](docs/API.md)**（按模块铺开，
+> 每个接口都带参数范围、响应字段与错误码）、跑起来之后的 `/docs`（Swagger UI，能点着试）、
+> 以及 `python packaging/export_openapi.py` 导出的 `openapi.json`（给工具吃）。
+> Markdown 那份由 `python packaging/gen_api_docs.py` 从 `app.openapi()` 生成，
+> 说明都取自路由的 docstring 与字段的 `description`，所以**别手工改那份文件**。
+>
+> 下面这张表只是"一眼看全有哪些接口"，字段级的细节在 `docs/API.md`。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -500,6 +505,7 @@ python -m server.services.llm --no-proxy   # 强制直连，不走系统代理
 | GET | `/api/admin/review` | 待审队列（含提交人邮箱） |
 | POST | `/api/admin/review/{book_id}` | 批准或驳回 `{approve, note?, category?}`。批准后进公共书架，书号加 `u` 前缀（`u01`…），**不与内置的 `01`–`15` 撞车** |
 | GET | `/api/admin/users` | 用户列表（含各自藏书数） |
+| GET | `/api/admin/users/{id}` | **单个用户的详情**：账号资料 + 四个统计数 + 最近的问答 / 书架 / 画像（每段都截断，各自的总数另给）。不存在的 id 是 **404**，不是一份空档案 |
 | PATCH | `/api/admin/users/{id}` | 授予/取消管理员。**不能操作自己**，400 |
 | POST | `/api/admin/users/{id}/password` | 重置他人密码 |
 | DELETE | `/api/admin/users/{id}` | 删用户。**不能删自己**，400 |
@@ -648,18 +654,25 @@ python packaging/export_openapi.py     # 写到根目录 openapi.json（已 giti
 这条真实链路，先 `python run.py` 起服务，再另开一个终端：
 
 ```bash
-python smoke.py        # API 层：194 项，走真实 HTTP + vite 代理
-python ui_check.py     # 界面层：83 项，CDP 驱动真实 Chrome
+python smoke.py        # API 层：202 项，走真实 HTTP + vite 代理
+python ui_check.py     # 界面层：104 项，CDP 驱动真实 Chrome
 ```
 
 > 两个脚本跑完都会在自己的结论行报项数（"共 N 项，失败 M 项"）。
 > 上面这两个数字是照它报的抄的——**别手改**。数字对不上就说明有检查被删掉了，
 > 而这是最容易悄悄发生的事：断言少一条，测试照样全绿。
 
+> **探针数据谁造谁收。** `ui_check.py` 造的东西（探针书、探针问答、探针画像、临时账号）
+> 跑完一律删掉——原先留着的那本「UI 检查之书」实测攒到 22 本，把后台用户详情的书架
+> 撑满、真书被挤出 50 本的截断线。`smoke.py` 注册的 `smoke+<时间戳>@example.com`
+> 账号目前**没有**清理，是已知遗留（跑多次之后后台用户列表会很长）。
+
 `smoke.py` 逐项检查：后端书目/章节/检索单元数与原典索引规模、前端页面可编译、vite 代理转发、
 寻章检索（含 `kind` 过滤与命中偏移定位）、原典分块与按偏移跳读、求教在时间预算内返回、
 感悟当日稳定性，以及**账号 → 加书 → 申请公开 → 管理员审核 → 进公共书架 → 别的用户可检索到**
-这整条链路（含越权与权限边界）。全部通过退出码为 0。
+这整条链路（含越权与权限边界），外加后台**用户详情**的接口契约（四格统计与用户列表口径必须
+一致、`history_limit` 只截列表不动总数、不存在的 id 是 404 而不是一份全零档案）。
+全部通过退出码为 0。
 
 > 它**第一件事就是登录**（管理员，凭据取 `.env` 的 `RSDS_ADMIN_EMAIL` /
 > `RSDS_ADMIN_PASSWORD`，没配则是内置账号的默认值）：账号体系上线后每个数据接口都要登录，
@@ -676,6 +689,11 @@ python ui_check.py     # 界面层：83 项，CDP 驱动真实 Chrome
 后台四个分页逐个切得动、书架卡片的状态药丸与可见性标识齐全、检索后给的是候选列表
 或一句可读的错误（而不是"没有找到"），以及**四个分页的入场动画真的生效**（总览
 `rise`、数据库 `fade-up`——读的是渲染出来的 `animationName`，不是元素上的类名）。
+
+**后台用户详情**单独实测一段（jsdom 里那一步是 mock 的，看不见"字段对不上"这类问题）：
+刻意造**两种**档案——一个全新空账号（四块空态各有话说、统计是 0、没有「看回答」可点），
+一份有内容的（问答原文可展开读到、书架列出那本书、画像带「依据：」）。数据经**后台自己的
+DB 接口**造（顺带验了那套插行接口），跑完删干净；顺带把历史遗留的探针书一并收走。
 
 **换模块的转场**单独量一遍真实曲线，而不是只看类名挂没挂对：点一下导航后按 ~45ms
 一档采 `transform` / `opacity`，确认起点透明且带横向位移、终点归零不留包含块、方向

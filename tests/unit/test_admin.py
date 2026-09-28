@@ -10,11 +10,21 @@ import pytest
 
 from server.services import book_search
 from server.services.book_search import BookCandidate, SearchOutcome
+from server.services.history import get_history_store
+from server.services.profile import get_profile_store
 
 PASSWORD = "goodpass123"
 ALICE = "alice@example.com"
+BOB = "bob@example.com"
 ADMIN_EMAIL = "admin@test.local"
 ADMIN_PASSWORD = "admin-test-pw"
+
+TRAIT = {
+    "category": "性格",
+    "content": "做事偏谨慎",
+    "evidence": "我说我总要犹豫很久",
+    "confidence": 0.7,
+}
 
 BOOK = BookCandidate(
     title="活着", author="余华", year="2012", source_key="OL25129388W",
@@ -36,6 +46,18 @@ def sign_in(client, email):
 
 def as_admin(client):
     return {"Authorization": f"Bearer {_token(client, ADMIN_EMAIL, ADMIN_PASSWORD)}"}
+
+
+def identity(client, email):
+    """注册并返回 ``(headers, user_id)``。
+
+    **id 不能写死**：启动时会先建内置管理员，它占掉 id=1。拿写死的 1 去查
+    详情，查到的是管理员名下那一份（空），测试会"通过"得毫无意义。所以从
+    ``/api/auth/me`` 现取。
+    """
+    headers = sign_in(client, email)
+    user_id = client.get("/api/auth/me", headers=headers).json()["user"]["id"]
+    return headers, user_id
 
 
 @pytest.fixture
@@ -70,6 +92,7 @@ class TestAccessControl:
     @pytest.mark.parametrize("path", [
         "/api/admin/overview",
         "/api/admin/users",
+        "/api/admin/users/1",      # 单个用户的详情，与列表页同一道门禁
         "/api/admin/review",
         "/api/admin/public",
         "/api/admin/db/tables",
@@ -83,6 +106,7 @@ class TestAccessControl:
     @pytest.mark.parametrize("path", [
         "/api/admin/overview",
         "/api/admin/users",
+        "/api/admin/users/1",      # 单个用户的详情，与列表页同一道门禁
         "/api/admin/review",
         "/api/admin/public",
         "/api/admin/db/tables",
@@ -199,6 +223,112 @@ class TestUserManagement:
         assert client.delete("/api/admin/users/99999", headers=admin).status_code == 404
         assert client.patch("/api/admin/users/99999", json={"is_admin": True},
                             headers=admin).status_code == 404
+
+
+class TestUserDetail:
+    """用户详情：把一个人散在四张表里的东西聚到一处，且一样都不串到别人头上。
+
+    最后一层隐私边界在这里：管理员**可以**看所有人的数据（这正是这个页面的
+    用途），但"可以看"不等于"可以看错"——把他的问答和别人的混在一起，
+    管理员会据此做出完全错误的处置。
+    """
+
+    def test_gathers_questions_shelf_and_traits(self, client, offline):
+        admin = as_admin(client)
+        alice, alice_id = identity(client, ALICE)
+        client.post("/api/ask", json={"question": "我最近很焦虑"}, headers=alice)
+        add_book(client, alice)
+        get_profile_store().upsert([TRAIT], user_id=alice_id)
+
+        data = client.get(f"/api/admin/users/{alice_id}", headers=admin).json()
+
+        assert data["user"]["email"] == ALICE
+        assert data["stats"] == {
+            "history": 1, "shelf_books": 1, "traits": 1, "public_books": 0,
+        }
+        assert [h["question"] for h in data["history"]] == ["我最近很焦虑"]
+        assert [b["title"] for b in data["books"]] == [BOOK.title]
+        assert [t["content"] for t in data["traits"]] == ["做事偏谨慎"]
+        # 画像要带上依据：管理员看到"做事偏谨慎"，得能知道模型是凭什么判的
+        assert data["traits"][0]["evidence"] == "我说我总要犹豫很久"
+
+    def test_does_not_mix_in_another_users_records(self, client, offline):
+        admin = as_admin(client)
+        alice, alice_id = identity(client, ALICE)
+        bob, _ = identity(client, BOB)
+        client.post("/api/ask", json={"question": "甲的问题"}, headers=alice)
+        client.post("/api/ask", json={"question": "乙的问题"}, headers=bob)
+        add_book(client, bob)
+
+        detail = client.get(f"/api/admin/users/{alice_id}", headers=admin).json()
+
+        assert [h["question"] for h in detail["history"]] == ["甲的问题"]
+        assert detail["stats"]["history"] == 1
+        assert detail["books"] == []          # bob 那本是 bob 的
+
+    def test_anonymous_history_is_not_attributed_to_anyone(self, client):
+        """``user_id IS NULL`` 是匿名访客共用的一格，不是"所有用户"。
+
+        把它算进某个人名下，管理员会看到一份凭空多出来的问答。（线上这一格
+        是真实存在的：匿名访客也能求教，记录落在 ``user_id IS NULL``。）
+        """
+        admin = as_admin(client)
+        _, alice_id = identity(client, ALICE)
+        get_history_store().save("匿名的困惑", "答", user_id=None)
+
+        detail = client.get(f"/api/admin/users/{alice_id}", headers=admin).json()
+
+        assert detail["stats"]["history"] == 0
+        assert detail["history"] == []
+
+    def test_history_is_truncated_but_the_total_is_not(self, client):
+        """列表截断，总数不截断——"这个人真用过"与"他最近在做什么"是两回事。"""
+        admin = as_admin(client)
+        alice, alice_id = identity(client, ALICE)
+        for i in range(5):
+            client.post("/api/ask", json={"question": f"第 {i} 问"}, headers=alice)
+
+        data = client.get(
+            f"/api/admin/users/{alice_id}?history_limit=2", headers=admin
+        ).json()
+
+        assert len(data["history"]) == 2
+        assert data["stats"]["history"] == 5
+
+    def test_newest_first(self, client):
+        admin = as_admin(client)
+        alice, alice_id = identity(client, ALICE)
+        for i in range(3):
+            client.post("/api/ask", json={"question": f"第 {i} 问"}, headers=alice)
+
+        data = client.get(f"/api/admin/users/{alice_id}", headers=admin).json()
+        assert [h["question"] for h in data["history"]] == ["第 2 问", "第 1 问", "第 0 问"]
+
+    def test_unknown_user_is_404(self, client):
+        """不存在的 id 要给 404，而不是一份"全零档案"。
+
+        后者看到的是"这个人什么都没干过"，而真相是"没这个人"——前者会让人
+        去翻库找数据，后者说明他给错了 id。
+        """
+        admin = as_admin(client)
+        resp = client.get("/api/admin/users/99999", headers=admin)
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["code"] == "user_not_found"
+
+    def test_traits_sorted_by_confidence(self, client):
+        """画像按把握排序：管理员想知道"这个人被看准了什么"，不是"最近抽到什么"。"""
+        admin = as_admin(client)
+        _, alice_id = identity(client, ALICE)
+        get_profile_store().upsert(
+            [
+                {"category": "爱好", "content": "喜欢读史", "evidence": "问过历史", "confidence": 0.4},
+                {"category": "性格", "content": "做事偏谨慎", "evidence": "总要犹豫", "confidence": 0.9},
+            ],
+            user_id=alice_id,
+        )
+
+        data = client.get(f"/api/admin/users/{alice_id}", headers=admin).json()
+        assert [t["content"] for t in data["traits"]] == ["做事偏谨慎", "喜欢读史"]
 
 
 class TestReviewFlow:

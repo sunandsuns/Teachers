@@ -862,6 +862,44 @@ def main():
         check("用户列表标出管理员",
               any(u["is_admin"] for u in users), [u["email"] for u in users])
 
+        # 用户详情：一次把"这个人是谁 + 干了什么"取回来。这里只守**接口契约**，
+        # 页面渲染交给 `ui_check.py`（jsdom 里那一步是 mock 的，看不见真东西）。
+        alice_row = next((u for u in users if u["email"] == email), None)
+        if alice_row:
+            code, detail = admin.call("/api/admin/users/%s" % alice_row["id"])
+            check("用户详情返回 200", code == 200, code)
+            check("详情里的资料就是这个人",
+                  detail.get("user", {}).get("email") == email, detail.get("user"))
+            check("详情带四个统计数",
+                  set(detail.get("stats", {})) ==
+                  {"history", "shelf_books", "traits", "public_books"},
+                  sorted(detail.get("stats", {})))
+            # 详情里的藏书数必须与用户列表那一列一致。两处各自查一次库，
+            # 口径一飘就会出现"列表说 1 本、详情说 0 本"——这种不一致极难被发现，
+            # 因为两边单独看都像是对的。
+            check("详情的藏书数与用户列表一致",
+                  detail["stats"]["shelf_books"] == alice_row["shelf_books"],
+                  (detail["stats"]["shelf_books"], alice_row["shelf_books"]))
+            check("详情里能看到刚加的那本书",
+                  any(b["title"] == "冒烟测试之书" for b in detail.get("books", [])),
+                  [b["title"] for b in detail.get("books", [])])
+            check("详情里能看到刚问过的那句话",
+                  any("冒烟问题" in h["question"] for h in detail.get("history", [])),
+                  [h["question"] for h in detail.get("history", [])][:3])
+
+            # 截断只能截列表，**不能把总数也截掉**——只列 20 条却不给总数，
+            # 管理员会以为这个人就问过 20 次。
+            code, one = admin.call(
+                "/api/admin/users/%s?history_limit=1" % alice_row["id"])
+            check("history_limit 只截列表、不动总数",
+                  code == 200 and len(one["history"]) <= 1
+                  and one["stats"]["history"] == detail["stats"]["history"],
+                  (code, len(one.get("history") or []),
+                   one.get("stats", {}).get("history")))
+
+        code, _ = admin.call("/api/admin/users/999999")
+        check("不存在的用户返回 404（而不是一份全零档案）", code == 404, code)
+
         tables = admin.call("/api/admin/db/tables")[1]
         names = {t["name"] for t in tables}
         check("数据库表列表含 users / user_books / public_books",
