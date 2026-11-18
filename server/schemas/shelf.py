@@ -79,6 +79,12 @@ class ShelfBookOut(BaseModel):
     subjects: list[str]
     guide: str = Field(..., description="模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串")
     has_guide: bool = Field(..., description="导读是否已生成。为 false 时前端值得过几秒再拉一次")
+    guide_error: str = Field(
+        "",
+        description="上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。"
+                    "生成失败不会自动重试，所以非空时前端应当把它显示出来，"
+                    "并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`）",
+    )
     status: str
     visibility: str
     review_note: str = Field(..., description="驳回原因，只有 visibility 为 rejected 时有内容")

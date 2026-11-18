@@ -220,3 +220,17 @@ describe('登录完成后回到原来那一页', () => {
     await waitFor(() => expect(mockedApi.listShelf).toHaveBeenCalled())
   })
 })
+
+describe('地址敲错、链接过期', () => {
+  it('给一页说明和一条回去的路，而不是一张白纸', async () => {
+    // 原先路由表里**没有通配项**：未知路径命中不了任何一条路由，连 `AppShell`
+    // 都不渲染——整屏纯白，顶栏、页脚、导航一个都没有，用户唯一的出路是手动
+    // 改地址栏。这里同时钉住三件事：有话说、有出口、顶栏还在。
+    renderAt('/definitely-not-a-route', VIEWER)
+
+    expect(await screen.findByText('没有这一页')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '回到书架' })).toBeInTheDocument()
+    // 顶栏在 → 用户从导航就能回任何一页，不必依赖那个按钮
+    expect(screen.getByRole('navigation')).toBeInTheDocument()
+  })
+})

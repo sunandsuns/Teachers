@@ -65,6 +65,7 @@ class ShelfBook:
     summary: str
     subjects: tuple[str, ...]
     guide: str
+    guide_error: str
     status: str
     visibility: str
     review_note: str
@@ -147,6 +148,7 @@ def _row_to_book(row: Any) -> ShelfBook:
         summary=str(row["summary"] or ""),
         subjects=_parse_subjects(row["subjects"]),
         guide=str(row["guide"] or ""),
+        guide_error=str(row["guide_error"] or ""),
         status=str(row["status"] or "wish"),
         visibility=str(row["visibility"] or VISIBILITY_PRIVATE),
         review_note=str(row["review_note"] or ""),
@@ -515,14 +517,32 @@ class UserBookStore(StoreBase):
         """写入导读。给后台任务用——加书时先入库、后补导读，用户不必等模型。
 
         空导读直接拒绝：它只会把"还没生成"和"生成了但为空"混成同一种状态。
+
+        写成功时**顺手把 `guide_error` 清空**，两件事在一条 UPDATE 里完成：
+        分开写的话，中间那一下"有导读、但同时挂着上次的失败原因"，界面会
+        同时显示"能读"和"上次失败"。
         """
         text = (guide or "").strip()
         if not text:
             return False
         with self._db.session() as conn:
             cursor = conn.execute(
-                "UPDATE user_books SET guide = ?, updated_ts = ? WHERE id = ?",
+                "UPDATE user_books SET guide = ?, guide_error = '', updated_ts = ? WHERE id = ?",
                 (text, time.time(), int(book_id)),
+            )
+            return cursor.rowcount > 0
+
+    def set_guide_error(self, book_id: int, error: str) -> bool:
+        """记下导读生成的失败原因。传空串就是清掉（重新生成之前先清）。
+
+        **为什么非记不可**：导读失败是静默的——后台任务只跑一次，不会自己重来，
+        而这本书除了导读没有任何可读内容。不落这一笔，界面就只能说
+        "这本书还没有导读"，用户既不知道出了什么事，也没有重试的落脚点。
+        """
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "UPDATE user_books SET guide_error = ?, updated_ts = ? WHERE id = ?",
+                ((error or "").strip(), time.time(), int(book_id)),
             )
             return cursor.rowcount > 0
 

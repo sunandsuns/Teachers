@@ -30,6 +30,17 @@ const ZH = {
   'app.subtitle': '经典智慧知识库',
   'app.skipToContent': '跳到正文',
   'app.footer': '人生导师 · 中国传统经典智慧知识库',
+
+  // ── 找不到这一页 ────────────────────────────────────────────
+  // 地址敲错、链接过期时落到这里。原先没有这一页，未知路由渲染出的是**整屏
+  // 空白**（连顶栏都没有），用户除了改地址栏没有出路——所以这里三句话都要说，
+  // 而且要给一个能点的出口。
+  'notFound.title': '没有这一页',
+  'notFound.description': '地址可能敲错了，或者这个链接已经过期',
+  'notFound.empty': '这里什么也没有',
+  'notFound.hint':
+    '你要找的页面不在这个地址上。顶栏里的书架、寻章、求教都还在，也可以直接回书架。',
+  'notFound.back': '回到书架',
   'nav.label': '主导航',
   'nav.library': '书架',
   'nav.search': '寻章',
@@ -369,6 +380,11 @@ const ZH = {
   'shelf.emptyFilterHint': '切回「全部」看看别的。',
   'shelf.guidePending': '导读生成中…',
   'shelf.guideEmpty': '这本书还没有导读',
+  'shelf.guideNoText':
+    '联网加进来的书只有书名、作者和简介，正文不在库里——导读是它唯一能读的内容。',
+  'shelf.guideFailed': '导读生成失败：{reason}',
+  'shelf.guideGenerate': '生成导读',
+  'shelf.guideRetry': '重新生成导读',
   'shelf.guideShow': '展开导读',
   'shelf.guideHide': '收起导读',
   'shelf.submit': '申请公开',
@@ -481,6 +497,12 @@ const EN: Record<MessageKey, string> = {
   'app.subtitle': 'Wisdom of the Classics',
   'app.skipToContent': 'Skip to content',
   'app.footer': '人生导师 · A treasury of classical Chinese wisdom',
+  'notFound.title': 'Page not found',
+  'notFound.description': 'The address may be mistyped, or this link has expired',
+  'notFound.empty': 'Nothing here',
+  'notFound.hint':
+    'The page you asked for is not at this address. The library, search and ask pages are all still in the navigation above — or just head back to the library.',
+  'notFound.back': 'Back to the library',
   'nav.label': 'Main navigation',
   'nav.library': 'Library',
   'nav.search': 'Search',
@@ -820,6 +842,11 @@ const EN: Record<MessageKey, string> = {
   'shelf.emptyFilterHint': 'Switch back to “All” to see the rest.',
   'shelf.guidePending': 'Generating the reading guide…',
   'shelf.guideEmpty': 'No reading guide yet',
+  'shelf.guideNoText':
+    'Books added online come with a title, author and blurb only — the full text is not stored here, so the guide is the one thing there is to read.',
+  'shelf.guideFailed': 'The guide could not be generated: {reason}',
+  'shelf.guideGenerate': 'Generate guide',
+  'shelf.guideRetry': 'Generate again',
   'shelf.guideShow': 'Show guide',
   'shelf.guideHide': 'Hide guide',
   'shelf.submit': 'Request to publish',

@@ -784,6 +784,8 @@ export interface ShelfBook {
   guide: string
   /** 导读是否已生成。为 false 时前端值得过几秒再拉一次 */
   has_guide: boolean
+  /** 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） */
+  guide_error: string
   status: ShelfStatus
   visibility: ShelfVisibility
   /** 驳回原因，只有 visibility 为 rejected 时有内容 */

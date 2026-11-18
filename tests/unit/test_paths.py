@@ -12,8 +12,11 @@
 "程序目录 + corpus 子目录"的打包态布局来验优先级。
 """
 
+import os
+import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -39,7 +42,56 @@ def frozen_layout(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "executable", str(exe))
     monkeypatch.delenv(paths.ROOT_ENV_VAR, raising=False)
     monkeypatch.delenv(paths.ENV_FILE_VAR, raising=False)
+    # 用户级兜底目录锁进临时目录：不然测"程序目录不可写"那一支时会真的去写
+    # 本机的 %LOCALAPPDATA%\人生导师。
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.delenv("APPDATA", raising=False)
     return app_dir, corpus
+
+
+def _write_database(path: Path, table: str = "history") -> None:
+    """造一个**真的** SQLite 文件。
+
+    接续那一步会看文件头来确认"这确实是个库"，随手写几个字节骗不过去——
+    而"认错了把别人家的文件拷进用户的库"正是这一步最坏的失败方式。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS %s (id INTEGER)" % table)
+
+
+@pytest.fixture
+def upgrade_layout(tmp_path, monkeypatch):
+    """搭一个"升级"现场：新旧两个版本文件夹是同一层的兄弟。
+
+    ::
+
+        临时目录/
+          root/
+            v1/人生导师/data/history.db   ← 上一版本留下的记录
+            v2/app/人生导师.exe           ← 这次解压出来的新版本
+
+    程序故意埋到两层之下，是为了让"往上找两级"只扫到这套自造的目录——
+    pytest 在别处还放着同批次的临时目录，不能顺手摸到它们。
+    """
+    root = tmp_path / "root"
+    old_db = root / "v1" / paths.USER_DATA_DIRNAME / paths.DATA_DIRNAME / paths.DB_FILENAME
+    _write_database(old_db)
+
+    app_dir = root / "v2" / "app"
+    (app_dir / "corpus" / paths.NOTES_DIRNAME).mkdir(parents=True)
+    exe = app_dir / "人生导师.exe"
+    exe.write_bytes(b"")
+
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+    monkeypatch.delenv(paths.ROOT_ENV_VAR, raising=False)
+    monkeypatch.delenv(paths.ENV_FILE_VAR, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setattr(paths, "LAST_ADOPTION", None)
+    return app_dir, old_db
 
 
 class TestResolveRoot:
@@ -135,6 +187,8 @@ class TestResolveDataDir:
     def test_source_mode_uses_repo_root(self, monkeypatch):
         monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
         monkeypatch.setattr(paths, "is_frozen", lambda: False)
+        # 开发机上不该冒出 /data 这个候选；显式关掉它，免得用例跟着平台变
+        monkeypatch.setattr(paths, "deploy_data_dir", lambda: None)
 
         assert paths.resolve_data_dir() == (paths.resolve_root() / paths.DATA_DIRNAME).resolve()
 
@@ -210,6 +264,120 @@ class TestResolveDataDir:
         # 走到这里就说明没抛；落点是家目录下的隐藏目录
         assert paths._user_data_dir() == tmp_path / ".renshengdaoshi"
         assert paths.resolve_data_dir() is not None
+
+
+class TestAdoptPreviousDatabase:
+    """换一个新版本文件夹，不该等于换一个空库。
+
+    用户的原话是"每次我更新版本数据库就没了"：桌面版的升级就是解压出一个新夹子，
+    而库在程序自己那份目录里。旧库就在隔壁，这里把它接过来。
+    """
+
+    def test_new_version_folder_picks_up_the_previous_records(self, upgrade_layout):
+        app_dir, old_db = upgrade_layout
+
+        assert paths.resolve_data_dir() == (app_dir / paths.DATA_DIRNAME).resolve()
+
+        adopted = app_dir / paths.DATA_DIRNAME / paths.DB_FILENAME
+        assert adopted.is_file()
+        assert adopted.read_bytes() == old_db.read_bytes()
+        # 只拷贝、不搬走：旧的那份原地留着，用户想回头还找得到
+        assert old_db.is_file()
+        # 这件事必须能被启动日志念出来（见 server/main.py）
+        assert paths.LAST_ADOPTION == (
+            str(old_db), str(app_dir / paths.DATA_DIRNAME))
+
+    def test_an_existing_database_is_left_alone(self, upgrade_layout):
+        """原地覆盖升级、整包拷贝过来的副本：自带的那份说了算。
+
+        说明书向用户承诺过"把整个文件夹拷走，data 跟着走"，所以绝不能因为
+        附近还有一份更旧的库就把用户手里这份换掉。
+        """
+        app_dir, old_db = upgrade_layout
+        mine = app_dir / paths.DATA_DIRNAME
+        mine.mkdir(parents=True)
+        marker = b"SQLite format 3\x00" + b"mine" * 40
+        (mine / paths.DB_FILENAME).write_bytes(marker)
+
+        assert paths.resolve_data_dir() == mine.resolve()
+        assert (mine / paths.DB_FILENAME).read_bytes() == marker
+        assert paths.LAST_ADOPTION is None
+
+    def test_a_lookalike_file_is_not_treated_as_our_database(self, upgrade_layout):
+        """邻居那个文件也叫 history.db，但不是 SQLite——不能认。
+
+        认错的代价是把不相干的数据灌进用户的库，比"没接上"严重得多。
+        """
+        app_dir, old_db = upgrade_layout
+        old_db.write_bytes("这个文件只是恰好叫 history.db 而已，不是数据库".encode("utf-8") * 8)
+
+        paths.resolve_data_dir()
+
+        assert not (app_dir / paths.DATA_DIRNAME / paths.DB_FILENAME).exists()
+        assert paths.LAST_ADOPTION is None
+
+    def test_the_most_recent_database_wins(self, upgrade_layout):
+        """相邻有好几份时取最新的那一份——旧版本文件夹通常不止一个。"""
+        app_dir, old_db = upgrade_layout
+        newer = old_db.parent.parent.parent / "v0" / paths.USER_DATA_DIRNAME / paths.DATA_DIRNAME
+        newer_db = newer / paths.DB_FILENAME
+        _write_database(newer_db)
+        # 显式把时间戳拉开，免得两秒内的文件系统精度让结果碰运气
+        later = time.time() + 60
+        os.utime(newer_db, (later, later))
+
+        paths.resolve_data_dir()
+
+        assert paths.LAST_ADOPTION is not None
+        assert paths.LAST_ADOPTION[0] == str(newer_db)
+        assert (app_dir / paths.DATA_DIRNAME / paths.DB_FILENAME).read_bytes() == newer_db.read_bytes()
+
+    def test_explicit_data_dir_is_never_surprised(self, upgrade_layout, tmp_path, monkeypatch):
+        """用户明确指定了数据目录，就别自作主张往里灌旧数据。"""
+        chosen = tmp_path / "chosen"
+        monkeypatch.setenv(paths.DATA_DIR_ENV_VAR, str(chosen))
+
+        assert paths.resolve_data_dir() == chosen.resolve()
+        assert not (chosen / paths.DB_FILENAME).exists()
+        assert paths.LAST_ADOPTION is None
+
+
+class TestDeployDataDir:
+    """线上（部署态）的数据目录必须落在项目外面。
+
+    "项目里的 data/" 会被下一次发布上传上去覆盖掉，线上注册的账号就跟着没了。
+    以前这条靠"发布时记得带 RSDS_DATA_DIR=/data"，漏一次就复现；现在它是代码默认，
+    流程纪律不再是唯一防线。
+    """
+
+    def test_deploy_container_keeps_the_database_out_of_the_project(self, tmp_path, monkeypatch):
+        outside = tmp_path / "outside"
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+        monkeypatch.setattr(paths, "is_frozen", lambda: False)
+        monkeypatch.setattr(paths, "deploy_data_dir", lambda: outside)
+
+        resolved = paths.resolve_data_dir()
+
+        assert resolved == outside.resolve()
+        assert resolved != (paths.resolve_root() / paths.DATA_DIRNAME).resolve()
+
+    def test_falls_through_when_the_deploy_dir_cannot_be_created(self, tmp_path, monkeypatch):
+        """建不出 /data 的机器（普通 Linux 开发机）不能被它卡住，要退到项目目录。"""
+        blocked = tmp_path / "nope"
+        monkeypatch.delenv(paths.DATA_DIR_ENV_VAR, raising=False)
+        monkeypatch.setattr(paths, "is_frozen", lambda: False)
+        monkeypatch.setattr(paths, "deploy_data_dir", lambda: blocked)
+        monkeypatch.setattr(paths, "_ensure_writable", lambda path: path != blocked)
+
+        assert paths.resolve_data_dir() == (paths.resolve_root() / paths.DATA_DIRNAME).resolve()
+
+    def test_windows_never_uses_the_deploy_dir(self):
+        """Windows 下 ``Path("/data")`` 会落到当前盘符根目录——本地开发被它劫持
+        是纯粹的坏事，而容器是 Linux，这个闸门不会误伤线上。"""
+        if os.name == "nt":
+            assert paths.deploy_data_dir() is None
+        else:
+            assert paths.deploy_data_dir() == Path(paths.DEPLOY_DATA_DIR)
 
 
 class TestResolveWebDist:

@@ -931,7 +931,93 @@ def main() -> int:
         cdp.shot("ui-09-shelf-card.png")
 
         print()
-        print("=== 7b. 阅读页：切回「原典全文」不再闪一帧加载 ===")
+        print("=== 7b. 导读：它是这本书唯一能读的东西 ===")
+        # 书架上的书没有正文（联网检索只拿得到书名、作者、封面、简介），导读是
+        # 唯一可读的内容。原来的表现是：没有导读时卡片只写一句「这本书还没有
+        # 导读」，书名也不是链接——用户的原话是"检索出来了但是不给读，我点不了"。
+        #
+        # 这里**经后台的改行接口**把结果直接写进那一行，而不是等模型：生成要
+        # 十几秒、上游还时通时断，等出来的结果不能当判据。写进去的状态与真实
+        # 跑出来的完全同形（`guide` / `guide_error` 就是这么存的），
+        # 而且这个改行入口本来就是给排查线上数据用的。
+        row_id = cdp.evaluate("""
+        (async function () {
+          var r = await fetch('/api/admin/db/tables/user_books',
+                              { credentials: 'same-origin' });
+          var d = await r.json();
+          var hit = (d.rows || []).filter(function (x) {
+            return x.title === 'UI 检查之书';
+          })[0];
+          return hit ? hit._rowid : null;
+        })()
+        """)
+        check("后台能按书名找到刚加的那一行（改行入口可用）", bool(row_id), row_id)
+
+        def write_book_row(fields):
+            """改那一行，返回状态码。"""
+            return cdp.evaluate("""
+            (async function (payload) {
+              var r = await fetch('/api/admin/db/tables/user_books/rows/%s', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(payload)
+              });
+              return r.status;
+            })(%s)
+            """ % (row_id, json.dumps(fields)))
+
+        # ① 生成失败：原因必须摆在卡片上，并且给一个重试的落脚点。
+        #    原先这两种情形共用「这本书还没有导读」，用户既不知道出了什么事，
+        #    也没有下一步——而失败是永久的，后台任务不会自己重来。
+        code = write_book_row({"guide": "", "guide_error": "模型调用失败：timed out"})
+        check("把导读失败原因写进那一行", code == 200, code)
+
+        cdp.goto("/shelf")
+        cdp.wait_for("document.body.innerText.indexOf('UI 检查之书') >= 0")
+        check("失败原因写在卡片上，而不是又一句「还没有导读」",
+              cdp.evaluate("document.body.innerText.indexOf('模型调用失败') >= 0 && "
+                           "document.body.innerText.indexOf('这本书还没有导读') < 0"))
+        check("失败时给了一个「重新生成导读」的入口",
+              cdp.evaluate(
+                  "!!Array.prototype.slice.call(document.querySelectorAll('button'))"
+                  ".filter(b => b.textContent.indexOf('重新生成导读') >= 0).length"))
+        cdp.pump(0.6)
+        cdp.shot("ui-09b-shelf-guide-failed.png")
+
+        # ② 有导读：**书名本身就是阅读入口**。这条是这次报障的正题
+        #    （"我点不了"）——所以判据不是"文字在不在页面上"，而是
+        #    "书名是不是一个按钮，点了正文出不出来"。
+        code = write_book_row({
+            "guide": "## 这本书在讲什么\n\nUI 检查之书正文。",
+            "guide_error": "",
+        })
+        check("把导读正文写进那一行", code == 200, code)
+
+        cdp.goto("/shelf")
+        cdp.wait_for("document.body.innerText.indexOf('UI 检查之书') >= 0")
+        TITLE_BUTTON = (
+            "(function () { var b = Array.prototype.slice.call("
+            "document.querySelectorAll('button')).filter(function (x) {"
+            "  return (x.textContent || '').trim() === 'UI 检查之书'; });"
+            "  return b.length; })()")
+        check("有导读时书名本身是一个按钮（可点）", cdp.evaluate(TITLE_BUTTON) == 1)
+        check("展开之前正文不在页面上（默认收起）",
+              cdp.evaluate("document.body.innerText.indexOf('这本书在讲什么') < 0"))
+
+        cdp.evaluate(
+            "(function () { var b = Array.prototype.slice.call("
+            "document.querySelectorAll('button')).filter(function (x) {"
+            "  return (x.textContent || '').trim() === 'UI 检查之书'; })[0];"
+            "  b.click(); return true; })()")
+        cdp.pump(0.6)
+        check("点书名展开了导读正文",
+              cdp.evaluate("document.body.innerText.indexOf('这本书在讲什么') >= 0 && "
+                           "document.body.innerText.indexOf('UI 检查之书正文') >= 0"))
+        cdp.shot("ui-09c-shelf-guide-readable.png")
+
+        print()
+        print("=== 7c. 阅读页：切回「原典全文」不再闪一帧加载 ===")
         # 原典正文是分块取的（`/books/14/source?offset=…` 一次 20000 字），而且
         # 只有切到原典页签才真去拉——所以每次切过去都是一次"重新开始"，原先那
         # 一下必然先画一帧「加载原典…」。缓存快照（`peek`）就是要让"上次读过、
@@ -1011,6 +1097,72 @@ def main() -> int:
         check("切回时没有重新请求原典（命中缓存）", not source_calls,
               "; ".join(r["params"]["request"]["url"] for r in source_calls))
         cdp.shot("ui-10-reader-source.png")
+
+        print()
+        print("=== 7d. 点了重新生成之后，界面会一直等到有结论 ===")
+        # 这一条盯的是一个**实测到的**静默失效：轮询 effect 的依赖里有
+        # `pendingGuides`，而它是个数字——`load()` 回来之后往往还是同一个值
+        # （1 还是 1），依赖没变 effect 就不会重跑，下一支定时器排不出来。
+        # 于是「最多看 8 次」实际只发生 1 次：第 4 秒看一眼，没等到就永远停在
+        # 那一刻。真机上量过：点完重新生成，浏览器只发出 1 个轮询请求，之后
+        # 42 秒一片安静，界面一直挂着「导读生成中…」，而书架上早就有结果了。
+        #
+        # 后端那一半仍由改行接口扮演（不调模型）：点了重试之后**过一会儿**再把
+        # 失败原因写回去。特意等 5 秒才写，是为了让第一轮轮询（约第 4 秒）扑空
+        # ——不然"只看一眼就停"也能蒙混过关，这条断言就白写了。
+        cdp.goto("/shelf")
+        cdp.wait_for("document.body.innerText.indexOf('UI 检查之书') >= 0")
+        code = write_book_row({"guide": "", "guide_error": "模型没有答复（timed out）"})
+        check("把导读失败原因写回那一行", code == 200, code)
+        cdp.goto("/shelf")
+        check("卡片停在「失败」上，并给了重试入口",
+              cdp.wait_for("document.body.innerText.indexOf('导读生成失败') >= 0"))
+
+        events_before = len(cdp.events)
+        cdp.evaluate(
+            "(function () { var b = Array.prototype.slice.call("
+            "document.querySelectorAll('button')).filter(function (x) {"
+            "  return (x.textContent || '').indexOf('重新生成导读') >= 0; })[0];"
+            "  if (!b) return false; b.click(); return true; })()")
+        check("点了重试，卡片立刻转成「生成中」",
+              cdp.wait_for("document.body.innerText.indexOf('导读生成中') >= 0", timeout=10))
+
+        time.sleep(5.0)
+        write_book_row({"guide": "", "guide_error": "模型没有答复（timed out）"})
+        check("重试之后界面会等到结论，不再永远停在「生成中」",
+              cdp.wait_for(
+                  "(function () { var t = document.body.innerText;"
+                  "  return t.indexOf('导读生成失败') >= 0"
+                  "      && t.indexOf('导读生成中') < 0; })()", timeout=30))
+        # 请求计数是**另一面**：界面落到结论，得是因为它一直在回来问，
+        # 而不是因为恰好第一次就撞上了。只算 `/api/shelf` 这个列表接口
+        # （POST /guide 也含这串，所以用结尾精确匹配）。
+        list_calls = [
+            e for e in cdp.events[events_before:]
+            if e.get("method") == "Network.requestWillBeSent"
+            and e.get("params", {}).get("request", {}).get("url", "")
+            .endswith("/api/shelf")
+        ]
+        check("重试之后确实在反复回来看（不是看一眼就停）", len(list_calls) >= 3,
+              "发出 %d 次列表请求" % len(list_calls))
+        cdp.shot("ui-09d-shelf-retry-settles.png")
+
+        print()
+        print("=== 7e. 地址敲错：给一页说明和一条回去的路，不是一张白纸 ===")
+        # 原先路由表里**没有通配项**：未知路径命中不了任何一条路由，连
+        # `AppShell` 都不渲染——整屏纯白，顶栏、页脚、导航一个都没有，用户
+        # 唯一的出路是手动改地址栏。三件事要一起看：有话说、有出口、顶栏还在。
+        cdp.goto("/definitely-not-a-route")
+        check("未知地址不是白纸（有说明）",
+              cdp.wait_for("document.body.innerText.indexOf('没有这一页') >= 0"))
+        check("未知地址上给了一条回去的路",
+              cdp.evaluate(
+                  "!!Array.prototype.slice.call(document.querySelectorAll('a'))"
+                  ".filter(function (a) {"
+                  "  return a.textContent.indexOf('回到书架') >= 0; }).length"))
+        check("未知地址上顶栏还在（导航不丢）",
+              cdp.evaluate("!!document.querySelector('[role=navigation], nav')"))
+        cdp.shot("ui-11-not-found.png")
 
         print()
         print("=== 8. 换模块的转场 ===")

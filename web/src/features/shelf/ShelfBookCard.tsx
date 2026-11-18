@@ -10,10 +10,13 @@ interface ShelfBookCardProps {
   book: ShelfBook
   /** 在兄弟序列里的位置，用于错峰入场 */
   index: number
+  /** 这本书的导读正在手动重新生成 */
+  regenerating: boolean
   onChangeStatus: (book: ShelfBook, status: ShelfStatus) => Promise<unknown>
   onRemove: (book: ShelfBook) => Promise<unknown>
   onSubmit: (book: ShelfBook) => Promise<unknown>
   onCancelReview: (book: ShelfBook) => Promise<unknown>
+  onRegenerate: (book: ShelfBook) => Promise<unknown>
 }
 
 /** 可见性标记的色调：只有"已公开"是好事（朱砂），"待审核"是等待（中性偏暖）。 */
@@ -29,10 +32,17 @@ const TONE: Record<ShelfVisibility, 'brand' | 'neutral' | 'celadon'> = {
  *
  * 版面按"用户此刻最可能想干什么"排：书名 → 状态 → 导读 → 别的动作。
  *
+ * - **书名就是阅读入口**。书架上的书没有正文（联网检索只拿得到书名、作者、
+ *   封面、简介），导读是它唯一能读的东西——所以有导读时书名可点，点开就是
+ *   正文。没导读时书名保持纯文本：一个点了没反应的可点标题，比一个不能点的
+ *   标题更让人困惑，而这个页面原先正是这么表现的（用户的原话是"检索出来了
+ *   但是不给读，我点不了"）。
  * - **状态药丸**（想读/在读/读过）放在最上面且一直可见：这是这个页面上
  *   最高频的动作，收进菜单里等于每次多两次点击。
  * - **导读默认收起**。它可能有一两千字，展开会把列表撑得没法扫；而"我加了
  *   哪些书"才是这一页的主要问题。收起时给一行预览，让人知道里面有没有东西。
+ * - **没导读时要说清两件事**：出过什么事（`guide_error`），以及这本书本来
+ *   就没有正文、导读是唯一能读的。少说任何一件，用户都只能干等。
  * - **删除走就地确认条**，不用 `window.confirm`（理由见 `ConfirmBar`）。
  * - **申请公开**只在 `private` / `rejected` 时出现。已经公开或正在审核的书，
  *   再点一次没有任何意义，摆着只会让人怀疑是不是漏点了。
@@ -40,10 +50,12 @@ const TONE: Record<ShelfVisibility, 'brand' | 'neutral' | 'celadon'> = {
 export default function ShelfBookCard({
   book,
   index,
+  regenerating,
   onChangeStatus,
   onRemove,
   onSubmit,
   onCancelReview,
+  onRegenerate,
 }: ShelfBookCardProps) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
@@ -66,6 +78,7 @@ export default function ShelfBookCard({
   }
 
   const canSubmit = book.visibility === 'private' || book.visibility === 'rejected'
+  const toggleGuide = () => setOpen(value => !value)
 
   return (
     <Card
@@ -82,7 +95,21 @@ export default function ShelfBookCard({
           <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
             <div className="min-w-0">
               <h3 className="font-serif text-base font-semibold leading-snug text-ink-900">
-                {book.title}
+                {/* 有导读才把书名变成按钮。**别给它加 aria-label**：标题的
+                    可访问名是从子节点算出来的，按钮上另写一个名字会把
+                    `heading[name="书名"]` 一起改掉（测试与读屏都按那个找）。 */}
+                {book.has_guide ? (
+                  <button
+                    type="button"
+                    onClick={toggleGuide}
+                    aria-expanded={open}
+                    className="rounded-sm text-left transition-colors duration-quick hover:text-cinnabar-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cinnabar-500/25"
+                  >
+                    {book.title}
+                  </button>
+                ) : (
+                  book.title
+                )}
               </h3>
               <p className="mt-0.5 text-xs text-ink-500">
                 {[book.author || t('shelf.unknownAuthor'), book.year].filter(Boolean).join(' · ')}
@@ -118,7 +145,14 @@ export default function ShelfBookCard({
             ))}
           </div>
 
-          <Guide book={book} open={open} onToggle={() => setOpen(value => !value)} />
+          <Guide
+            book={book}
+            open={open}
+            onToggle={toggleGuide}
+            regenerating={regenerating}
+            busy={busy === 'guide'}
+            onRegenerate={() => run('guide', () => onRegenerate(book))}
+          />
 
           {error && (
             <p role="alert" className="mt-2 text-xs text-cinnabar-600">
@@ -181,19 +215,30 @@ export default function ShelfBookCard({
 /**
  * 导读区。
  *
- * 三种状态各有各的说法，不能共用一句话：
+ * 四种状态各有各的说法，不能共用一句话：
  *   · 有导读        → 给一行预览 + 展开按钮
- *   · 没有、但刚加完 → "生成中"，并配骨架屏（内容是**已知形状**的）
- *   · 没有、且加完很久 → "还没有导读"（生成失败时不能一直说"生成中"）
+ *   · 正在生成      → "生成中"，并配骨架屏（内容是**已知形状**的）
+ *   · 生成失败      → 把原因摆出来 + 一个重试按钮
+ *   · 从没生成过    → "还没有导读"，并说明**这本书本来就没有正文**
+ *
+ * 后两种原先共用「这本书还没有导读」。那句话说不出任何可执行的信息：用户不
+ * 知道是失败了还是没试过，也不知道能怎么办——而失败是永久的（后台任务只跑
+ * 一次，不会自己重来）。
  */
 function Guide({
   book,
   open,
   onToggle,
+  regenerating,
+  busy,
+  onRegenerate,
 }: {
   book: ShelfBook
   open: boolean
   onToggle: () => void
+  regenerating: boolean
+  busy: boolean
+  onRegenerate: () => void
 }) {
   const { t } = useI18n()
 
@@ -222,10 +267,18 @@ function Guide({
     )
   }
 
-  // 刚加进来的书：导读正在后台生成。用骨架屏而不是一句"生成中"——
-  // 内容形状是已知的（几段文字），把版式先撑出来，生成完就不会整块跳一下。
+  // 刚加进来、或者刚点了"重新生成"：导读正在后台跑。用骨架屏而不是一句
+  // "生成中"——内容形状是已知的（几段文字），把版式先撑出来，生成完就不会
+  // 整块跳一下。
+  //
+  // `regenerating` 单独判：重试的那本书 `created_at` 是旧的，光看时间
+  // 会落到下面分支，于是点了按钮界面毫无变化。
+  //
+  // 时间那一半还要再过一道 `guide_error`：它非空就说明这一轮**已经出结果了**
+  // （失败也是结果）。此时继续说"生成中"是最气人的那种谎——答案早就有了，
+  // 却让人对着骨架屏多等一分钟，而真实情况是他需要点一下重试。
   const fresh = Date.now() - Date.parse(book.created_at) < 60_000
-  if (fresh) {
+  if (regenerating || (fresh && !book.guide_error)) {
     return (
       <div className="mt-3">
         <p className="mb-2 text-xs text-ink-400">{t('shelf.guidePending')}</p>
@@ -233,7 +286,22 @@ function Guide({
       </div>
     )
   }
-  return <p className="mt-3 text-xs text-ink-300">{t('shelf.guideEmpty')}</p>
+
+  return (
+    <div className="mt-3">
+      {book.guide_error ? (
+        <p role="alert" className="mb-1 text-xs leading-relaxed text-cinnabar-600">
+          {t('shelf.guideFailed', { reason: book.guide_error })}
+        </p>
+      ) : (
+        <p className="mb-1 text-xs text-ink-300">{t('shelf.guideEmpty')}</p>
+      )}
+      <p className="mb-2 text-xs leading-relaxed text-ink-400">{t('shelf.guideNoText')}</p>
+      <Button size="sm" variant="secondary" loading={busy} onClick={onRegenerate}>
+        {book.guide_error ? t('shelf.guideRetry') : t('shelf.guideGenerate')}
+      </Button>
+    </div>
+  )
 }
 
 /** 导读的第一句，充当收起时的预览。

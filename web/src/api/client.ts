@@ -584,6 +584,18 @@ export const api = {
   cancelShelfBook: (id: number) =>
     request<ShelfBook>(`/shelf/books/${id}/cancel`, { method: 'POST' }),
 
+  /**
+   * 重新生成导读。
+   *
+   * 加书时那次生成**只跑一次**、不会自己重来，所以模型当时挂了这本书的导读就
+   * 永远是空的——而那是书架里唯一可读的内容。这是那个人工重试的入口。
+   *
+   * 与加书一样是立刻返回：生成仍在后台跑，过几秒重新拉列表才看得到。
+   * 顺带把上一次的失败原因清掉（后端在起任务之前做）。
+   */
+  regenerateShelfGuide: (id: number) =>
+    request<ShelfBook>(`/shelf/books/${id}/guide`, { method: 'POST' }),
+
   // ── 后台管理 ──────────────────────────────────────────────────────────
   //
   // 全部需要管理员身份。非管理员调用会收到 403。

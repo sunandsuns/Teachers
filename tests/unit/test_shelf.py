@@ -13,6 +13,7 @@ import pytest
 from server.routers import shelf as shelf_router
 from server.services import book_search
 from server.services.book_search import BookCandidate, SearchOutcome
+from server.services.guide import GuideOutcome
 
 PASSWORD = "goodpass123"
 ALICE = "alice@example.com"
@@ -75,6 +76,7 @@ class TestAuthRequired:
         ("get", "/api/shelf/books/1"),
         ("delete", "/api/shelf/books/1"),
         ("post", "/api/shelf/books/1/submit"),
+        ("post", "/api/shelf/books/1/guide"),
     ])
     def test_requires_login(self, anon_client, method, path):
         # 用**不带身份**的客户端。默认那个 `client` 是已登录的，拿它来断言 401
@@ -436,7 +438,11 @@ class TestAddBook:
     def test_guide_is_filled_in_the_background(self, client, offline, monkeypatch):
         """模型可用时，后台任务把导读补上。"""
         monkeypatch.setattr(
-            shelf_router, "generate_guide", lambda c: ("## 这本书在讲什么\n\n一个普通人的一生。", "test-model")
+            shelf_router,
+            "generate_guide",
+            lambda c: GuideOutcome(
+                text="## 这本书在讲什么\n\n一个普通人的一生。", model="test-model"
+            ),
         )
         headers = sign_in(client, ALICE)
         book_id = add(client, headers).json()["id"]
@@ -444,9 +450,15 @@ class TestAddBook:
         fresh = client.get(f"/api/shelf/books/{book_id}", headers=headers).json()
         assert fresh["has_guide"] is True
         assert "普通人的一生" in fresh["guide"]
+        assert fresh["guide_error"] == ""
 
     def test_guide_failure_does_not_break_add(self, client, offline, monkeypatch):
-        """导读生成炸了也不该让加书失败——书已经在架上了。"""
+        """导读生成炸了也不该让加书失败——书已经在架上了。
+
+        但**失败必须留下原因**：书架上的书没有正文，导读是唯一能读的东西，
+        它空了之后用户手上就是一张只有状态药丸的卡片。原先这里被整个吞掉，
+        界面只能说「这本书还没有导读」，用户既不知道出了什么事，也没法重试。
+        """
         def boom(candidate):
             raise RuntimeError("模型炸了")
 
@@ -455,6 +467,27 @@ class TestAddBook:
         resp = add(client, headers)
         assert resp.status_code == 201
         assert resp.json()["has_guide"] is False
+
+        fresh = client.get(f"/api/shelf/books/{resp.json()['id']}", headers=headers).json()
+        assert "模型炸了" in fresh["guide_error"]
+
+    def test_generation_failure_reason_reaches_the_client(self, client, offline, monkeypatch):
+        """生成器**不抛**、而是把原因放在返回值里时，那句话也要落到 `guide_error`。
+
+        这条与上一条分开：上游故障走的是 `GuideOutcome(error=...)` 这一支，
+        生成器自己崩走的是异常那一支，两者都会被 `_fill_guide` 收拢成同一件事，
+        但只有分别断言才看得出是哪一支没接上。
+        """
+        monkeypatch.setattr(
+            shelf_router, "generate_guide",
+            lambda c: GuideOutcome(error="模型调用失败：timed out（已尝试：kimi-k3）"),
+        )
+        headers = sign_in(client, ALICE)
+        resp = add(client, headers)
+
+        fresh = client.get(f"/api/shelf/books/{resp.json()['id']}", headers=headers).json()
+        assert "timed out" in fresh["guide_error"]
+        assert fresh["has_guide"] is False
 
 
 class TestListAndUpdate:
@@ -575,4 +608,92 @@ class TestIsolation:
         book_id = add(client, alice).json()["id"]
         assert client.post(
             f"/api/shelf/books/{book_id}/submit", headers=bob
+        ).status_code == 404
+
+
+class TestRegenerateGuide:
+    """导读的重试入口。
+
+    为什么单独一个入口：加书时那次生成只跑一次，**不会自己重来**。模型当时
+    挂了，这本书的导读就永远是空的——而它是书架里唯一可读的内容。所以"失败
+    可见"与"能重来"必须配套，否则界面只是在如实汇报一个死局。
+    """
+
+    def test_retry_fills_the_guide(self, client, offline, monkeypatch):
+        headers = sign_in(client, ALICE)
+        monkeypatch.setattr(
+            shelf_router, "generate_guide", lambda c: GuideOutcome(error="模型调用失败：timed out")
+        )
+        book_id = add(client, headers).json()["id"]
+        assert client.get(f"/api/shelf/books/{book_id}", headers=headers).json()["has_guide"] is False
+
+        monkeypatch.setattr(
+            shelf_router, "generate_guide",
+            lambda c: GuideOutcome(text="## 这本书在讲什么\n\n导读正文。", model="test-model"),
+        )
+        resp = client.post(f"/api/shelf/books/{book_id}/guide", headers=headers)
+        assert resp.status_code == 200
+
+        fresh = client.get(f"/api/shelf/books/{book_id}", headers=headers).json()
+        assert fresh["has_guide"] is True
+        assert "导读正文" in fresh["guide"]
+        # 成了就把失败原因擦掉——留着它，界面会同时显示"能读"和"上次失败"
+        assert fresh["guide_error"] == ""
+
+    def test_retry_clears_the_old_reason_before_the_new_attempt(self, client, offline, monkeypatch):
+        """顺序是"先清旧原因、再起任务"，不是反过来。
+
+        不清的话，从点了按钮到这次跑完之间，界面会一边说"生成中"、
+        一边还挂着上次的失败。判据取 POST 的**响应体**：它是在后台任务之前
+        算出来的，所以那一刻看到的就是中间态。
+        """
+        monkeypatch.setattr(
+            shelf_router, "generate_guide", lambda c: GuideOutcome(error="上游挂了")
+        )
+        headers = sign_in(client, ALICE)
+        book_id = add(client, headers).json()["id"]
+        assert "上游挂了" in client.get(
+            f"/api/shelf/books/{book_id}", headers=headers
+        ).json()["guide_error"]
+
+        resp = client.post(f"/api/shelf/books/{book_id}/guide", headers=headers)
+        assert resp.json()["guide_error"] == ""
+
+        # 这次又失败了，原因重新写上——清空只意味着"重试开始了"，不是"问题解决了"
+        assert "上游挂了" in client.get(
+            f"/api/shelf/books/{book_id}", headers=headers
+        ).json()["guide_error"]
+
+    def test_retry_feeds_the_same_metadata_back(self, client, offline, monkeypatch):
+        """重试要与首次走**同一条输入**。
+
+        换一套元信息就等于让同一本书前后两份导读出自两套事实，差异解释不清。
+        """
+        seen: list[BookCandidate] = []
+
+        def capture(candidate):
+            seen.append(candidate)
+            return GuideOutcome(error="先失败一次")
+
+        monkeypatch.setattr(shelf_router, "generate_guide", capture)
+        headers = sign_in(client, ALICE)
+        book_id = add(client, headers).json()["id"]
+        client.post(f"/api/shelf/books/{book_id}/guide", headers=headers)
+
+        retried = seen[-1]
+        assert retried.title == BOOK.title
+        assert retried.author == BOOK.author
+        assert retried.source_key == BOOK.source_key
+        assert retried.summary == BOOK.summary
+        assert retried.subjects == BOOK.subjects
+
+    def test_missing_book_is_404(self, client, offline):
+        headers = sign_in(client, ALICE)
+        assert client.post("/api/shelf/books/99999/guide", headers=headers).status_code == 404
+
+    def test_cannot_regenerate_other_users_book(self, client, offline):
+        alice, bob = sign_in(client, ALICE), sign_in(client, BOB)
+        book_id = add(client, alice).json()["id"]
+        assert client.post(
+            f"/api/shelf/books/{book_id}/guide", headers=bob
         ).status_code == 404

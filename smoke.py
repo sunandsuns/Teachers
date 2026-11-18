@@ -756,6 +756,10 @@ def main():
     code, book = alice.call("/api/shelf/books", "POST", {**CANDIDATE, "with_guide": False})
     check("加书返回 201", code == 201, code)
     check("加书立刻返回（导读不挡路）", isinstance(book, dict) and book.get("id"), book)
+    # 书架上的书没有正文，导读是唯一能读的东西——所以"为什么没有导读"必须是
+    # 接口的一部分，界面才说得出来。空串＝没失败过，不是"没这个字段"。
+    check("加书响应带着导读失败原因（这里是空串）",
+          book.get("guide_error") == "", book.get("guide_error"))
     book_id = (book or {}).get("id")
 
     shelf = alice.call("/api/shelf")[1]
@@ -784,6 +788,10 @@ def main():
     check("别人的书架里看不到我的书", other_shelf["total"] == 0, other_shelf["total"])
     code, _ = bob.call("/api/shelf/books/%s" % book_id)
     check("越权读别人的书返回 404（而不是 403，免得泄露存在性）", code == 404, code)
+    # 重新生成走的是同一个归属判据。这里**刻意只试越权这一支**：合法的那个会
+    # 真去调一次模型，冒烟不该被上游的时通时断拖成红的。
+    code, _ = bob.call("/api/shelf/books/%s/guide" % book_id, "POST", {})
+    check("越权重生成别人的导读返回 404", code == 404, code)
     code, _ = bob.call("/api/admin/overview")
     check("普通用户访问后台返回 403", code == 403, code)
 

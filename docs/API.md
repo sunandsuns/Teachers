@@ -54,7 +54,7 @@
 - [求教](#求教) · 5 个接口
 - [回响（问答历史）](#回响问答历史) · 8 个接口
 - [画像](#画像) · 7 个接口
-- [我的书架](#我的书架) · 8 个接口
+- [我的书架](#我的书架) · 9 个接口
 - [寻章](#寻章) · 1 个接口
 - [原典书架](#原典书架) · 5 个接口
 - [知识库](#知识库) · 4 个接口
@@ -1044,6 +1044,7 @@
 | `subjects` | string[] | 是 |  |
 | `guide` | string | 是 | 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 |
 | `has_guide` | boolean | 是 | 导读是否已生成。为 false 时前端值得过几秒再拉一次 |
+| `guide_error` | string |  | 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） |
 | `status` | string | 是 |  |
 | `visibility` | string | 是 |  |
 | `review_note` | string | 是 | 驳回原因，只有 visibility 为 rejected 时有内容 |
@@ -1094,6 +1095,7 @@
 | `subjects` | string[] | 是 |  |
 | `guide` | string | 是 | 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 |
 | `has_guide` | boolean | 是 | 导读是否已生成。为 false 时前端值得过几秒再拉一次 |
+| `guide_error` | string |  | 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） |
 | `status` | string | 是 |  |
 | `visibility` | string | 是 |  |
 | `review_note` | string | 是 | 驳回原因，只有 visibility 为 rejected 时有内容 |
@@ -1152,6 +1154,7 @@
 | `subjects` | string[] | 是 |  |
 | `guide` | string | 是 | 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 |
 | `has_guide` | boolean | 是 | 导读是否已生成。为 false 时前端值得过几秒再拉一次 |
+| `guide_error` | string |  | 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） |
 | `status` | string | 是 |  |
 | `visibility` | string | 是 |  |
 | `review_note` | string | 是 | 驳回原因，只有 visibility 为 rejected 时有内容 |
@@ -1214,6 +1217,67 @@
 
 错误体，格式见上面的「错误怎么回」。
 
+### `POST` `/api/shelf/books/{book_id}/guide`
+
+重新生成这本书的导读。
+
+导读失败是**一次性**的：加书时那次后台任务不会自己重来，于是模型当时挂了，
+这本书的导读就永远是空的——而它是这本书在架子上唯一可读的内容。这个接口
+就是那个人工重试的落脚点。
+
+顺序是"先清掉上一次的失败原因，再起任务"：不清的话，从点了重新生成到这次
+跑完之间，界面会一边说"生成中"、一边还挂着上次的失败。
+
+返回的是**当前**这条记录（`has_guide` 多半仍是 false）——生成在后台跑，
+前端过几秒重新拉一次列表就能看到，不必把这个请求挂上十几秒。
+
+**参数**
+
+| 参数 | 位置 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| `book_id` | path | integer | 是 |  |
+
+**响应 `200`** 成功
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `id` | integer | 是 |  |
+| `title` | string | 是 |  |
+| `author` | string | 是 |  |
+| `year` | string | 是 |  |
+| `cover_url` | string | 是 |  |
+| `source_key` | string | 是 |  |
+| `summary` | string | 是 |  |
+| `subjects` | string[] | 是 |  |
+| `guide` | string | 是 | 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 |
+| `has_guide` | boolean | 是 | 导读是否已生成。为 false 时前端值得过几秒再拉一次 |
+| `guide_error` | string |  | 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） |
+| `status` | string | 是 |  |
+| `visibility` | string | 是 |  |
+| `review_note` | string | 是 | 驳回原因，只有 visibility 为 rejected 时有内容 |
+| `created_at` | string | 是 |  |
+| `updated_at` | string | 是 |  |
+
+**响应 `400`** 业务规则不通过，`code` 说明是哪一条
+
+错误体，格式见上面的「错误怎么回」。
+
+**响应 `401`** 未登录或会话已过期
+
+错误体，格式见上面的「错误怎么回」。
+
+**响应 `404`** 目标不存在
+
+错误体，格式见上面的「错误怎么回」。
+
+**响应 `422`** Validation Error
+
+请求体没通过校验：`detail` 里是逐字段的错误（`loc` / `msg` / `type`）。
+
+**响应 `503`** 数据库不可用，稍后重试
+
+错误体，格式见上面的「错误怎么回」。
+
 ### `POST` `/api/shelf/books/{book_id}/submit`
 
 申请把这本书放进公共书架，等管理员审核。
@@ -1238,6 +1302,7 @@
 | `subjects` | string[] | 是 |  |
 | `guide` | string | 是 | 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 |
 | `has_guide` | boolean | 是 | 导读是否已生成。为 false 时前端值得过几秒再拉一次 |
+| `guide_error` | string |  | 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） |
 | `status` | string | 是 |  |
 | `visibility` | string | 是 |  |
 | `review_note` | string | 是 | 驳回原因，只有 visibility 为 rejected 时有内容 |
@@ -1288,6 +1353,7 @@
 | `subjects` | string[] | 是 |  |
 | `guide` | string | 是 | 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 |
 | `has_guide` | boolean | 是 | 导读是否已生成。为 false 时前端值得过几秒再拉一次 |
+| `guide_error` | string |  | 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） |
 | `status` | string | 是 |  |
 | `visibility` | string | 是 |  |
 | `review_note` | string | 是 | 驳回原因，只有 visibility 为 rejected 时有内容 |
@@ -3343,6 +3409,7 @@
 | `subjects` | string[] | 是 |  |
 | `guide` | string | 是 | 模型写的导读（Markdown）。加书是异步补的，刚加完可能还是空串 |
 | `has_guide` | boolean | 是 | 导读是否已生成。为 false 时前端值得过几秒再拉一次 |
+| `guide_error` | string |  | 上一次生成导读失败的原因。空串表示没失败过（没试过，或上次成了）。生成失败不会自动重试，所以非空时前端应当把它显示出来，并给一个「重新生成」的入口（`POST /api/shelf/books/{book_id}/guide`） |
 | `status` | string | 是 |  |
 | `visibility` | string | 是 |  |
 | `review_note` | string | 是 | 驳回原因，只有 visibility 为 rejected 时有内容 |

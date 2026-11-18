@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import paths
 from .errors import install_error_handlers
 from .paths import resolve_web_dist, should_serve_frontend
 from .routers.admin import router as admin_router
@@ -105,6 +106,12 @@ async def lifespan(app: FastAPI):
             print("[人生导师] 历史记录暂不可用：%s" % store.error)
     except Exception as exc:  # noqa: BLE001 — 启动期的附加项，失败只记录
         print("[人生导师] 历史记录暂不可用：%s" % exc)
+
+    # 换新版本后记录"自己回来了"这件事要说出来：用户刚经历过一次"数据没了"，
+    # 不说清楚他会以为还是丢的，也就不会去用。
+    if paths.LAST_ADOPTION is not None:
+        source, target = paths.LAST_ADOPTION
+        print("[人生导师] 已接续上一版本的记录：%s → %s" % (source, target))
 
     # 内置管理员：首次启动写进库。之后每次启动只做一次存在性检查——
     # 已存在就什么都不做，**绝不重置密码**（否则管理员自己改过的密码

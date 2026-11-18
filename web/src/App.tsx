@@ -27,6 +27,7 @@ const Shelf = lazy(() => import('./pages/Shelf'))
 const Admin = lazy(() => import('./pages/Admin'))
 const Login = lazy(() => import('./pages/Login'))
 const Register = lazy(() => import('./pages/Register'))
+const NotFound = lazy(() => import('./pages/NotFound'))
 
 /**
  * 路由表。
@@ -67,6 +68,11 @@ export default function App() {
           <Route path="/profile" element={<Profile />} />
           <Route path="/insights" element={<Insights />} />
           <Route path="/admin" element={<Admin />} />
+          {/* 通配项**必须在最后**、而且必须在这一组里面。原先没有它，未知路径
+              命中不了任何一条路由，连 AppShell 都不渲染——整屏纯白、没有导航，
+              用户除了改地址栏没有别的出路。顺序上它是 React Router 里优先级
+              最低的一条，所以放在哪里都能匹配到"其余全部"，但仍按惯例压在末尾。 */}
+          <Route path="*" element={<NotFound />} />
         </Route>
       </Route>
     </Routes>

@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { api } from '../api/client'
 import type { ShelfBook } from '../api/types'
 import ShelfPage from '../features/shelf/ShelfPage'
+import { GUIDE_POLL_MAX, GUIDE_POLL_MS } from '../features/shelf/constants'
 import { I18nProvider } from '../i18n'
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -22,6 +23,7 @@ vi.mock('../api/client', async (importOriginal) => {
       removeShelfBook: vi.fn(),
       submitShelfBook: vi.fn(),
       cancelShelfBook: vi.fn(),
+      regenerateShelfGuide: vi.fn(),
     },
   }
 })
@@ -50,6 +52,7 @@ const BOOK = {
   subjects: [],
   guide: '## 这本书在讲什么\n\n一个人和他命运之间的友情。',
   has_guide: true,
+  guide_error: '',
   status: 'wish' as const,
   visibility: 'private' as const,
   review_note: '',
@@ -371,5 +374,214 @@ describe('书架上的操作', () => {
 
     expect(await screen.findByText('这本书还没有导读')).toBeInTheDocument()
     expect(screen.queryByText('导读生成中…')).not.toBeInTheDocument()
+  })
+})
+
+/** 一本加进来很久、但导读是空的书。时间取**明确在过去**的固定时刻：
+ *  `created_at` 落在 60 秒内的话，卡片会走"生成中"那一支（见夹具上的说明）。 */
+const NO_GUIDE: ShelfBook = {
+  ...BOOK,
+  guide: '',
+  has_guide: false,
+  guide_error: '',
+  created_at: '2026-01-01T00:00:00+00:00',
+}
+
+describe('导读就是这本书的正文', () => {
+  // 报障的原话是"检索出来了但是不给读，我点不了"。书架里的书没有正文
+  // （联网检索只拿得到书名、作者、封面、简介），导读是唯一能读的东西——
+  // 所以它必须是可点的，不可点时也必须说清楚为什么。
+
+  it('有导读时书名可点，点开就是正文', async () => {
+    mockedApi.listShelf.mockResolvedValue(shelfOf([BOOK]))
+    renderShelf()
+    await screen.findByRole('heading', { name: '活着' })
+
+    const user = userEvent.setup()
+    // 卡片上那个可访问名就是书名的按钮，只能是标题本身——换句话说，
+    // 用户看到"活着"这两个字就能点
+    await user.click(screen.getByRole('button', { name: '活着' }))
+    expect(await screen.findByText('这本书在讲什么')).toBeInTheDocument()
+  })
+
+  it('没有导读时书名保持纯文本，不给一个点了没反应的按钮', async () => {
+    mockedApi.listShelf.mockResolvedValue(shelfOf([NO_GUIDE]))
+    renderShelf()
+    await screen.findByRole('heading', { name: '活着' })
+
+    expect(screen.queryByRole('button', { name: '活着' })).not.toBeInTheDocument()
+    // 标题本身还在（筛选用例、读屏都按 heading 找它）
+    expect(screen.getByRole('heading', { name: '活着' })).toBeInTheDocument()
+  })
+
+  it('没导读时说出"这本书本来就没有正文"——否则用户以为是点不开', async () => {
+    mockedApi.listShelf.mockResolvedValue(shelfOf([NO_GUIDE]))
+    renderShelf()
+
+    expect(await screen.findByText(/正文不在库里/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '生成导读' })).toBeInTheDocument()
+  })
+
+  it('刚加进来就已经失败了：直接说失败，不让人对着"生成中"多等一分钟', async () => {
+    // "刚加进来"那条时间判据是个猜测（加进来不到 60 秒就当在生成）。一旦
+    // `guide_error` 有内容，就不用猜了——这一次已经有结果，只是结果是失败。
+    // 此时还挂着"生成中"，用户会继续等，而正确动作是点一下重试。
+    mockedApi.listShelf.mockResolvedValue(
+      shelfOf([
+        {
+          ...NO_GUIDE,
+          guide_error: '模型调用失败：timed out',
+          created_at: new Date().toISOString(),
+        },
+      ]),
+    )
+    renderShelf()
+
+    expect(await screen.findByText(/模型调用失败/)).toBeInTheDocument()
+    expect(screen.queryByText('导读生成中…')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重新生成导读' })).toBeInTheDocument()
+  })
+
+  it('生成失败过：把原因摆出来，并把"生成"改成"重新生成"', async () => {
+    // 原先"失败"与"没试过"共用「这本书还没有导读」，用户既不知道出了什么事，
+    // 也没有重试的落脚点——而失败是永久的：后台任务只跑一次，不会自己重来。
+    mockedApi.listShelf.mockResolvedValue(
+      shelfOf([{ ...NO_GUIDE, guide_error: '模型调用失败：timed out（已尝试：kimi-k3）' }]),
+    )
+    renderShelf()
+
+    expect(await screen.findByText(/模型调用失败/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重新生成导读' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '生成导读' })).not.toBeInTheDocument()
+  })
+
+  it('点"生成导读"立刻转成"生成中"，跑完再换成能读的导读', async () => {
+    // "点了没反应"是这次报障的另一半。重新生成至少要十几秒才出结果，
+    // 中间那一段必须自己说出来，否则用户只会再点一次、或者以为按钮坏了。
+    mockedApi.listShelf
+      .mockResolvedValueOnce(shelfOf([NO_GUIDE]))
+      .mockResolvedValue(shelfOf([BOOK]))
+
+    let release: (book: ShelfBook) => void = () => {}
+    mockedApi.regenerateShelfGuide.mockReturnValue(
+      new Promise<ShelfBook>(resolve => {
+        release = resolve
+      }),
+    )
+
+    renderShelf()
+    await screen.findByText('这本书还没有导读')
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '生成导读' }))
+
+    expect(await screen.findByText('导读生成中…')).toBeInTheDocument()
+    expect(screen.queryByText('这本书还没有导读')).not.toBeInTheDocument()
+
+    release({ ...NO_GUIDE, guide_error: '' })
+
+    // 生成完就换成"展开导读"——书名这时也能点了
+    expect(await screen.findByRole('button', { name: /展开导读/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '活着' })).toBeInTheDocument()
+  })
+
+  it('重新生成失败时把原因显示在卡片上，不静默', async () => {
+    mockedApi.listShelf.mockResolvedValue(shelfOf([NO_GUIDE]))
+    mockedApi.regenerateShelfGuide.mockRejectedValue(new Error('书架里没有这本书'))
+    renderShelf()
+    await screen.findByText('这本书还没有导读')
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '生成导读' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('书架里没有这本书')
+  })
+
+  it('导读没好时，轮询会一轮一轮地来，直到预算用完', async () => {
+    // 这一条盯的是一个**静默失效**：轮询 effect 的依赖里有 `pendingGuides`，
+    // 而它是个**数字**——`load()` 回来之后往往还是同一个值（1 还是 1），依赖
+    // 没变 effect 就不会重跑，下一支定时器排不出来。于是"最多看 8 次"实际只
+    // 发生了 1 次：第 4 秒看一眼，没等到就永远停在那一刻。实测过：点了重新
+    // 生成之后浏览器只发出 1 个轮询请求，之后 42 秒一片安静，界面一直挂着
+    // "导读生成中…"，而书架上其实早就有导读或失败原因了。
+    //
+    // 两个注意点（都是踩过的）：
+    //   · React 的提交落在真实宏任务里，一次 `advanceTimersByTimeAsync` 只推得动
+    //     一支定时器——所以要**一轮一轮地推**，不能一把推 48 秒；
+    //   · 假定时器下别用 `findBy*` / `waitFor`，它们靠真实轮询，会一直等到超时。
+    vi.useFakeTimers()
+    try {
+      mockedApi.listShelf.mockResolvedValue(shelfOf([NO_GUIDE]))
+      renderShelf()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(mockedApi.listShelf).toHaveBeenCalledTimes(1) // 首次加载
+
+      for (let round = 1; round <= GUIDE_POLL_MAX; round += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(GUIDE_POLL_MS)
+        })
+      }
+      // **恰好**"首次 + GUIDE_POLL_MAX 次"。这一条能成立，就说明那 8 支定时器
+      // 是一支接一支真排出来的——修的正是"只排得出第一支"。
+      expect(mockedApi.listShelf).toHaveBeenCalledTimes(1 + GUIDE_POLL_MAX)
+
+      // 预算用完就真的停：再多推几轮也不该继续发请求
+      for (let extra = 0; extra < 3; extra += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(GUIDE_POLL_MS)
+        })
+      }
+      expect(mockedApi.listShelf).toHaveBeenCalledTimes(1 + GUIDE_POLL_MAX)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('重新生成之后，会一直等到有结论为止，不会永远停在"生成中"', async () => {
+    // 上一条盯的是"轮询有没有继续"，这一条盯的是**用户看到的那一面**：
+    // 点了重新生成之后，只要后端给出了结论（这里仍是失败），卡片的"生成中"
+    // 必须让位给原因。少了它，用户就会对着骨架屏等一辈子。
+    vi.useFakeTimers()
+    try {
+      const failed = shelfOf([{ ...NO_GUIDE, guide_error: '模型没有答复（超时）' }])
+      const cleared = shelfOf([NO_GUIDE])
+      // 节奏照着真实后端来：失败**不是**下一次拉取就有结果的——本机实测约
+      // 10 秒，也就是要走过好几轮轮询。若只给"下一轮就出结果"，
+      // 那个只排得出一支定时器的毛病照样能混过去（一次轮询刚好够用）。
+      mockedApi.listShelf
+        .mockResolvedValueOnce(failed) // 首屏：这本书失败过
+        .mockResolvedValueOnce(cleared) // 点重试后立刻拉：后端把旧原因清了
+        .mockResolvedValueOnce(cleared) // 第 1 轮轮询：还没出结果
+        .mockResolvedValueOnce(cleared) // 第 2 轮
+        .mockResolvedValue(failed) // 第 3 轮：这一次也失败了
+      mockedApi.regenerateShelfGuide.mockResolvedValue(NO_GUIDE)
+
+      renderShelf()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(screen.getByText(/模型没有答复/)).toBeInTheDocument()
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '重新生成导读' }))
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(screen.getByText('导读生成中…')).toBeInTheDocument()
+
+      // 走过几轮轮询，结论就该回来
+      for (let round = 0; round < 3; round += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(GUIDE_POLL_MS)
+        })
+      }
+      expect(screen.getByText(/模型没有答复/)).toBeInTheDocument()
+      expect(screen.queryByText('导读生成中…')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

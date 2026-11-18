@@ -441,6 +441,17 @@ class SelfTestResult(NamedTuple):
     failures: tuple[str, ...]
 
 
+def _shown(path: Path) -> str:
+    """日志里尽量用相对路径说话；万一不在仓库内（工作目录被改过）就退回绝对路径。
+
+    纯粹为了"打印"这一件事把整个脚本炸掉是不值的——挪文件本身已经成功了。
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def _retire_selftest_artifacts() -> None:
     """把自检期间产生的文件挪出产物。
 
@@ -452,6 +463,10 @@ def _retire_selftest_artifacts() -> None:
 
     两者都不该跟着分发包走。同理不用删除：改名挪进 ``build/``——本机对批量删除
     有护栏，而且留着便于排查。
+
+    自检现在用 ``RSDS_DATA_DIR`` 指到临时目录，正常情况下这里已经找不到 ``data/``；
+    这一手留着兜住"有人手动跑过 exe"的情况——**发布包里出现一个数据库文件，
+    就是用户解压覆盖后账号消失的直接原因**。
     """
     stamp = time.strftime("%Y%m%d-%H%M%S")
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -465,7 +480,7 @@ def _retire_selftest_artifacts() -> None:
             suffix += 1
             target = WORK_DIR / ("prev-selftest-%s-%s-%d" % (name, stamp, suffix))
         source.rename(target)
-        ok("自检产生的 %s 已挪到 %s" % (name, target.relative_to(ROOT)))
+        ok("自检产生的 %s 已挪到 %s" % (name, _shown(target)))
 
 
 def _selftest(run_ask: bool = True) -> SelfTestResult:
@@ -487,9 +502,17 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
     exe = APP_DIR / f"{APP_NAME}.exe"
     base = "http://127.0.0.1:%d" % SELFTEST_PORT
 
+    # 自检用的数据库**必须落在产物之外**。默认落点是程序目录下那份 data/，
+    # 于是自检会在将要发出去的目录里写一个库；更要紧的是，万一程序目录里已经
+    # 躺着上一份库（有人手动跑过 exe），自检就会往用户的真数据里灌一条测试记录。
+    # 指定一个临时目录，这两件事一起解决。
+    selftest_data = WORK_DIR / ("selftest-data-" + time.strftime("%Y%m%d-%H%M%S"))
+    selftest_data.mkdir(parents=True, exist_ok=True)
+
     process = subprocess.Popen(
         [str(exe), "--no-window", "--port", str(SELFTEST_PORT)],
         cwd=str(APP_DIR),
+        env={**os.environ, "RSDS_DATA_DIR": str(selftest_data)},
     )
     #: (标签, 是否通过, 说明, 是否依赖外部网络)
     checks: list[tuple[str, bool, str, bool]] = []
@@ -559,8 +582,8 @@ def _selftest(run_ask: bool = True) -> SelfTestResult:
         history = json.loads(_http(base + "/api/history/status")[2])
         check("历史记录库自动创建", history["available"] is True,
               history.get("error") or history["db_path"])
-        check("历史库落在程序目录下（拷贝即迁移）",
-              Path(history["db_path"]).resolve().parent == (APP_DIR / "data").resolve(),
+        check("历史库认得 RSDS_DATA_DIR（没落到产物里）",
+              Path(history["db_path"]).resolve().parent == selftest_data.resolve(),
               history["db_path"])
         check("保留期半个月", history["retention_days"] == 15,
               "%s 天" % history["retention_days"])
@@ -621,10 +644,35 @@ def _conclude(result: SelfTestResult) -> int:
 # ── 打包 zip ────────────────────────────────────────────────────────────
 
 
+def _retire_runtime_data() -> None:
+    """压缩前把产物里的 ``data/`` 挪走。
+
+    这是发布链上最不能省的一道闸：**发布包里只要有一个 ``history.db``，用户
+    解压覆盖时 Windows 就会拿它盖掉用户自己的库**——显示出来就是"更新了个版本，
+    账号和历史记录全没了"。自检本该用完就挪走（见 ``_retire_selftest_artifacts``），
+    但只要有人手动双击过一次 exe，产物里就会重新长出一份，而这一步不看那个。
+
+    宁可每次压之前都查一遍：查一次只是几毫秒，漏一次的代价是别人的数据。
+    """
+    source = APP_DIR / "data"
+    if not source.exists():
+        return
+    target = WORK_DIR / ("prev-packaged-data-%s" % time.strftime("%Y%m%d-%H%M%S"))
+    suffix = 0
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    while target.exists():
+        suffix += 1
+        target = WORK_DIR / ("prev-packaged-data-%s-%d" % (time.strftime("%Y%m%d-%H%M%S"), suffix))
+    source.rename(target)
+    warn("产物里发现了 data/（有人在产物目录里跑过 exe？）已挪到 %s，不随包发出"
+         % _shown(target))
+
+
 def _make_zip() -> None:
     # 不删旧 zip，改名挪走：本机对删除有护栏（删一个几百条目的归档会被判成
     # "批量删除"而直接拦下，整个脚本以非零退出），而重命名不触发任何删除。
     # 顺带把上一版归档留成可比对的副本，和 PyInstaller 输出目录的处理一致。
+    _retire_runtime_data()
     if ZIP_PATH.exists():
         retired = WORK_DIR / f"prev-zip-{time.strftime('%Y%m%d-%H%M%S')}.zip"
         WORK_DIR.mkdir(parents=True, exist_ok=True)

@@ -35,11 +35,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
-from ..paths import resolve_data_dir
+from ..paths import DB_FILENAME, resolve_data_dir
 
-#: 数据库文件名。刻意用 ASCII：用户未必会去翻它，但排查问题时
-#: 命令行工具（以及各种 sqlite 客户端）对非 ASCII 路径并不都友好。
-DB_FILENAME = "history.db"
+#: 数据库文件名定义在 ``paths`` 里——那边要用它判断"这个目录里有没有库"，
+#: 从而决定要不要接续上一版本的记录。这里只是转出来给本模块用。
+__all__ = ["DB_FILENAME"]
 
 #: 建表语句。全部 ``IF NOT EXISTS``，因此每次打开都执行一遍即可完成"迁移"，
 #: 缺的列由 :data:`MIGRATIONS` 补上。
@@ -132,6 +132,10 @@ CREATE TABLE IF NOT EXISTS user_books (
     -- 大模型基于元信息写的导读。上游不可用时为空串——降级成"只有元信息"，
     -- 不影响把书加进来
     guide       TEXT    NOT NULL DEFAULT '',
+    -- 上一次生成导读**为什么没成**。空串 = 没失败过（没试过，或上次成了）。
+    -- 没有它，"这本书还没有导读"这句话就没法说明缘由：用户只能干等，
+    -- 而失败是永久的（后台任务只用一次，不会自己重来）
+    guide_error TEXT    NOT NULL DEFAULT '',
     -- 阅读状态：wish（想读）/ reading（在读）/ done（读完）
     status      TEXT    NOT NULL DEFAULT 'wish',
     -- 可见性：private（自己看）/ pending（申请公开中）/ public（已进公共书架）
@@ -206,6 +210,9 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     # 加用户体系时补的归属列。NULL = 无归属（用户体系之前的数据，以及未登录者）
     ("history", "user_id", "ALTER TABLE history ADD COLUMN user_id INTEGER"),
     ("traits", "user_id", "ALTER TABLE traits ADD COLUMN user_id INTEGER"),
+    # 导读失败的原因。老库里没有这一列，补上默认空串——旧数据本来就是"没记录过"
+    ("user_books", "guide_error",
+     "ALTER TABLE user_books ADD COLUMN guide_error TEXT NOT NULL DEFAULT ''"),
 )
 
 

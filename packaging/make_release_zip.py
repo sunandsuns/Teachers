@@ -9,13 +9,16 @@
     build_app.py --skip-frontend --zip --no-ask   # 产物 + 自检（带真 Key）
     python packaging/make_release_zip.py          # 换成 .env.example，扫一遍，压成发布包
 
-这个脚本做四件事：
+这个脚本做五件事：
 
 1. 把产物里的 ``.env`` 换成 ``.env.example``（没有 example 就直接删掉 .env）；
 2. **全量扫描**产物与 zip 内层，找形如 ``sk-`` 的密钥残留——"以为换掉了其实
    还留着一份"是这一步唯一真正危险的失败模式，所以要双向确认，不能只信步骤 1；
-3. 压成 zip，顶层目录仍是 ``人生导师/``；
-4. 用 **ASCII 文件名**命名（``renshengdaoshi-v<版本>-windows-x64.zip``）。
+3. **把产物里的 ``data/`` 挪走**——数据库绝不能随包发出（见
+   :func:`retire_runtime_data`）；这一步的失误比密钥泄漏更常见，因为它不需要
+   谁犯错，只是有人在产物目录里双击过一次 exe；
+4. 压成 zip，顶层目录仍是 ``人生导师/``；
+5. 用 **ASCII 文件名**命名（``renshengdaoshi-v<版本>-windows-x64.zip``）。
    GitHub 服务端会剥掉附件名里的非 ASCII 字符，中文名会变成只剩 `-` 与 `.zip`。
 
 版本号从 ``server/main.py`` 的 ``APP_VERSION`` 读，不另立一份——两处版本号迟早对不上。
@@ -32,6 +35,7 @@ import argparse
 import re
 import shutil
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -89,6 +93,30 @@ def strip_key() -> str:
     return "已用 .env.example 覆盖产物里的 .env，并在同目录留了一份 .env.example"
 
 
+def retire_runtime_data() -> str:
+    """发布包**绝不能**夹带 ``data/``（数据库）。
+
+    这是"更新版本后用户账号和历史记录全没了"最直接的一条成因：程序目录里那份
+    ``data/`` 一旦被压进发布包，用户解压覆盖时 Windows 会拿它盖掉用户自己的库。
+    产物里之所以会冒出它，是因为数据库默认就落在程序目录里，谁都可能在产物目录里
+    双击一次 exe 试用一下。
+
+    与删除无关：改名挪进 ``build/``，留着便于排查。
+    """
+    source = APP_DIR / "data"
+    if not source.exists():
+        return "产物里没有 data/ ✓"
+    graveyard = ROOT / "build"
+    graveyard.mkdir(parents=True, exist_ok=True)
+    target = graveyard / ("prev-release-data-%s" % time.strftime("%Y%m%d-%H%M%S"))
+    suffix = 0
+    while target.exists():
+        suffix += 1
+        target = graveyard / ("prev-release-data-%s-%d" % (time.strftime("%Y%m%d-%H%M%S"), suffix))
+    source.rename(target)
+    return "产物里有 data/（有人在产物目录里跑过 exe？）——已挪到 %s，不随包发出" % target.relative_to(ROOT)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="把打包产物做成可发布的 zip")
     parser.add_argument("--check", action="store_true", help="只扫描，不改文件、不压缩")
@@ -103,9 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         hits = scan_tree(APP_DIR)
         print("扫描 %s：%s" % (APP_DIR.name, _describe(hits)))
+        print("数据库残留：%s" % ("发现 data/，压缩时会被挪走" if (APP_DIR / "data").exists()
+                                  else "没有 data/ ✓"))
         return 1 if hits else 0
 
     print(strip_key())
+    print(retire_runtime_data())
 
     hits = scan_tree(APP_DIR)
     print("更换后扫描产物：%s" % _describe(hits))

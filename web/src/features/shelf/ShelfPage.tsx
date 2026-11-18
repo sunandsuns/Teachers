@@ -97,10 +97,12 @@ export default function ShelfPage() {
               key={book.id}
               book={book}
               index={index}
+              regenerating={shelf.regenerating.has(book.id)}
               onChangeStatus={shelf.setBookStatus}
               onRemove={shelf.remove}
               onSubmit={shelf.submit}
               onCancelReview={shelf.cancelReview}
+              onRegenerate={shelf.regenerate}
             />
           ))}
         </div>

@@ -7,6 +7,14 @@
 "这本书进我的书架了"。所以顺序是：**先入库并立刻返回**，导读交给后台任务，
 前端过几秒重新拉一次列表就能看到。
 
+后台生成失败为什么要落库、还要给一个重试入口
+--------------------------------------------------------------------------
+书架上的书**没有正文**（联网检索只拿得到书名、作者、封面、简介），导读是它唯一
+可读的内容。而这次后台生成只跑一次，不会自己重来——模型当时挂了，这本书就
+永远是一张空卡片。所以两件事缺一不可：失败写进 ``guide_error``（界面上说得出
+缘由），再加一个 ``POST /books/{id}/guide`` 让人点一下重来。原先失败被整个吞掉，
+用户看到的是「这本书还没有导读」，既不知道出了什么事，也没有下一步。
+
 错误怎么回
 --------------------------------------------------------------------------
 这里**一个 try/except 都没有**。``UserBookError`` 是业务错误（400 + ``code``）、
@@ -95,6 +103,7 @@ def _out(book: ShelfBook) -> ShelfBookOut:
         subjects=list(book.subjects),
         guide=book.guide,
         has_guide=book.has_guide,
+        guide_error=book.guide_error,
         status=book.status,
         visibility=book.visibility,
         review_note=book.review_note,
@@ -107,13 +116,45 @@ def _out(book: ShelfBook) -> ShelfBookOut:
 
 
 def _fill_guide(book_id: int, candidate: BookCandidate) -> None:
-    """后台补导读。任何失败都只吞掉——书已经在架上了，导读是加分项。"""
+    """后台补导读。
+
+    失败**不抛**——书已经在架上了，导读是加分项，不该让加书这个动作回报失败。
+    但也不静默：原因写进 ``guide_error``。这两条必须同时成立，理由是这个页面的
+    形状——书架上的书没有正文，导读就是唯一能读的东西。它空了之后，用户手上
+    是一张除了状态药丸什么都没有的卡片，连"要不要重试"都无从判断。
+    """
     try:
-        guide, _ = generate_guide(candidate)
-        if guide:
-            get_user_book_store().set_guide(book_id, guide)
-    except Exception:  # noqa: BLE001 — 后台任务，失败不该冒泡到任何地方
+        outcome = generate_guide(candidate)
+        text, error = (outcome.text, "") if outcome.ok else ("", outcome.error)
+    except Exception as exc:  # noqa: BLE001 — 生成器自己炸了，同样要留下原因
+        text, error = "", f"导读生成异常：{exc}"
+
+    try:
+        store = get_user_book_store()
+        if text:
+            store.set_guide(book_id, text)
+        else:
+            store.set_guide_error(book_id, error)
+    except Exception:  # noqa: BLE001 — 后台任务，落库失败不该冒泡到任何地方
         pass
+
+
+def _candidate_of(book: ShelfBook) -> BookCandidate:
+    """把书架上的一行还原成"生成导读"要的那几个字段。
+
+    重新生成走的是与首次生成**同一条**提示词路径，所以这里要原样把元信息还回去：
+    换一条路径就等于让同一本书前后两份导读出自两套输入，差异解释不清。
+    """
+    return BookCandidate(
+        title=book.title,
+        author=book.author,
+        year=book.year,
+        cover_url=book.cover_url,
+        source_key=book.source_key,
+        source=book.source,
+        summary=book.summary,
+        subjects=book.subjects,
+    )
 
 
 # ── 路由 ────────────────────────────────────────────────────────────────────
@@ -204,6 +245,34 @@ def get_book(book_id: int, user: User = Depends(require_user)):
             status_code=404, detail={"code": "not_on_shelf", "message": "书架里没有这本书"}
         )
     return _out(book)
+
+
+@router.post("/books/{book_id}/guide", response_model=ShelfBookOut)
+def regenerate_guide(
+    book_id: int, background: BackgroundTasks, user: User = Depends(require_user)
+):
+    """重新生成这本书的导读。
+
+    导读失败是**一次性**的：加书时那次后台任务不会自己重来，于是模型当时挂了，
+    这本书的导读就永远是空的——而它是这本书在架子上唯一可读的内容。这个接口
+    就是那个人工重试的落脚点。
+
+    顺序是"先清掉上一次的失败原因，再起任务"：不清的话，从点了重新生成到这次
+    跑完之间，界面会一边说"生成中"、一边还挂着上次的失败。
+
+    返回的是**当前**这条记录（``has_guide`` 多半仍是 false）——生成在后台跑，
+    前端过几秒重新拉一次列表就能看到，不必把这个请求挂上十几秒。
+    """
+    store = get_user_book_store()
+    book = store.get(book_id, user_id=user.id)
+    if book is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "not_on_shelf", "message": "书架里没有这本书"}
+        )
+
+    store.set_guide_error(book.id, "")
+    background.add_task(_fill_guide, book.id, _candidate_of(book))
+    return _out(store.get(book.id, user_id=user.id) or book)
 
 
 @router.patch("/books/{book_id}", response_model=ShelfBookOut)
